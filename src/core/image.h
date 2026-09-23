@@ -99,11 +99,13 @@ int cl_image_save_run_if_pending(void);
 
 /* --- Restoring --- */
 
-/* Load an image file into C memory and verify everything that can be
- * verified before the heap exists (magic, version, fingerprint, byte
- * order, structural sanity).  Returns 0 on success; on failure returns
- * nonzero and (unless quiet) prints why.  Call after platform_init and
- * before cl_mem_init. */
+/* Read an image file's HEADER and verify everything that can be verified
+ * before the heap exists (magic, version, fingerprint, byte order,
+ * structural sanity).  The payload is read by cl_image_restore_staged,
+ * once the arena has its contiguous block -- a whole image read first
+ * could leave no block big enough for it.  Returns 0 on success; on
+ * failure returns nonzero and (unless quiet) prints why.  Call after
+ * platform_init and before cl_mem_init. */
 int cl_image_stage(const char *path, int quiet);
 
 /* Arena bytes the staged image needs (header bump).  0 if none staged. */

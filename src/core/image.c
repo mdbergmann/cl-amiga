@@ -216,9 +216,16 @@ static int  image_pending = 0;
 static int  image_pending_quit = 0;
 static int  image_pending_shake = 0;
 
-/* Staged image awaiting restore (loaded before cl_mem_init). */
-static char          *image_staged_buf = NULL;
-static unsigned long  image_staged_size = 0;
+/* Staged image awaiting restore.  Staging (before cl_mem_init) reads only
+ * the header, which is all the arena sizing needs; the payload is read by
+ * cl_image_restore_staged, AFTER the arena exists.  Reading the whole file
+ * first parked a payload-sized block in the middle of free memory right
+ * before the arena asked for its contiguous one: on a 24 MB 68020 the
+ * 1.6 MB editor image left no 8 MB block where 11.8 MB had been free. */
+static char          *image_staged_path = NULL;   /* platform_alloc'd */
+static char          *image_staged_buf = NULL;    /* payload, once read */
+static unsigned long  image_staged_size = 0;      /* file size at staging */
+static uint8_t        image_staged_head[CL_IMAGE_HEADER_BYTES];
 static CL_ImageHeader image_staged_hdr;
 
 static int image_restored = 0;
@@ -886,21 +893,41 @@ int cl_image_stage(const char *path, int quiet)
 {
     ImgReader r;
     uint8_t fprint[CL_IMAGE_FPRINT_LEN];
+    PlatformFile fh;
+    long len;
+    int got;
+    size_t plen;
 
     cl_image_discard_staged();
 
-    image_staged_buf = platform_file_read(path, &image_staged_size);
-    if (!image_staged_buf) {
+    /* The header only (see image_staged_path): the payload is read by the
+     * restore, once the arena has its block. */
+    fh = platform_file_open(path, PLATFORM_FILE_READ);
+    if (fh == PLATFORM_FILE_INVALID) {
         image_stage_fail(quiet, "; --image: cannot read \"%.300s\"\n", path);
         return -1;
     }
+    len = platform_file_length(fh);
+    got = platform_file_read_buf(fh, (char *)image_staged_head,
+                                 CL_IMAGE_HEADER_BYTES);
+    platform_file_close(fh);
+    plen = strlen(path) + 1;
+    image_staged_path = (char *)platform_alloc((unsigned long)plen);
+    if (!image_staged_path) {
+        image_stage_fail(quiet, "; --image: out of memory staging \"%.300s\"\n",
+                         path);
+        return -1;
+    }
+    memcpy(image_staged_path, path, plen);
+    image_staged_size = len > 0 ? (unsigned long)len : 0;
 
-    r.data = (const uint8_t *)image_staged_buf;
-    r.size = (uint32_t)image_staged_size;
+    r.data = image_staged_head;
+    r.size = got > 0 ? (uint32_t)got : 0;
     r.pos = 0;
     r.error = 0;
 
-    if (image_staged_size < CL_IMAGE_HEADER_BYTES ||
+    if (got != (int)CL_IMAGE_HEADER_BYTES ||
+        image_staged_size < CL_IMAGE_HEADER_BYTES ||
         !image_parse_header(&r, &image_staged_hdr) ||
         image_staged_hdr.magic != CL_IMAGE_MAGIC) {
         image_stage_fail(quiet,
@@ -941,12 +968,12 @@ int cl_image_stage(const char *path, int quiet)
 
 uint32_t cl_image_staged_bump(void)
 {
-    return image_staged_buf ? image_staged_hdr.bump : 0;
+    return image_staged_path ? image_staged_hdr.bump : 0;
 }
 
 int cl_image_staged_p(void)
 {
-    return image_staged_buf != NULL;
+    return image_staged_path != NULL;
 }
 
 void cl_image_discard_staged(void)
@@ -954,8 +981,46 @@ void cl_image_discard_staged(void)
     if (image_staged_buf) {
         platform_free(image_staged_buf);
         image_staged_buf = NULL;
-        image_staged_size = 0;
     }
+    if (image_staged_path) {
+        platform_free(image_staged_path);
+        image_staged_path = NULL;
+    }
+    image_staged_size = 0;
+}
+
+/* Read the staged file's payload (restore time, after cl_mem_init) and
+ * check it is still the file that was staged: same size, same header
+ * bytes.  Pre-arena, so a failure lets the caller fall back.  0 on
+ * success. */
+static int image_load_staged_payload(void)
+{
+    unsigned long size = 0;
+    char buf[400];
+
+    if (image_staged_buf) return 0;
+    image_staged_buf = platform_file_read(image_staged_path, &size);
+    if (!image_staged_buf) {
+        snprintf(buf, sizeof(buf),
+                 "; --image: cannot read \"%.300s\" (%lu bytes) after the "
+                 "heap was allocated - too little memory left for the image "
+                 "file? try a smaller --heap\n",
+                 image_staged_path, image_staged_size);
+        platform_write_string(buf);
+        return -1;
+    }
+    if (size != image_staged_size ||
+        memcmp(image_staged_buf, image_staged_head,
+               CL_IMAGE_HEADER_BYTES) != 0) {
+        snprintf(buf, sizeof(buf),
+                 "; --image: \"%.300s\" changed while clamiga was starting - "
+                 "start it again\n", image_staged_path);
+        platform_write_string(buf);
+        platform_free(image_staged_buf);
+        image_staged_buf = NULL;
+        return -1;
+    }
+    return 0;
 }
 
 /* ================================================================
@@ -1041,7 +1106,7 @@ int cl_image_restore_staged(void)
     int stale_count = 0;
     char stale_first[256];
 
-    if (!image_staged_buf) return -1;
+    if (!image_staged_path) return -1;
 
     /* ---- Pre-arena verification: everything checked BEFORE any byte of
      * the current heap is touched, so the caller can still fall back. ---- */
@@ -1066,6 +1131,8 @@ int cl_image_restore_staged(void)
         platform_write_string(buf);
         return -1;
     }
+    if (image_load_staged_payload() != 0)
+        return -1;
 
     r.data = (const uint8_t *)image_staged_buf;
     r.size = (uint32_t)image_staged_size;
@@ -1079,7 +1146,16 @@ int cl_image_restore_staged(void)
     rt_mask = ir_u32(&r);
     rt_bytes = ir_u32(&r);
     rt_pool = ir_ptr(&r, rt_bytes);
-    if (r.error || rt_bytes != (uint32_t)sizeof(cl_readtable_pool)) {
+    if (r.error) {
+        char buf[400];
+        snprintf(buf, sizeof(buf),
+                 "; --image: \"%.300s\" is truncated (%lu bytes) - an "
+                 "interrupted save or copy; rebuild it with EXT:SAVE-IMAGE\n",
+                 image_staged_path, image_staged_size);
+        platform_write_string(buf);
+        return -1;
+    }
+    if (rt_bytes != (uint32_t)sizeof(cl_readtable_pool)) {
         platform_write_string(
             "; --image: readtable section mismatch - the image was written "
             "by a different build of clamiga\n");

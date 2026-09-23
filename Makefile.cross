@@ -325,6 +325,24 @@ verify-amiga:
 		echo "=== Amiga verification FAILED (EXT:*RESTORE-HOOKS* did not run) ==="; \
 		exit 1; \
 	fi
+	@# Failed-start leg (tests/amiga/image-trunc.lisp): an arena that cannot
+	@# be allocated and a truncated image both fail with their message and
+	@# hand their memory back (AmigaOS does not reclaim a process's memory; a
+	@# failed Clamacs start used to lose 2.5 MB).  Every launch shows a
+	@# residue of a few hundred bytes at the report point, a normal exit too,
+	@# so the bar is "under 4 KB", not zero.
+	@if ! grep -q "Failed to allocate 1048576000-byte heap" build/amiga/test-results.log || \
+	    ! grep -q "is truncated" build/amiga/test-results.log || \
+	    ! awk '/is truncated|Failed to allocate 1048576000/ { want = 1; next } \
+	           want && /^\[mem\] (exit|heap allocation failed):/ { \
+	               want = 0; n++; \
+	               if ($$0 ~ /fully returned/) ok++; \
+	               else if (match($$0, /: [0-9]+ bytes NOT/) && substr($$0, RSTART + 2, RLENGTH - 8) + 0 < 4096) ok++ } \
+	           END { exit !(n == 2 && ok == 2) }' build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (a failed image start did not hand its memory back) ==="; \
+		sed -n '/=== failed image starts ===/,/=== restored-boot suite ===/p' build/amiga/test-results.log; \
+		exit 1; \
+	fi
 	@# Main-stack leg (tests/amiga/small-stack-check.lisp): started with
 	@# `stack 8000`, the runtime swaps to its own 128K stack (platform_run_main).
 	@if ! grep -q "SMALL-STACK-PASSED" build/amiga/test-results.log; then \

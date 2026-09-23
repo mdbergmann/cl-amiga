@@ -415,6 +415,69 @@ TEST(stage_rejects_garbage_truncation_version_fingerprint)
     full_teardown();
 }
 
+/* Staging reads only the header; the payload is read by the restore, after
+ * the arena exists (reading a 1.6 MB image first left no 8 MB block for the
+ * arena on a 24 MB 68020).  So the file is opened twice, and whatever happens
+ * to it in between must be refused BEFORE the arena is touched. */
+TEST(stage_reads_header_only_payload_read_at_restore)
+{
+    char *buf;
+    unsigned long size;
+
+    full_init(CL_DEFAULT_HEAP_SIZE);
+    cl_eval_string("(defvar *ti-late* 7)");
+    ASSERT(save_now(IMG_PATH));
+    full_teardown();
+
+    size = slurp(IMG_PATH, &buf);
+    ASSERT(size > CL_IMAGE_HEADER_BYTES);
+    if (size <= CL_IMAGE_HEADER_BYTES) return;
+
+    full_init(CL_DEFAULT_HEAP_SIZE);
+
+    /* Deleted after staging: staging succeeded on the header alone, the
+     * restore cannot read the payload and refuses. */
+    ASSERT_EQ_INT(cl_image_stage(IMG_PATH, 1), 0);
+    ASSERT(cl_image_staged_p());
+    ASSERT(cl_image_staged_bump() >= CL_ALIGN);
+    platform_file_delete(IMG_PATH);
+    ASSERT(cl_image_restore_staged() != 0);
+    cl_image_discard_staged();
+    ASSERT(!cl_image_staged_p());
+    ASSERT_EQ_INT(cl_image_staged_bump(), 0);
+
+    /* Grew after staging (size differs): refused. */
+    write_file(IMG_PATH, buf, (uint32_t)size);
+    ASSERT_EQ_INT(cl_image_stage(IMG_PATH, 1), 0);
+    {
+        FILE *f = fopen(IMG_PATH, "ab");
+        if (f) { fputs("tail", f); fclose(f); }
+    }
+    ASSERT(cl_image_restore_staged() != 0);
+    cl_image_discard_staged();
+
+    /* Same size, different header (another image written in its place):
+     * refused. */
+    write_file(IMG_PATH, buf, (uint32_t)size);
+    ASSERT_EQ_INT(cl_image_stage(IMG_PATH, 1), 0);
+    buf[12] = (char)(buf[12] ^ 0xFF);
+    write_file(IMG_PATH, buf, (uint32_t)size);
+    buf[12] = (char)(buf[12] ^ 0xFF);
+    ASSERT(cl_image_restore_staged() != 0);
+    cl_image_discard_staged();
+
+    /* Every refusal left the session intact. */
+    ASSERT_EQ_INT(eval_int("(+ 40 2)"), 42);
+
+    /* Unchanged file: the payload read at restore time restores. */
+    write_file(IMG_PATH, buf, (uint32_t)size);
+    platform_free(buf);
+    ASSERT_EQ_INT(cl_image_stage(IMG_PATH, 1), 0);
+    ASSERT_EQ_INT(cl_image_restore_staged(), 0);
+    ASSERT_EQ_INT(eval_int("*ti-late*"), 7);
+    full_teardown();
+}
+
 /* ---------- the SOURCES section (image v5) ---------- */
 
 /* Occurrences of S in BUF[0..SIZE). */
@@ -659,6 +722,7 @@ int main(void)
     RUN(builtin_registry_resolves_and_misses);
     RUN(stale_builtin_stub_signals);
     RUN(stage_rejects_garbage_truncation_version_fingerprint);
+    RUN(stage_reads_header_only_payload_read_at_restore);
     RUN(source_files_stored_once_and_shared_after_restore);
     RUN(readtable_and_hooks_round_trip);
     RUN(condvar_and_dead_thread_restore);

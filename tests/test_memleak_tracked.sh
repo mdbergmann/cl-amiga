@@ -330,6 +330,57 @@ cat > "$WORK/imgrestore.lisp" <<'LISPEOF'
 LISPEOF
 run_case "no_leak_after_image_restore" "$WORK/imgrestore.lisp" --image "$WORK/leak.img"
 
+# --- startup failures: the exits that never reach a REPL --------------------
+# run_fail_case NAME EXPECT [ENV=VAL ...] -- ARG...: the run must fail (rc 1),
+# say EXPECT, and still end with zero bytes live.  AmigaOS does not reclaim
+# what a failed start forgets: a Clamacs start whose 8 MB heap did not fit
+# on a 24 MB 68020 lost 2.5 MB per attempt through a bare exit().
+run_fail_case() {
+    name=$1
+    expect=$2
+    shift 2
+    envs=""
+    while [ "$1" != "--" ]; do envs="$envs $1"; shift; done
+    shift
+    total=$((total + 1))
+    out=$(env CLAMIGA_MEM_DIAG=1 $envs "$CLAMIGA" --no-userinit --non-interactive "$@" </dev/null 2>&1)
+    rc=$?
+    report=$(echo "$out" | sed -n 's/^\[mem\] leak report: \([0-9][0-9]*\) block(s), \([0-9][0-9]*\) bytes.*/\1 \2/p' | tail -1)
+    case "$out" in
+      *"$expect"*) ;;
+      *) echo "  FAIL  $name (no \"$expect\" in the output, rc=$rc)"
+         echo "$out" | tail -6
+         failed=$((failed + 1))
+         return ;;
+    esac
+    if [ "$rc" -ne 1 ]; then
+        echo "  FAIL  $name (exit code $rc, want 1)"
+        failed=$((failed + 1))
+    elif [ "$report" = "0 0" ]; then
+        echo "  ok  $name"
+        passed=$((passed + 1))
+    else
+        echo "  FAIL  $name (leak report: ${report:-none} -- blocks bytes)"
+        echo "$out" | grep '^\[mem\]' | head -10
+        failed=$((failed + 1))
+    fi
+}
+
+# The arena refused (the tracer's CLAMIGA_MEM_FAIL_OVER stands in for a
+# fragmented Fast RAM; CLAMIGA_GENGC=0 so the arena comes from platform_alloc
+# as on AmigaOS), with an image staged and without.
+run_fail_case "no_leak_when_heap_allocation_fails" "Failed to allocate 8388608-byte heap" \
+    CLAMIGA_GENGC=0 CLAMIGA_MEM_FAIL_OVER=8388608 -- --no-image --heap 8M --eval '(quit)'
+run_fail_case "no_leak_when_heap_allocation_fails_with_image" "Failed to allocate 8388608-byte heap" \
+    CLAMIGA_GENGC=0 CLAMIGA_MEM_FAIL_OVER=8388608 -- --image "$WORK/leak.img" --heap 8M --eval '(quit)'
+
+# An explicit --image whose header stages but whose payload is refused at
+# restore (truncated): the arena and the whole C init exist by then, and the
+# exit must go through the normal teardown.
+head -c 200 "$WORK/leak.img" > "$WORK/leak-trunc.img"
+run_fail_case "no_leak_when_explicit_image_restore_fails" "is truncated" \
+    -- --image "$WORK/leak-trunc.img" --eval '(quit)'
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ] || exit 1

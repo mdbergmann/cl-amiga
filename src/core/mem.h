@@ -90,7 +90,11 @@ typedef struct {
 
 extern CL_Heap cl_heap;
 
-/* Initialize/shutdown heap */
+/* Initialize/shutdown heap.  cl_mem_try_init returns -1 (message printed)
+ * when the arena cannot be allocated, leaving the caller to hand back what
+ * it holds before exiting -- main() does, since on AmigaOS off-heap memory
+ * not freed is gone until reboot.  cl_mem_init exits on that failure. */
+int  cl_mem_try_init(uint32_t heap_size);
 void cl_mem_init(uint32_t heap_size);
 void cl_mem_shutdown(void);
 

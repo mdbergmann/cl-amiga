@@ -936,7 +936,7 @@ static void gen_reset(void)
  * pair it with `Avail` before and after a run to account for every byte. */
 int cl_mem_diag = 0;
 
-void cl_mem_init(uint32_t heap_size)
+int cl_mem_try_init(uint32_t heap_size)
 {
     {
         char dbuf[8];
@@ -1010,7 +1010,7 @@ void cl_mem_init(uint32_t heap_size)
                  (unsigned)heap_size);
         platform_write_string(msg);
         platform_flush_output();
-        exit(1);
+        return -1;
     }
     cl_arena_base = cl_heap.arena;
     cl_heap.arena_size = heap_size;
@@ -1152,6 +1152,13 @@ void cl_mem_init(uint32_t heap_size)
 
     /* Initialize allocation mutex */
     platform_mutex_init(&alloc_mutex);
+    return 0;
+}
+
+void cl_mem_init(uint32_t heap_size)
+{
+    if (cl_mem_try_init(heap_size) != 0)
+        exit(1);
 }
 
 /* --- Heap-image adoption (image.c; see specs/image-save-load.md) --- */

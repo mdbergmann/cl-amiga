@@ -54,6 +54,7 @@
 #include "mem.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef DEBUG_MEM_TRACK
@@ -141,11 +142,25 @@ static MtSite *mt_site_for(const char *file, unsigned long line)
 
 void *cl_mem_track_alloc(unsigned long size, const char *file, int line)
 {
-    void *p = platform_alloc(size);
+    void *p;
     unsigned long b;
     int idx;
     MtSite *s;
 
+    /* CLAMIGA_MEM_FAIL_OVER=<bytes>: refuse every request of at least that
+     * size, so the suite can drive an allocation-failure exit (the heap
+     * arena on a 24 MB 68020) on a host whose allocator never says no. */
+    {
+        static long fail_over = -1;
+        if (fail_over < 0) {
+            const char *e = getenv("CLAMIGA_MEM_FAIL_OVER");
+            fail_over = e ? atol(e) : 0;
+        }
+        if (fail_over > 0 && size >= (unsigned long)fail_over)
+            return NULL;
+    }
+
+    p = platform_alloc(size);
     if (!p) return NULL;
     if (!mt_initialized) mt_init();
 

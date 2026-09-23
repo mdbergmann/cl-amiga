@@ -52,6 +52,19 @@ build/amiga/clamiga --no-userinit --no-image --heap 8M --non-interactive --load 
 cd CLAmiga:tests
 CLAmiga:build/amiga/clamiga --no-userinit --image CLAmiga:build/amiga/clamiga-test.img --heap 8M --non-interactive --load CLAmiga:tests/amiga/image-verify.lisp >>CLAmiga:build/amiga/test-results.log
 cd CLAmiga:
+; Failed starts hand everything back (CLAMIGA_MEM_DIAG=1 compares AvailMem
+; at start and exit; verify-amiga wants "fully returned" after each): an
+; arena that cannot be allocated, with an image staged, and an image whose
+; payload is truncated.
+echo "=== failed image starts ===" >>build/amiga/test-results.log
+build/amiga/clamiga --no-userinit --no-image --heap 8M --non-interactive --load tests/amiga/image-trunc.lisp >>build/amiga/test-results.log
+setenv CLAMIGA_MEM_DIAG 1
+build/amiga/clamiga --no-userinit --image build/amiga/clamiga-test.img --heap 1000M --non-interactive --eval "(quit)" >>build/amiga/test-results.log
+echo "heap-fail rc=$RC" >>build/amiga/test-results.log
+build/amiga/clamiga --no-userinit --image build/amiga/clamiga-trunc.img --heap 8M --non-interactive --eval "(quit)" >>build/amiga/test-results.log
+echo "trunc rc=$RC" >>build/amiga/test-results.log
+unsetenv CLAMIGA_MEM_DIAG
+delete >NIL: CLAmiga:build/amiga/clamiga-trunc.img
 ; Restored-boot suite gate: snapshot a bare boot, then run the ENTIRE
 ; suite from the restored image — verify-amiga requires a second
 ; "ALL TESTS PASSED" in the log.  Appends to the same log so the host

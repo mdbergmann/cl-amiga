@@ -842,8 +842,10 @@ static int clamiga_main(int argc, char *argv[])
      * as 0 ms — the one number the comparison with a FASL boot is about. */
     image_t0 = platform_time_ms();
     if (image_file) {
-        if (cl_image_stage(image_file, 0) != 0)
+        if (cl_image_stage(image_file, 0) != 0) {
+            platform_release_resources();   /* the file table staging opened */
             platform_process_exit(1);
+        }
     } else if (!no_image) {
         discover_image();
     }
@@ -867,7 +869,21 @@ static int clamiga_main(int argc, char *argv[])
     /* Validate the setjmp-overrun guard before any CL_CATCH / NLX frame is
      * used (MorphOS PPC setjmp writes past sizeof(jmp_buf) — see types.h). */
     cl_setjmp_overrun_check();
-    cl_mem_init(heap_size ? heap_size : CL_DEFAULT_HEAP_SIZE);
+    if (cl_mem_try_init(heap_size ? heap_size : CL_DEFAULT_HEAP_SIZE) != 0) {
+        /* No arena (the FATAL line is printed).  Hand back what this
+         * process already holds off-heap -- the staged image, the main
+         * thread's stacks, the platform's resources -- in the order of the
+         * normal shutdown below: on AmigaOS a bare exit() leaves all of it
+         * allocated until reboot (2.5 MB per failed Clamacs start on a
+         * 24 MB 68020). */
+        cl_image_discard_staged();
+        platform_shutdown();
+        cl_thread_shutdown();
+        platform_release_resources();
+        cl_mem_track_report();
+        mem_diag_report("heap allocation failed");
+        platform_process_exit(1);
+    }
     cl_package_init();
     cl_symbol_init();
     cl_reader_init();
@@ -938,8 +954,14 @@ static int clamiga_main(int argc, char *argv[])
         } else {
             /* Pre-arena verification failed (reason already printed). */
             cl_image_discard_staged();
-            if (image_file)
-                platform_process_exit(1);   /* explicit --image: never boot something else */
+            if (image_file) {
+                /* explicit --image: never boot something else.  Through the
+                 * normal teardown, not a bare exit: the arena and the rest
+                 * of the C init are already allocated, and on AmigaOS what
+                 * is not handed back stays gone until reboot. */
+                cl_exit_code = 1;
+                goto shutdown;
+            }
             cl_cmdline_publish(program_argc, program_args, workbench_started);
             cl_repl_init_no_userinit(no_userinit);
         }
