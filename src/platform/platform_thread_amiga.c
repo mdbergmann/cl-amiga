@@ -65,6 +65,20 @@ typedef struct {
     struct Process         *proc;
 } AmigaThread;
 
+/* Workers still executing clamiga code (see platform_thread.h).  Counted up
+ * under the creator's Forbid() in platform_thread_create and down as the
+ * very last thing amiga_thread_entry does — inside a Forbid() it never
+ * leaves: the task falls off the end still forbidden, and Exec's task
+ * removal ends the Forbid().  So once main observes the decrement, the
+ * worker can never again run a single instruction of this program's code,
+ * and main may return and have the seglist unloaded.  Before this, a worker
+ * that had left the MP registry could still be in its exit tail (park
+ * destroy, status store, the Forbid/Signal/return below) when main returned;
+ * the unloaded code then crashed it — "68k exception at 0x4e" in CL-Thread
+ * on MorphOS at the end of every few Clamacs drive runs. */
+static volatile uint32_t amiga_live_threads = 0;
+static volatile uint32_t amiga_exit_delay_ms = 0;
+
 /* Entry point for new process — runs user function, signals joiner */
 static void amiga_thread_entry(void)
 {
@@ -88,22 +102,29 @@ static void amiga_thread_entry(void)
      * of Delay(1) ticks) so a genuinely broken state exits instead of
      * spinning a zombie process forever. */
     while (!(at = (AmigaThread *)me->tc_UserData)) {
-        if (++spins > 3000)
+        if (++spins > 3000) {
+            Forbid();              /* exit forbidden, see amiga_live_threads */
+            amiga_live_threads--;
             return;
+        }
         Delay(1);
     }
 
     at->result = at->func(at->arg);
 
-    /* Publish completion and take our last look at `at` atomically —
-     * after Permit() we touch only locals (the joiner may free `at`
-     * the moment it can run and observe finished). */
+    if (amiga_exit_delay_ms)
+        Delay(amiga_exit_delay_ms / 20 + 1);
+
+    /* Publish completion and take our last look at `at` atomically.  The
+     * Forbid() is never Permit()ted: nothing else runs until this task is
+     * gone (see amiga_live_threads), so the joiner — which may free `at`
+     * the moment it can run and observe finished — cannot race the rest.
+     * FreeVec and Signal do not break a Forbid(). */
     Forbid();
     at->finished = 1;
     joiner_local = at->joiner;
     sig_local    = at->join_sig;
     free_self    = at->detached;
-    Permit();
 
     if (free_self) {
         /* Detached: nobody joins; we own the struct now. */
@@ -111,6 +132,7 @@ static void amiga_thread_entry(void)
     } else if (joiner_local && sig_local >= 0) {
         Signal(joiner_local, 1UL << sig_local);
     }
+    amiga_live_threads--;
 }
 
 /* NP_Entry is entered as m68k code; on MorphOS the PPC entry needs a trap
@@ -161,6 +183,10 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
          * AmigaOS pattern for passing data to a newly created process. */
         Forbid();
 
+        /* Counted before the child exists, so every exit path of
+         * amiga_thread_entry decrements a count that was already added. */
+        amiga_live_threads++;
+
         proc = CreateNewProcTags(
             NP_Entry,     CL_PROC_ENTRY(amiga_thread_entry_gate, amiga_thread_entry),
             CL_PROC_STACK_TAGS(stack_size),
@@ -174,6 +200,7 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
     }
 
     if (!proc) {
+        amiga_live_threads--;
         Permit();
         FreeVec(at);
         return -1;
@@ -187,6 +214,30 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
 
     *handle = at;
     return 0;
+}
+
+uint32_t platform_thread_live_count(void)
+{
+    return amiga_live_threads;   /* one aligned long: a single move */
+}
+
+uint32_t platform_thread_drain(const volatile uint32_t *keep, uint32_t timeout_ms)
+{
+    uint32_t elapsed = 0, live;
+    for (;;) {
+        live = amiga_live_threads;
+        if (live <= *keep) return 0;
+        if (elapsed >= timeout_ms) return live - *keep;
+        Delay(1);                /* 1/50 s: lets a lower-priority worker run */
+        elapsed += 20;
+    }
+}
+
+uint32_t platform_thread_set_exit_delay(uint32_t ms)
+{
+    uint32_t old = amiga_exit_delay_ms;
+    amiga_exit_delay_ms = ms;
+    return old;
 }
 
 int platform_thread_join(void *handle, void **result)

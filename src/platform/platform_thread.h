@@ -22,6 +22,27 @@ int  platform_thread_join(void *handle, void **result);
 void platform_thread_detach(void *handle);
 void platform_thread_yield(void);
 
+/* OS threads created by platform_thread_create that are still executing
+ * clamiga code.  A worker leaves the MP registry (cl_thread_count) a few
+ * steps BEFORE its OS thread is gone; this count drops only at the very end
+ * of the platform entry wrapper.  On AmigaOS that gap is fatal at process
+ * exit: the process's code is unloaded when main returns, and nothing kills
+ * a straggling Exec task — it runs on into freed memory (MorphOS: "68k
+ * exception" in CL-Thread). */
+uint32_t platform_thread_live_count(void);
+/* Wait (bounded, polling) until at most `*keep` OS threads are live.  `keep`
+ * is re-read on every poll (not snapshotted once at the start) so a caller
+ * whose "how many to keep" figure can itself change while draining — e.g.
+ * cl_thread_count, when a worker being waited on unregisters mid-wait —
+ * tracks the current value instead of one that is already stale.  Returns
+ * how many beyond the final `*keep` are still live when it gives up (0 =
+ * drained). */
+uint32_t platform_thread_drain(const volatile uint32_t *keep, uint32_t timeout_ms);
+/* Test hook: stall every worker this many ms after its function returned,
+ * before it counts itself gone — widens the exit window above so tests can
+ * hit it deterministically.  Returns the previous value. */
+uint32_t platform_thread_set_exit_delay(uint32_t ms);
+
 /* ---- Mutex ---- */
 int  platform_mutex_init(void **handle);
 int  platform_mutex_init_recursive(void **handle);

@@ -6148,6 +6148,35 @@ check_contains "srcloc: a defun, its nested lambda and a DEFPARAMETER lambda kee
     "SRL 4 7 11" "$out"
 check_contains "srcloc case finished" "SRL-DONE" "$out"
 
+# --- Case: a worker's result across the exit-tail drain ---------------------
+# cl_thread_shutdown / MP::%DRAIN-OS-THREADS wait (inside a GC safe region)
+# for workers that already left the registry.  The finished worker's result
+# lives only in its thread wrapper then; a peer allocating during the drain
+# compacts on every allocation here, and JOIN-THREAD must still read the
+# forwarded list — and QUIT with the worker still in its tail must drain it.
+# The exit window itself is tests/test_mt_thread_exit_drain.sh.
+cat > "$WORK/exitdrain.lisp" <<'EOF'
+(mp::%set-thread-exit-delay 200)
+(let* ((th (mp:make-thread (lambda () (list (make-array 50 :initial-element 7) "tail"))))
+       (peer (progn (loop while (mp:thread-alive-p th) do (sleep 0.01))
+                    (mp:make-thread (lambda () (dotimes (i 200) (make-list 20)) :peer)))))
+  (format t "XD-DRAIN:~S~%" (mp::%drain-os-threads 1 5000))
+  (format t "XD-PEER:~S~%" (mp:join-thread peer))
+  (let ((r (mp:join-thread th)))
+    (format t "XD-RESULT:~S~%" (list (length (first r)) (aref (first r) 49) (second r)))))
+(let ((th (mp:make-thread (lambda () (make-list 30)))))
+  (loop while (mp:thread-alive-p th) do (sleep 0.01))
+  (format t "XD-DONE~%")
+  (finish-output)
+  (quit))
+EOF
+out=$(run_stress "$WORK/exitdrain.lisp")
+check_contains "exit drain: the tail worker drained while a peer allocates" "XD-DRAIN:0" "$out"
+check_contains "exit drain: the peer finished" "XD-PEER::PEER" "$out"
+check_contains "exit drain: the drained worker's result survives compaction" 'XD-RESULT:(50 7 "tail")' "$out"
+check_contains "exit drain: QUIT with a worker in its tail completes" "XD-DONE" "$out"
+check_absent   "exit drain: no straggler warning, no bad mark" "did not finish\|BADMARK\|FATAL" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

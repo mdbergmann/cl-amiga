@@ -1997,6 +1997,49 @@ static CL_Obj bi_condvar_waiters(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)((CL_CondVar *)CL_OBJ_TO_PTR(args[0]))->waiters);
 }
 
+/* (mp::%os-thread-count) -> fixnum
+ * Worker OS threads still executing clamiga code — a thread counts until
+ * the very end of its platform entry wrapper, after it has left the MP
+ * registry (see platform_thread_live_count).  A test / triage hook. */
+static CL_Obj bi_os_thread_count(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)platform_thread_live_count());
+}
+
+/* (mp::%drain-os-threads keep timeout-ms) -> fixnum
+ * Wait until at most KEEP worker OS threads are live, or TIMEOUT-MS passed;
+ * returns how many beyond KEEP are still live (0 = drained).  The wait that
+ * process exit runs (cl_thread_shutdown), exposed for tests. */
+static CL_Obj bi_drain_os_threads(CL_Obj *args, int n)
+{
+    uint32_t keep, left;
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[0]) || CL_FIXNUM_VAL(args[0]) < 0 ||
+        !CL_FIXNUM_P(args[1]) || CL_FIXNUM_VAL(args[1]) < 0)
+        cl_error(CL_ERR_TYPE, "MP::%%DRAIN-OS-THREADS: KEEP and TIMEOUT-MS "
+                 "must be non-negative fixnums");
+    keep = (uint32_t)CL_FIXNUM_VAL(args[0]);
+    cl_gc_enter_safe_region();
+    left = platform_thread_drain(&keep, (uint32_t)CL_FIXNUM_VAL(args[1]));
+    cl_gc_leave_safe_region();
+    return CL_MAKE_FIXNUM((int32_t)left);
+}
+
+/* (mp::%set-thread-exit-delay ms) -> previous ms
+ * Test hook: every worker stalls MS after its function returned, before its
+ * OS thread counts as gone — holds the exit window open that process exit
+ * must wait out (see platform_thread_set_exit_delay). */
+static CL_Obj bi_set_thread_exit_delay(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[0]) || CL_FIXNUM_VAL(args[0]) < 0)
+        cl_error(CL_ERR_TYPE, "MP::%%SET-THREAD-EXIT-DELAY: MS must be a "
+                 "non-negative fixnum");
+    return CL_MAKE_FIXNUM((int32_t)platform_thread_set_exit_delay(
+                              (uint32_t)CL_FIXNUM_VAL(args[0])));
+}
+
 /* (mp::%lock-held-p lock) -> bool
  * Whether LOCK is currently held by any thread (racy by nature; a test /
  * triage hook — the ownership check itself lives in RELEASE-LOCK). */
@@ -2251,6 +2294,9 @@ void cl_builtins_thread_init(void)
     /* Compare-and-swap cell primitives (MP:COMPARE-AND-SWAP expands to these) */
     mp_defun_internal("%CONDVAR-WAITERS",  bi_condvar_waiters,  1, 1);
     mp_defun_internal("%LOCK-HELD-P",      bi_lock_held_p,      1, 1);
+    mp_defun_internal("%OS-THREAD-COUNT",  bi_os_thread_count,  0, 0);
+    mp_defun_internal("%DRAIN-OS-THREADS", bi_drain_os_threads, 2, 2);
+    mp_defun_internal("%SET-THREAD-EXIT-DELAY", bi_set_thread_exit_delay, 1, 1);
     mp_defun_internal("%CAS-CAR",          bi_cas_car,          3, 3);
     mp_defun_internal("%CAS-CDR",          bi_cas_cdr,          3, 3);
     mp_defun_internal("%CAS-SVREF",        bi_cas_svref,        4, 4);

@@ -9470,6 +9470,31 @@ y" 1))
                          (mp:with-lock-held (l)
                            (mp:condition-wait (mp:make-condition-variable) l 0.05))))))))
 
+; Process exit waits for workers in their exit tail.  A worker leaves the MP
+; registry (THREAD-ALIVE-P NIL) before its task is gone; one still running
+; that tail when main returned ran on into the unloaded program ("68k
+; exception" in CL-Thread at the end of Clamacs drive runs).  The exit delay
+; hook holds the tail open; %OS-THREAD-COUNT must still count the worker and
+; %DRAIN-OS-THREADS (what cl_thread_shutdown runs) must wait it out.
+; Relative to BASE: a straggler from an earlier test may exit meanwhile.
+; See tests/test_mt_thread_exit_drain.sh.
+(check "mp worker counts as live through its exit tail; drain waits it out" '(t 0 t 42)
+  (let ((base (mp::%os-thread-count)))
+    (mp::%set-thread-exit-delay 300)
+    (unwind-protect
+         (let ((th (mp:make-thread (lambda () 42))))
+           (loop while (mp:thread-alive-p th) do (sleep 0.01))
+           (list (> (mp::%os-thread-count) base)
+                 (mp::%drain-os-threads base 3000)
+                 (<= (mp::%os-thread-count) base)
+                 (mp:join-thread th)))
+      (mp::%set-thread-exit-delay 0))))
+#+amigaos
+(check "mp joined worker's task is gone when JOIN-THREAD returns (tail runs forbidden)" t
+  (let ((base (mp::%os-thread-count)))
+    (mp:join-thread (mp:make-thread (lambda () nil)))
+    (<= (mp::%os-thread-count) base)))
+
 ; ST5 (batch 6a): closing a synonym stream whose symbol holds a NON-stream
 ; must not scribble stream fields into the object.
 (defvar *t4b6-not-a-stream* (copy-seq "keep me intact"))

@@ -1271,6 +1271,29 @@ void cl_thread_shutdown(void)
     /* Unregister main thread */
     cl_thread_unregister(&cl_main_thread);
 
+    /* Let workers that already left the registry finish exiting.  Such a
+     * worker is still running its exit tail — it takes the registry lock
+     * this function destroys below, and on AmigaOS it executes code that
+     * is unloaded once main returns (nothing kills a straggling task
+     * there; it crashes in freed memory).  cl_thread_count now counts only
+     * the workers still registered, which are not waited for.  The tail
+     * takes microseconds; the bound only guards against a wedged one.
+     *
+     * Pass cl_thread_count BY ADDRESS, not a value snapshotted here: a
+     * still-registered worker counted into that snapshot can itself
+     * unregister (dropping cl_thread_count) while this poll is still
+     * waiting out an earlier straggler.  A frozen snapshot would then treat
+     * that worker's own still-running exit tail as "drained" the instant
+     * the earlier straggler's tail ends, instead of waiting for it too —
+     * platform_thread_drain re-reads *keep on every poll so the wait
+     * target tracks the live registered count. */
+    {
+        uint32_t left = platform_thread_drain(&cl_thread_count, 2000);
+        if (left)
+            fprintf(stderr, "[MP] shutdown: %u exiting worker thread(s) did "
+                    "not finish within 2 s\n", (unsigned)left);
+    }
+
     /* Main's MP park handle: unregistered above, so no release scan or
      * notify can find it, and interrupt delivery only unparks a thread
      * with a live wait registration (main has none here).  Clear the

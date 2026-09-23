@@ -18,29 +18,88 @@
  * Thread
  * ================================================================ */
 
+/* Live OS-thread accounting (see platform_thread.h).  On POSIX a straggler
+ * is harmless at exit (the process takes every thread with it), but the
+ * count is kept here too so the drain is exercised by the host suites. */
+static volatile uint32_t posix_live_threads = 0;
+static volatile uint32_t posix_exit_delay_ms = 0;
+
+typedef struct {
+    void *(*func)(void *);
+    void  *arg;
+} PosixThreadStart;
+
+static void *posix_thread_start(void *p)
+{
+    PosixThreadStart s = *(PosixThreadStart *)p;
+    void *result;
+
+    free(p);
+    result = s.func(s.arg);
+    if (posix_exit_delay_ms)
+        platform_sleep_ms(posix_exit_delay_ms);
+    __sync_fetch_and_sub(&posix_live_threads, 1);
+    return result;
+}
+
 int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
                            uint32_t stack_size)
 {
     pthread_t *th;
+    PosixThreadStart *s;
     pthread_attr_t attr;
     int ret;
 
     th = (pthread_t *)malloc(sizeof(pthread_t));
     if (!th) return -1;
+    s = (PosixThreadStart *)malloc(sizeof(PosixThreadStart));
+    if (!s) {
+        free(th);
+        return -1;
+    }
+    s->func = func;
+    s->arg = arg;
 
     pthread_attr_init(&attr);
     if (stack_size > 0)
         pthread_attr_setstacksize(&attr, (size_t)stack_size);
 
-    ret = pthread_create(th, &attr, func, arg);
+    __sync_fetch_and_add(&posix_live_threads, 1);
+    ret = pthread_create(th, &attr, posix_thread_start, s);
     pthread_attr_destroy(&attr);
 
     if (ret != 0) {
+        __sync_fetch_and_sub(&posix_live_threads, 1);
+        free(s);
         free(th);
         return -1;
     }
     *handle = th;
     return 0;
+}
+
+uint32_t platform_thread_live_count(void)
+{
+    return __sync_fetch_and_add(&posix_live_threads, 0);
+}
+
+uint32_t platform_thread_drain(const volatile uint32_t *keep, uint32_t timeout_ms)
+{
+    uint32_t elapsed = 0, live;
+    for (;;) {
+        live = platform_thread_live_count();
+        if (live <= *keep) return 0;
+        if (elapsed >= timeout_ms) return live - *keep;
+        platform_sleep_ms(5);
+        elapsed += 5;
+    }
+}
+
+uint32_t platform_thread_set_exit_delay(uint32_t ms)
+{
+    uint32_t old = posix_exit_delay_ms;
+    posix_exit_delay_ms = ms;
+    return old;
 }
 
 int platform_thread_join(void *handle, void **result)
