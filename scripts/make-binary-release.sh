@@ -112,7 +112,7 @@
 # from any current directory without assigns or environment variables.
 #
 # Usage:
-#   scripts/make-binary-release.sh [--no-smoke] [--snapshot]
+#   scripts/make-binary-release.sh [--no-smoke] [--snapshot [--with-mos]]
 #
 #   --snapshot     AmigaOS-only development snapshot of the working tree:
 #                  no bin/mos/ (no MorphOS inputs needed), staged and
@@ -120,6 +120,10 @@
 #                  so it never masquerades as, or overwrites, a release.
 #                  Everything else (FASLs, heap images, smoke test) is the
 #                  release procedure.
+#   --with-mos     With --snapshot: package bin/mos/ after all, from the
+#                  MOS_BIN / MOS_IMG / CLAMACS_MOS_IMG inputs below (built
+#                  on MorphOS from the snapshot's commit).  A full release
+#                  always includes it.
 #
 #   MOS_BIN=path   MorphOS binary to package (default: ./clamiga-mos).
 #                  There is no MorphOS cross toolchain here — build it
@@ -147,13 +151,17 @@ ROOT=$(pwd)
 
 SMOKE=1
 SNAPSHOT=0
+WITH_MOS=0
 for arg in "$@"; do
     case "$arg" in
         --no-smoke) SMOKE=0 ;;
         --snapshot) SNAPSHOT=1 ;;
-        *) echo "usage: $0 [--no-smoke] [--snapshot]" >&2; exit 2 ;;
+        --with-mos) WITH_MOS=1 ;;
+        *) echo "usage: $0 [--no-smoke] [--snapshot [--with-mos]]" >&2; exit 2 ;;
     esac
 done
+# A release always ships MorphOS; a snapshot only when asked to.
+[ "$SNAPSHOT" = 1 ] || WITH_MOS=1
 
 # macOS ships no `timeout`; prefer coreutils' if present, else run unguarded.
 if command -v timeout > /dev/null 2>&1; then TIMEOUT="timeout 300"
@@ -182,14 +190,16 @@ fi
 OUT="$ROOT/build/release"
 STAGE="$OUT/$REL"
 
-if [ "$SNAPSHOT" = 1 ]; then
+if [ "$SNAPSHOT" = 1 ] && [ "$WITH_MOS" = 1 ]; then
+    echo "=== CL-Amiga AmigaOS + MorphOS snapshot $VERSION ($SNAPSHOT_ID) ==="
+elif [ "$SNAPSHOT" = 1 ]; then
     echo "=== CL-Amiga AmigaOS snapshot $VERSION ($SNAPSHOT_ID) ==="
 else
     echo "=== CL-Amiga binary release $VERSION ==="
 fi
 
 # --- inputs ---------------------------------------------------------------
-if [ "$SNAPSHOT" = 1 ]; then
+if [ "$WITH_MOS" = 0 ]; then
     : # no MorphOS inputs in an AmigaOS-only snapshot
 elif [ ! -f "$MOS_BIN" ]; then
     echo "ERROR: MorphOS binary not found: $MOS_BIN" >&2
@@ -243,7 +253,7 @@ mkdir -p "$STAGE/bin/aos3" "$STAGE/bin/aos3-fpu" "$STAGE/lib/amiga" "$STAGE/docs
 cp "$AOS3_BIN"    "$STAGE/bin/aos3/clamiga"
 cp "$AOS3FPU_BIN" "$STAGE/bin/aos3-fpu/clamiga"
 chmod +x "$STAGE/bin/aos3/clamiga" "$STAGE/bin/aos3-fpu/clamiga"
-if [ "$SNAPSHOT" = 0 ]; then
+if [ "$WITH_MOS" = 1 ]; then
     mkdir -p "$STAGE/bin/mos"
     cp "$MOS_BIN" "$STAGE/bin/mos/clamiga"
     chmod +x "$STAGE/bin/mos/clamiga"
@@ -339,7 +349,7 @@ for t in aos3 aos3-fpu; do
         echo "ERROR: the bin/$t image run reported another version than $VERSION — see build/amiga/image.log" >&2
         exit 1; }
 done
-[ "$SNAPSHOT" = 1 ] || cp "$MOS_IMG" "$STAGE/bin/mos/clamiga.img"
+[ "$WITH_MOS" = 0 ] || cp "$MOS_IMG" "$STAGE/bin/mos/clamiga.img"
 
 # The editor's image beside each binary, the same way: the staged binary
 # loads the staged lib/clamacs/ in FS-UAE and dumps its heap, then starts
@@ -352,7 +362,7 @@ for t in aos3 aos3-fpu; do
         echo "ERROR: the bin/$t Clamacs image run reported another version than $VERSION — see build/amiga/editor-image.log" >&2
         exit 1; }
 done
-[ "$SNAPSHOT" = 1 ] || cp "$CLAMACS_MOS_IMG" "$STAGE/bin/mos/clamacs.img"
+[ "$WITH_MOS" = 0 ] || cp "$CLAMACS_MOS_IMG" "$STAGE/bin/mos/clamacs.img"
 
 # docs: package API reference only (no benchmarks/screenshots), plus the
 # editor's README as docs/clamacs.md.
@@ -397,13 +407,22 @@ done
 # for the two rows) and "show only files with icons, view by icon".
 cp icons/Drawer.info "$OUT/$REL.info"
 
-[ "$SNAPSHOT" = 0 ] || cat > "$STAGE/SNAPSHOT.txt" <<EOF
+if [ "$SNAPSHOT" = 1 ] && [ "$WITH_MOS" = 1 ]; then
+    cat > "$STAGE/SNAPSHOT.txt" <<EOF
+*** DEVELOPMENT SNAPSHOT of CL-Amiga $VERSION -- not a release ***
+
+Built from commit $SNAPSHOT_ID on $(date +%Y-%m-%d), AmigaOS and MorphOS
+binaries.  Everything else is the release layout.
+EOF
+elif [ "$SNAPSHOT" = 1 ]; then
+    cat > "$STAGE/SNAPSHOT.txt" <<EOF
 *** DEVELOPMENT SNAPSHOT of CL-Amiga $VERSION -- not a release ***
 
 Built from commit $SNAPSHOT_ID on $(date +%Y-%m-%d), AmigaOS binaries only:
 there is no bin/mos/ in this package, and the MorphOS lines of
 README-FIRST.guide do not apply.  Everything else is the release layout.
 EOF
+fi
 
 # keep emulator/host metadata out of the archive
 find "$STAGE" -name '*.uaem' -delete
