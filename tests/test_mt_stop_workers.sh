@@ -65,11 +65,18 @@ for want in "NONE 0" "LEFT 0" "CLEANED (COND LOCK SLEEP SPIN)" "ALIVE 0" "BADMS 
 done
 
 # --- a worker that cannot be interrupted: give up at the bound -----------
-cat > "$tmp/stuck.lisp" <<'EOF'
+# The foreign nap: libc sleep(2) — on Windows the C runtime has no `sleep`,
+# the default symbol search reaches kernel32, whose Sleep takes milliseconds.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CLANGARM64*|CLANG64*|UCRT64*)
+        nap='(ffi:call-foreign (ffi:symbol-pointer "Sleep") :void (quote (:uint32)) (quote (2000)))' ;;
+    *)  nap='(ffi:call-foreign (ffi:symbol-pointer "sleep") :uint32 (quote (:uint32)) (quote (2)))' ;;
+esac
+cat > "$tmp/stuck.lisp" <<EOF
 (defvar *in* nil)
 (mp:make-thread (lambda ()
                   (setq *in* t)
-                  (ffi:call-foreign (ffi:symbol-pointer "sleep") :uint32 '(:uint32) '(2))))
+                  $nap))
 (loop until *in* do (sleep 0.01))
 (sleep 0.1)
 (let ((t0 (get-internal-real-time)) (left (mp::%stop-workers 400)))

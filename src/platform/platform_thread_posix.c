@@ -85,13 +85,18 @@ uint32_t platform_thread_live_count(void)
 
 uint32_t platform_thread_drain(const volatile uint32_t *keep, uint32_t timeout_ms)
 {
-    uint32_t elapsed = 0, live;
+    uint32_t start = platform_time_ms(), now, live;
     for (;;) {
         live = platform_thread_live_count();
         if (live <= *keep) return 0;
-        if (elapsed >= timeout_ms) return live - *keep;
+        /* Bound by the clock, not by summing the naps: Windows rounds a
+         * 5 ms Sleep up to its 15.6 ms scheduler tick, and a counted 2 s
+         * bound then held process exit for 6 s (and never reported the
+         * straggler, whose tail had ended by then). */
+        now = platform_time_ms();
+        if (now < start) start = now;          /* clock wrapped */
+        if (now - start >= timeout_ms) return live - *keep;
         platform_sleep_ms(5);
-        elapsed += 5;
     }
 }
 

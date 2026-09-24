@@ -1955,7 +1955,7 @@ static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
 uint32_t cl_thread_stop_workers(uint32_t timeout_ms)
 {
     CL_Thread *self = (CL_Thread *)platform_tls_get();
-    uint32_t i, asked = 0, elapsed = 0;
+    uint32_t i, asked = 0, start, now;
 
     if (!cl_thread_list_lock) return 0;
 
@@ -1974,11 +1974,18 @@ uint32_t cl_thread_stop_workers(uint32_t timeout_ms)
     platform_mutex_unlock(cl_thread_list_lock);
     if (!asked) return 0;
 
-    /* The unwinding workers may need a GC; we must not hold them off. */
+    /* The unwinding workers may need a GC; we must not hold them off.
+     * The bound is measured by the clock, not by summing the naps: a
+     * 20 ms Sleep on Windows takes a scheduler tick or two (15.6 ms each),
+     * so a counted bound overshoots (platform_thread_drain had the same
+     * bug, 3x). */
     cl_gc_enter_safe_region();
-    while (cl_thread_count > 1 && elapsed < timeout_ms) {
+    start = platform_time_ms();
+    while (cl_thread_count > 1) {
+        now = platform_time_ms();
+        if (now < start) start = now;          /* clock wrapped (Amiga: midnight) */
+        if (now - start >= timeout_ms) break;
         platform_sleep_ms(20);
-        elapsed += 20;
     }
     cl_gc_leave_safe_region();
     return cl_thread_count > 1 ? cl_thread_count - 1 : 0;
