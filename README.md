@@ -1168,6 +1168,11 @@ generational machinery needs an MMU and is compiled out there.
   switch, behavior is identical).  `(ext:%gc-audit-hdr-index)` checks the
   index against the heap (0 = clean).
 - `(ext:gc)` forces a full collection, `(ext:%gc-minor)` a minor cycle.
+- A compaction needs a small off-heap block for the duration of the
+  collection — under 5% of the heap in use (some 390 KB for an 8 MB heap;
+  `(ext:%gc-fwd-bytes)` tells the exact figure).  When even that cannot be
+  allocated the collector says so once and keeps sweeping without moving
+  anything.
 - `(ext:%gc-time-stats)` and `(ext:%gengc-stats)` expose collector telemetry
   (per-phase times, minor counts, promoted bytes, dirty-page counts).
 

@@ -341,16 +341,48 @@ static int gc_hdr_is_block_start(uint32_t offset, GC_HdrCursor *cur)
     return b == offset;
 }
 
-/* Compaction forwarding table — maps (old_offset - gc_fwd_base)/CL_ALIGN
- * -> new_offset.  Allocated via platform_alloc during compaction, freed
- * afterwards.  gc_fwd_base is 0 for a full compaction (table spans the
- * whole bump region) and gen_old_top for a minor (nursery) collection,
- * where only nursery offsets can move — gc_forward returns anything below
- * the base unchanged, which is what lets every compaction-era updater be
- * reused verbatim by the generational collector. */
-static uint32_t *gc_fwd_table = NULL;
-static uint32_t gc_fwd_table_entries = 0;
-static uint32_t gc_fwd_base = 0;
+/* Compaction forwarding structures — one transient platform_alloc block,
+ * taken after the mark phase and handed back before cl_gc_compact returns:
+ *
+ *   gc_fwd_bits  one bit per CL_ALIGN granule of [0, bump), set when the
+ *                granule lies inside a marked (live) object;
+ *   gc_fwd_page  per GC_FWD_PAGE bytes of arena, the slide cursor at the
+ *                page's first byte: CL_ALIGN + the live bytes below it +
+ *                the holes pinned objects below it leave behind;
+ *   gc_fwd_gap   per entry of the sorted jit_pinned[], the hole the slide
+ *                leaves below that pin (pin offset - cursor on arrival).
+ *
+ *   new(obj) = gc_fwd_page[page(obj)]
+ *            + CL_ALIGN * popcount(bits from the page start up to obj)
+ *            + sum of gc_fwd_gap over pins in [page start, obj]
+ *
+ * The bitmap is 1/(8*CL_ALIGN) and the page table 4/GC_FWD_PAGE of the
+ * used span — 1/32 + 1/64 on 32-bit, about 390 KB for an 8 MB heap.  The
+ * previous design kept one uint32 forwarding address per granule, a second
+ * block as large as the heap's used span.  An A1200 with the 8 MB heap in
+ * its Zorro block cannot AllocVec another 7-8 MB once the trapdoor Fast
+ * RAM holds the compiler pool and the stacks; every bump-exhausted
+ * allocation then ran a full mark, failed the table, swept, and repeated
+ * on the next allocation — test-amiga-lowend spent ~25 s per allocation in
+ * the 'alloc sweep-forever escape' check (2026-09-24).  The size bound is
+ * pinned by tests/test_gc_fwd_bitmap.c.
+ *
+ * A page is two bitmap words (64 granules: 256 bytes on 32-bit, 512 on a
+ * 64-bit host), so a lookup pops at most one full word and one partial —
+ * the page table costs half the bitmap for that.  The page start falls on
+ * a word boundary by construction. */
+#if CL_ALIGN == 8
+#define GC_FWD_ALIGN_SHIFT 3
+#else
+#define GC_FWD_ALIGN_SHIFT 2
+#endif
+#define GC_FWD_WORDS_PER_PAGE 2u
+#define GC_FWD_PAGE_SHIFT  (GC_FWD_ALIGN_SHIFT + 5 + 1)
+#define GC_FWD_PAGE        (1u << GC_FWD_PAGE_SHIFT)
+static uint32_t *gc_fwd_bits  = NULL;
+static uint32_t *gc_fwd_page  = NULL;
+static uint32_t *gc_fwd_gap   = NULL;
+static void     *gc_fwd_block = NULL;   /* the allocation behind the three */
 
 /* Bump level at which the last forwarding-table platform_alloc failed
  * (0 = none).  While the bump front is at or above this level a
@@ -358,6 +390,11 @@ static uint32_t gc_fwd_base = 0;
  * same way — full mark work for nothing — so trigger 2 is gated on it.
  * Cleared by a successful compaction (which also resets the bump). */
 static uint32_t gc_fwd_fail_bump = 0;
+
+/* Fault injection (tests/test_gc_fwd_bitmap.c): while non-zero, a forwarding
+ * block of at least this many bytes is refused as if platform_alloc had said
+ * no — the only way a host test can drive the OOM fallback and its latch. */
+uint32_t cl_gc_fwd_fail_over = 0;
 
 /* Track last GC cycle at which compaction ran — prevents infinite loops
  * when the heap is genuinely full (no fragmentation to reclaim). */
@@ -1767,6 +1804,14 @@ void *cl_alloc(uint8_t type, uint32_t size)
              * must be attempted regardless. */
             int fwd_blocked = (gc_fwd_fail_bump != 0 &&
                                cl_heap.bump >= gc_fwd_fail_bump);
+            /* Trigger 1 while the latch is set would run the whole mark
+             * phase only to fail the same allocation again — first walk
+             * the entire free list, which the bounded probe above may
+             * have cut short.  A hit means no compaction (so the zeroed
+             * block cannot break an arena walk, see the probe guard
+             * above); a miss leaves the arena untouched for the attempt. */
+            if (!ptr && fwd_blocked)
+                ptr = alloc_from_free_list(&size, 0 /* unbounded */);
             if (!ptr ||
                 (compaction_worthwhile && !fwd_blocked &&
                  gc_sweeps_since_compact >= GC_SWEEPS_BEFORE_COMPACT)) {
@@ -4270,72 +4315,178 @@ static void gc_sweep(void)
  * (fragmentation is the bottleneck), or explicitly via cl_gc_compact().
  * ================================================================ */
 
-/* Allocate / free forwarding table */
+/* Bytes the forwarding structures need at the current bump front (the
+ * bitmap, the page table, one gap per pin).  Exported so a test can pin
+ * the bound; a compaction allocates exactly this. */
+uint32_t cl_gc_fwd_bytes(void)
+{
+    uint32_t words = (cl_heap.bump / CL_ALIGN + 31) / 32;
+    uint32_t pages = (cl_heap.bump + GC_FWD_PAGE - 1) >> GC_FWD_PAGE_SHIFT;
+    return (words + pages + (uint32_t)jit_pinned_count) * (uint32_t)sizeof(uint32_t);
+}
+
+/* Allocate / free the forwarding structures.  The whole block is zeroed:
+ * the bitmap needs it, and so does the gap array — a pin that pass 2 does
+ * not place (a duplicate entry, or a candidate that was never a marked
+ * object start) must contribute a zero gap to the lookups, exactly as it
+ * contributes nothing to the slide.  Pass 2 writes every page entry. */
 static int gc_fwd_alloc(void)
 {
-    gc_fwd_base = 0;
-    gc_fwd_table_entries = cl_heap.bump / CL_ALIGN;
-    gc_fwd_table = (uint32_t *)platform_alloc(
-        gc_fwd_table_entries * sizeof(uint32_t));
-    if (!gc_fwd_table) return 0;
-    memset(gc_fwd_table, 0, gc_fwd_table_entries * sizeof(uint32_t));
+    uint32_t words = (cl_heap.bump / CL_ALIGN + 31) / 32;
+    uint32_t pages = (cl_heap.bump + GC_FWD_PAGE - 1) >> GC_FWD_PAGE_SHIFT;
+    uint32_t bytes = cl_gc_fwd_bytes();
+    uint32_t *blk;
+    if (cl_gc_fwd_fail_over && bytes >= cl_gc_fwd_fail_over)
+        return 0;
+    blk = (uint32_t *)platform_alloc(bytes);
+    if (!blk) return 0;
+    gc_fwd_block = blk;
+    gc_fwd_bits  = blk;
+    gc_fwd_page  = blk + words;
+    gc_fwd_gap   = gc_fwd_page + pages;
+    memset(blk, 0, bytes);
     return 1;
 }
 
 static void gc_fwd_free(void)
 {
-    if (gc_fwd_table) {
-        platform_free(gc_fwd_table);
-        gc_fwd_table = NULL;
-        gc_fwd_table_entries = 0;
+    if (gc_fwd_block) {
+        platform_free(gc_fwd_block);
+        gc_fwd_block = NULL;
+        gc_fwd_bits = gc_fwd_page = gc_fwd_gap = NULL;
     }
 }
 
-/* Pass 2: Walk arena linearly, assign forwarding addresses to marked objects */
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__aarch64__))
+/* One instruction on these hosts.  Not on m68k or PPC, where the builtin
+ * becomes a libgcc call: the shift-and-mask form below is inlined there. */
+#define gc_popcount32(x) ((uint32_t)__builtin_popcount((unsigned)(x)))
+#else
+static uint32_t gc_popcount32(uint32_t x)
+{
+    x = x - ((x >> 1) & 0x55555555u);
+    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
+    x = (x + (x >> 4)) & 0x0F0F0F0Fu;
+    x += x >> 8;
+    x += x >> 16;
+    return x & 0x3Fu;
+}
+#endif
+
+/* Set the bitmap for granules [g0, g1) — one live object. */
+static void gc_fwd_set_range(uint32_t g0, uint32_t g1)
+{
+    uint32_t w0 = g0 >> 5, w1 = (g1 - 1) >> 5;
+    uint32_t m0 = 0xFFFFFFFFu << (g0 & 31);
+    uint32_t m1 = 0xFFFFFFFFu >> (31 - ((g1 - 1) & 31));
+    if (w0 == w1) {
+        gc_fwd_bits[w0] |= m0 & m1;
+        return;
+    }
+    gc_fwd_bits[w0] |= m0;
+    while (++w0 < w1)
+        gc_fwd_bits[w0] = 0xFFFFFFFFu;
+    gc_fwd_bits[w1] |= m1;
+}
+
+/* Sum of the holes left below pins in [lo, hi] (sorted jit_pinned[]). */
+static uint32_t gc_fwd_pin_gaps(uint32_t lo, uint32_t hi)
+{
+    int a = 0, b = jit_pinned_count;
+    uint32_t sum = 0;
+    while (a < b) {                     /* first pin >= lo */
+        int mid = (a + b) / 2;
+        if (jit_pinned[mid] < lo) a = mid + 1; else b = mid;
+    }
+    while (a < jit_pinned_count && jit_pinned[a] <= hi)
+        sum += gc_fwd_gap[a++];
+    return sum;
+}
+
+/* The slide cursor: where the next unpinned live object goes.  Shared by
+ * pass 2 (which also records each pin's gap) and pass 4, so the addresses
+ * the lookup computes and the addresses the slide uses come from one
+ * definition. */
+typedef struct {
+    uint32_t cur;       /* next free position in the new layout */
+    int      pin_i;     /* index into the sorted jit_pinned[] */
+} GcPlace;
+
+static uint32_t gc_place(GcPlace *pl, uint32_t off, uint32_t size, int record_gap)
+{
+    uint32_t at;
+    /* Advance past pins below this object (jit_pinned[] is sorted
+     * ascending, and objects are visited in ascending offset order). */
+    while (pl->pin_i < jit_pinned_count && jit_pinned[pl->pin_i] < off)
+        pl->pin_i++;
+    if (pl->pin_i < jit_pinned_count && jit_pinned[pl->pin_i] == off) {
+        /* Pinned: keep in place.  The cursor is <= off here (all live data
+         * below this object compacts into [CL_ALIGN, off)), so leaving
+         * [cur, off) as a hole and resuming at the pin's end preserves the
+         * monotonic, no-overlap invariant. */
+        if (record_gap)
+            gc_fwd_gap[pl->pin_i] = off - pl->cur;
+        pl->pin_i++;
+        /* The same object pinned from two scan chunks or two threads:
+         * the duplicates keep their zero gap (gc_fwd_alloc). */
+        while (pl->pin_i < jit_pinned_count && jit_pinned[pl->pin_i] == off)
+            pl->pin_i++;
+        pl->cur = off + size;
+        return off;
+    }
+    at = pl->cur;
+    pl->cur += size;
+    return at;
+}
+
+/* Pass 2: Walk arena linearly, record live granules and the per-page slide
+ * cursor from which gc_forward derives every forwarding address. */
 static void gc_compute_forwarding(void)
 {
     uint8_t *ptr = cl_heap.arena + CL_ALIGN;
     uint8_t *end = cl_heap.arena + cl_heap.bump;
-    uint32_t new_offset = CL_ALIGN;  /* free pointer; skip offset 0 (NIL) */
-    int pin_i = 0;                   /* index into the sorted jit_pinned[] */
+    uint32_t npages = (cl_heap.bump + GC_FWD_PAGE - 1) >> GC_FWD_PAGE_SHIFT;
+    uint32_t next_page = 0;
+    GcPlace pl;
+    pl.cur = CL_ALIGN;               /* skip offset 0 (NIL) */
+    pl.pin_i = 0;
 
-    /* jit_pinned[] must be ascending for the single-pass merge below.  A single
-     * thread's scan already appends in ascending order (monotonic arena walk),
-     * but with multi-thread STW each stopped thread's JIT stack is scanned in
-     * turn, so pins from different threads concatenate out of order — sort. */
+    /* jit_pinned[] must be ascending for the single-pass merge in gc_place.
+     * A single thread's scan already appends in ascending order (monotonic
+     * arena walk), but with multi-thread STW each stopped thread's JIT
+     * stack is scanned in turn, so pins from different threads concatenate
+     * out of order — sort. */
     if (jit_pinned_count > 1)
         qsort(jit_pinned, (size_t)jit_pinned_count, sizeof(jit_pinned[0]),
               cand_cmp);
 
     while (ptr < end) {
         uint32_t size = CL_HDR_SIZE(ptr);
-        uint32_t old_offset;
         if (size == 0) break;
 
         if (CL_HDR_MARKED(ptr)) {
-            old_offset = (uint32_t)(ptr - cl_heap.arena);
+            uint32_t off = (uint32_t)(ptr - cl_heap.arena);
+            uint32_t new_off;
 
-            /* Advance past pins below this object (jit_pinned[] is sorted
-             * ascending, and we visit objects in ascending offset order). */
-            while (pin_i < jit_pinned_count && jit_pinned[pin_i] < old_offset)
-                pin_i++;
+            /* Pages whose first byte lies in the dead run before this
+             * object, or exactly at it, see the cursor as it stands. */
+            while (next_page < npages && (next_page << GC_FWD_PAGE_SHIFT) <= off)
+                gc_fwd_page[next_page++] = pl.cur;
 
-            if (pin_i < jit_pinned_count && jit_pinned[pin_i] == old_offset) {
-                /* Pinned: keep in place.  The free pointer is <= old_offset
-                 * here (all live data below this object compacts into
-                 * [CL_ALIGN, old_offset)), so leaving [new_offset, old_offset)
-                 * as a temporary hole and resuming the free pointer at the
-                 * pin's end preserves the monotonic, no-overlap invariant. */
-                gc_fwd_table[old_offset / CL_ALIGN] = old_offset;
-                new_offset = old_offset + size;
-                pin_i++;
-            } else {
-                gc_fwd_table[old_offset / CL_ALIGN] = new_offset;
-                new_offset += size;
+            new_off = gc_place(&pl, off, size, 1);
+
+            /* Pages starting inside this object: it slides as a unit, so a
+             * granule at page start lands at new_off + its distance. */
+            while (next_page < npages && (next_page << GC_FWD_PAGE_SHIFT) < off + size) {
+                gc_fwd_page[next_page] = new_off + ((next_page << GC_FWD_PAGE_SHIFT) - off);
+                next_page++;
             }
+            gc_fwd_set_range(off >> GC_FWD_ALIGN_SHIFT, (off + size) >> GC_FWD_ALIGN_SHIFT);
         }
         ptr += size;
     }
+    while (next_page < npages)
+        gc_fwd_page[next_page++] = pl.cur;
 }
 
 /* (The former gc_forward_jit_native_stack writeback pass was removed when
@@ -4349,7 +4500,7 @@ static void gc_compute_forwarding(void)
  * Returns obj unchanged if it's not a movable heap pointer. */
 static CL_Obj gc_forward(CL_Obj obj)
 {
-    uint32_t idx, fwd;
+    uint32_t g, w, live, fwd;
     if (CL_NULL_P(obj) || CL_FIXNUM_P(obj) || CL_CHAR_P(obj))
         return obj;
     if (obj == CL_UNBOUND)
@@ -4377,14 +4528,22 @@ static CL_Obj gc_forward(CL_Obj obj)
         return obj;
     }
 #endif
-    if (obj < gc_fwd_base)           /* below a minor cycle's nursery base:
-                                      * old space never moves in a minor */
-        return obj;
-    idx = (obj - gc_fwd_base) / CL_ALIGN;
-    if (idx >= gc_fwd_table_entries)
-        return obj;
-    fwd = gc_fwd_table[idx];
-    return fwd ? fwd : obj;
+    g = obj >> GC_FWD_ALIGN_SHIFT;
+    if (!((gc_fwd_bits[g >> 5] >> (g & 31)) & 1u))
+        return obj;      /* dead object or free space: left as it is */
+    /* Live granules from the page start up to (not including) obj. */
+    w = (obj >> GC_FWD_PAGE_SHIFT) * GC_FWD_WORDS_PER_PAGE;
+    live = 0;
+    while (w < (g >> 5))
+        live += gc_popcount32(gc_fwd_bits[w++]);
+    live += gc_popcount32(gc_fwd_bits[w] & ((1u << (g & 31)) - 1u));
+    fwd = gc_fwd_page[obj >> GC_FWD_PAGE_SHIFT] + (live << GC_FWD_ALIGN_SHIFT);
+    if (jit_pinned_count > 0)
+        fwd += gc_fwd_pin_gaps(obj & ~(GC_FWD_PAGE - 1), obj);
+    /* An offset inside a live object (never a valid CL_Obj, but a
+     * conservative or corrupt slot can hold one) moves with its object:
+     * the formula above is exact for interior granules too. */
+    return fwd;
 }
 
 /* Update a CL_Obj slot in place via forwarding table */
@@ -4982,6 +5141,9 @@ static void gc_slide(void)
     uint8_t *end = cl_heap.arena + cl_heap.bump;
     uint32_t fill = CL_ALIGN;          /* next contiguous position in new layout */
     uint32_t live_total = 0;
+    GcPlace pl;
+    pl.cur = CL_ALIGN;
+    pl.pin_i = 0;
 
     cl_heap.free_list = 0;
 
@@ -5001,7 +5163,18 @@ static void gc_slide(void)
 
         if (CL_HDR_MARKED(ptr)) {
             uint32_t old_offset = (uint32_t)(ptr - cl_heap.arena);
-            uint32_t new_offset = gc_fwd_table[old_offset / CL_ALIGN];
+            uint32_t new_offset = gc_place(&pl, old_offset, size, 0);
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+            /* The lookup pass 3 used must agree with the placement the
+             * slide performs — for the object start and for a granule
+             * inside it. */
+            if (gc_forward(old_offset) != new_offset ||
+                (size > CL_ALIGN &&
+                 gc_forward(old_offset + CL_ALIGN) != new_offset + CL_ALIGN)) {
+                platform_write_string("GC: forwarding lookup disagrees with slide\n");
+                abort();
+            }
+#endif
 
 #ifdef CL_GENGC
             /* Sticky-mark invariant: in gen mode every live (old) object
@@ -5408,12 +5581,19 @@ void cl_gc_compact(void)
         return;
     }
 
-    /* Allocate forwarding table */
+    /* Allocate the forwarding structures */
     if (!gc_fwd_alloc()) {
-#ifdef DEBUG_GC
-        platform_write_string("GC: compact failed (no memory for fwd table), "
-                              "falling back to sweep\n");
-#endif
+        if (gc_fwd_fail_bump == 0) {
+            /* Say so once per episode (the latch below silences the
+             * repeats): a heap that can no longer compact is a degraded
+             * mode the user should see in the session log, not something
+             * to infer from a sudden GC storm. */
+            char msg[128];
+            sprintf(msg, "clamiga: GC cannot compact - no %lu bytes of memory "
+                         "for the forwarding table, sweeping instead\n",
+                    (unsigned long)cl_gc_fwd_bytes());
+            platform_write_string(msg);
+        }
         gc_sweep();
 #ifdef CL_GENGC
         /* See the pin-OOM fallback above: post-sweep heap state is

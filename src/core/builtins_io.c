@@ -3170,6 +3170,20 @@ static CL_Obj bi_ext_gc_mark_stats(CL_Obj *args, int n)
                                    CL_NIL)));
 }
 
+/* (ext:%gc-fwd-bytes) — the off-heap bytes a compaction would allocate
+ * right now for its forwarding structures (live-granule bitmap + per-page
+ * slide cursor + pin gaps): about 1/32 + 1/64 of the used heap span on
+ * 32-bit.  Transient — taken after the mark phase, released before the
+ * compaction returns.  A compaction that cannot get this block sweeps
+ * instead and says so once; the suite pins the bound so the block stays
+ * small enough for an 8 MB Amiga (tests/amiga/run-tests.lisp,
+ * tests/test_gc_fwd_bitmap.c). */
+static CL_Obj bi_ext_gc_fwd_bytes(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)cl_gc_fwd_bytes());
+}
+
 /* (ext:%fasl-registry-stats) — the calling thread's active FASL readers and
  * writers as a 2-element list: (readers writers).  Both are GC roots that
  * point at C-side state (a reader is a stack local of fasl_load), so both
@@ -5197,6 +5211,7 @@ void cl_builtins_io_init(void)
     extfun("GC", bi_ext_gc, 0, 0);
     extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
     extfun("%GC-MARK-STATS", bi_ext_gc_mark_stats, 0, 0);
+    extfun("%GC-FWD-BYTES", bi_ext_gc_fwd_bytes, 0, 0);
     extfun("%BYTECODE-OFFHEAP-STATS", bi_ext_bytecode_offheap_stats, 0, 0);
     extfun("%FASL-REGISTRY-STATS", bi_ext_fasl_registry_stats, 0, 0);
     extfun("%COMPILER-POOL-STATS", bi_ext_compiler_pool_stats, 0, 0);

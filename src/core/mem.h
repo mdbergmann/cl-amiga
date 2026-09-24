@@ -314,6 +314,14 @@ int cl_gc_if_stale(uint32_t seen_gc_count);
  * MUST be called at a safe point where no C locals hold CL_Obj values.
  * Safe points: REPL top-level, explicit (ext:gc), after top-level eval. */
 void cl_gc_compact(void);
+/* Off-heap bytes a compaction allocates (transiently) for its forwarding
+ * structures at the current bump front: about 1/32 + 1/64 of the used
+ * span on 32-bit.  See tests/test_gc_fwd_bitmap.c. */
+uint32_t cl_gc_fwd_bytes(void);
+/* Fault injection for that allocation: while non-zero, a block of at least
+ * this many bytes is refused as if the platform allocator had failed, so a
+ * test can drive the "GC cannot compact" fallback.  0 = off (the default). */
+extern uint32_t cl_gc_fwd_fail_over;
 
 /* Run pending compaction if needed.  Call at safe points (REPL, top-level). */
 void cl_gc_compact_if_pending(void);

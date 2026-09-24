@@ -487,6 +487,29 @@ y" 1))
              (= (length (car live)) 400)
              (< collections 1000))))))
 
+; --- Allocator: compaction's forwarding structures fit an 8 MB machine ---
+; Companion to tests/test_gc_fwd_bitmap.c.  A compaction forwards through a
+; live-granule bitmap plus a per-page slide cursor, allocated off-heap for
+; the duration of the compaction: about 1/32 + 1/64 of the used heap span.
+; The previous per-granule table was as large as the used span itself and
+; could not be AllocVec'd on an A1200 once the 8M heap sat in the Zorro
+; block and the trapdoor held the compiler pool -- every compaction attempt
+; then fell back to a sweep and the check above took ~25 s PER ALLOCATION
+; on the 68020 (test-amiga-lowend "hang", 2026-09-24).  At this suite's 8M
+; heap the block must stay well under 512K whatever the bump front is.
+(check "compaction forwarding structures stay under 512K at 8M" t
+  (let ((need (ext:%gc-fwd-bytes)))
+    (and (> need 0) (< need (* 512 1024)))))
+; ...and a compaction actually happens (the fallback would leave the
+; count alone) with its live data intact.
+(check "explicit compaction runs and keeps live data" t
+  (let ((keep (let ((v (make-array 300))) (dotimes (i 300) (setf (aref v i) (* i 3))) v))
+        (c0 (nth 1 (ext:%gc-time-stats))))
+    (ext:gc-compact)
+    (and (> (nth 1 (ext:%gc-time-stats)) c0)
+         (= (length keep) 300)
+         (= (aref keep 299) 897))))
+
 ; --- Allocator: growable GC mark stack (wide object graphs) ---
 ; Companion to the host C regression tests/test_gc_markstack.c.  The GC mark
 ; stack starts at 4096 entries and must GROW when a single object has more
