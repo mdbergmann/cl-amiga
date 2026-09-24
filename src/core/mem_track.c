@@ -153,8 +153,12 @@ void *cl_mem_track_alloc(unsigned long size, const char *file, int line)
     {
         static long fail_over = -1;
         if (fail_over < 0) {
-            const char *e = getenv("CLAMIGA_MEM_FAIL_OVER");
-            fail_over = e ? atol(e) : 0;
+            /* platform_getenv, not getenv: libnix's getenv() is not safe
+             * this early on AmigaOS (it crashed the process). */
+            char ebuf[16];
+            const char *e = platform_getenv("CLAMIGA_MEM_FAIL_OVER", ebuf,
+                                            (int)sizeof(ebuf));
+            fail_over = (e && *e) ? atol(e) : 0;
         }
         if (fail_over > 0 && size >= (unsigned long)fail_over)
             return NULL;
