@@ -798,6 +798,46 @@ y" 1))
   (multiple-value-list
     (dotimes (i 3000 (handler-case (values 1 2 3) (error () nil))))))
 
+; Main-thread NLX / saved-pending budgets.  The 68k AmigaOS build reserves a
+; 512-frame NLX stack and a 128-entry saved-pending stack for the main thread
+; (vm.h CL_MAX_NLX_FRAMES, thread.h CL_MAX_SAVED_PENDING) to hand ~700 KB of
+; Fast RAM per process back to the system; MorphOS and the host keep 2048 /
+; 256.  Depths under the 68k budget must work everywhere; past it, the
+; overflow must be a clean ERROR that HANDLER-CASE catches -- never a guru --
+; and both stacks must be fully unwound afterwards.  (Checked at runtime, not
+; with #+, because :M68K is a per-binary fact.)
+;
+; The two recursive probes are defined with the JIT off, so they stay
+; bytecode.  A JIT'd Lisp-to-Lisp call is C recursion on the m68k stack (~1 KB
+; per level), so on the 128 KB suite stack the C-stack guard ("C stack nearly
+; exhausted", no "overflow" in the text) fires before 480 catch levels are
+; reached -- and the JIT's shadow frames would spend ~2 of the 1024
+; CL_VM_FRAME_SIZE frames per level.  As bytecode the recursion costs one VM
+; frame per level and no C stack, so the NLX / saved-pending budget is the only
+; limit these checks can hit.
+(defvar *nlx-jit-was* (clamiga::%jit-active-p))
+(clamiga::%jit-set-active nil)
+(defun nlx-nest-catch (n)
+  (if (= n 0) 0 (catch 'nlx-nest (1+ (nlx-nest-catch (1- n))))))
+(defun nlx-nest-uwp (n)
+  (if (= n 0) 0 (unwind-protect (1+ (nlx-nest-uwp (1- n))) nil)))
+(clamiga::%jit-set-active *nlx-jit-was*)
+(defun nlx-probe (fn n)
+  (handler-case (funcall fn n)
+    (error (c) (if (search "overflow" (format nil "~A" c)) :overflow c))))
+(check "nlx budget: 480 nested catch" 480 (nlx-probe #'nlx-nest-catch 480))
+(check "nlx budget: 100 nested unwind-protect" 100 (nlx-probe #'nlx-nest-uwp 100))
+(check "nlx budget: 700 nested catch = ok or clean overflow"
+       (if (member :m68k *features*) :overflow 700)
+       (nlx-probe #'nlx-nest-catch 700))
+(check "nlx budget: 200 nested unwind-protect = ok or clean overflow"
+       (if (member :m68k *features*) :overflow 200)
+       (nlx-probe #'nlx-nest-uwp 200))
+(check "nlx budget: catch works after overflow" 480 (nlx-probe #'nlx-nest-catch 480))
+(check "nlx budget: unwind-protect works after overflow" 100 (nlx-probe #'nlx-nest-uwp 100))
+(check "nlx budget: throw after overflow" 5
+       (catch 'k (nlx-nest-catch 10) (throw 'k 5)))
+
 ; handler-bind / catch in TAIL position must still pop their handler / NLX
 ; frame.  Previously the body's tail form emitted OP_TAILCALL, replacing the
 ; frame and skipping OP_HANDLER_POP / OP_UNCATCH, leaking one binding per call
@@ -12073,10 +12113,14 @@ y" 1))
 (defun t4p2-cleanup-rec (n)
   (unwind-protect (values 1 2 3 4 5 6 7 8 9 10) (when (> n 0) (t4p2-cleanup-rec (1- n)))))
 ;; on the JIT config the C stack guard may fire first (a JIT'd recursion is
-;; C recursion) — either way it must be a clean, catchable error
+;; C recursion), and on 68k AmigaOS the 128-entry saved-pending stack (one
+;; entry per armed UNWIND-PROTECT, thread.h CL_MAX_SAVED_PENDING) overflows
+;; before the value-save stack does — either way it must be a clean,
+;; catchable error
 (check "save-stack overflow is a clean error" :clean-overflow-error
   (handler-case (progn (t4p2-cleanup-rec 400) :no-overflow)
     (error (e) (if (or (search "value-save stack overflow" (princ-to-string e))
+                       (search "saved-pending stack overflow" (princ-to-string e))
                        (search "C stack" (princ-to-string e)))
                    :clean-overflow-error (princ-to-string e)))))
 (check "runtime usable after the overflow" '(7 8)
@@ -12335,15 +12379,22 @@ y" 1))
   (let ((s (ext:%compiler-pool-stats)))
     (and (<= (fourth s) 16384)
          (<= (third s) (* (first s) (+ 16384 (* 1024 4)))))))
+;; The pre-warm is platform-sized (compiler.c CL_COMPILER_POOL_PREWARM): 2
+;; blocks on 68k AmigaOS, 8 on MorphOS and the host; the pool grows on
+;; demand past that.
+(defvar *cb-prewarm* (if (member :m68k *features*) 2 8))
+(defvar *cb-parked-before* 0)
 (let ((s (ext:%compiler-pool-stats)))
   (format t "NOTE: compiler pool ~D block(s) x ~D bytes + ~D buffer bytes~%"
           (first s) (second s) (third s))
-  ;; >= rather than an exact 8: this is 11,000+ lines into one continuous
-  ;; MT-heavy test process, and cl_compiler_pool_release only trims
-  ;; oversized buffers -- it never removes a block from the free list -- so
-  ;; nothing shrinks the parked count back down once some earlier test needs
-  ;; more than the 8 pre-warmed blocks concurrently.
-  (check "compiler pool: at least eight blocks parked" t (>= (first s) 8))
+  (setq *cb-parked-before* (first s))
+  ;; >= rather than an exact count: this is 11,000+ lines into one
+  ;; continuous MT-heavy test process, and cl_compiler_pool_release only
+  ;; trims oversized buffers -- it never removes a block from the free list
+  ;; -- so nothing shrinks the parked count back down once some earlier test
+  ;; needs more than the pre-warmed blocks concurrently.
+  (check "compiler pool: at least the pre-warmed blocks parked" t
+    (>= (first s) *cb-prewarm*))
   (check "compiler pool: a block is a fraction of 375 KB" t
     (< 0 (second s) 160000)))
 (check "compiler buffers: past the initial bytecode buffer" 69
@@ -12367,7 +12418,8 @@ y" 1))
     (error (e) (not (null (search "Bytecode too large"
                                   (princ-to-string e)))))))
 (check "compiler buffers: every block back after the overflow" '(t t 3)
-  (list (>= (first (ext:%compiler-pool-stats)) 8) (cb-pool-bounded-p)
+  (list (>= (first (ext:%compiler-pool-stats)) *cb-parked-before*)
+        (cb-pool-bounded-p)
         (funcall (compile nil '(lambda (a b) (+ a b))) 1 2)))
 (let* ((objs (loop for i below 1100 collect (code-char (+ 256 i))))
        (form (list 'lambda '()

@@ -51,8 +51,21 @@ typedef struct {
     uint32_t gen;    /* cl_struct_layout_gen this entry was resolved under */
 } CL_SlotICEntry;
 
-/* Saved pending-throw stack depth (pushed once per active UWP arming) */
+/* Saved pending-throw stack depth (pushed once per active UWP arming, i.e.
+ * the nesting depth of live UNWIND-PROTECT forms; special bindings use
+ * OP_DYNBIND and do not count).  An entry is ~600 bytes (it carries a copy of
+ * the pending error message).  68k AmigaOS gets 128 -- half the 256-entry
+ * stack's ~150 KB of Fast RAM per process, twice its workers' 64 because the
+ * main thread is where ASDF's nested WITH-* forms run during a system load.
+ * Overflow is a clean, catchable CL_ERR_OVERFLOW ("saved-pending stack
+ * overflow", OP_UWPROT in vm.c); the Amiga suite tests it.  See
+ * CL_MAX_NLX_FRAMES in vm.h for the rationale.  MorphOS and the host keep
+ * 256. */
+#if defined(PLATFORM_AMIGA) && !defined(PLATFORM_MORPHOS)
+#define CL_MAX_SAVED_PENDING 128
+#else
 #define CL_MAX_SAVED_PENDING 256
+#endif
 
 /* ---- Thread-Local Value (TLV) table ---- */
 #define CL_TLV_TABLE_SIZE  256

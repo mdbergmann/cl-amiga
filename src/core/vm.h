@@ -85,7 +85,23 @@ void cl_dynbind_restore_to(int mark);
                                 * cl_signal_condition transfers here instead
                                 * of calling a handler function. */
 #define CL_NLX_TYPE_COUNT 5
+/* Main-thread NLX stack depth (nested CATCH / UNWIND-PROTECT / BLOCK /
+ * TAGBODY / HANDLER-CASE frames).  The stack is platform_alloc'd up front,
+ * outside the GC arena, for every clamiga process.
+ *
+ * 68k AmigaOS gets a smaller budget, 2x what its workers have always run
+ * with (CL_WORKER_NLX_FRAMES): a frame is 330 bytes on m68k, so the
+ * 2048-frame stack cost ~660 KB of Fast RAM
+ * per process on an 8 MB machine, and Clamacs runs two.  Overflow past 512 is a
+ * clean, HANDLER-CASE-catchable CL_ERR_OVERFLOW ("NLX stack overflow", the
+ * OP_CATCH / OP_UWPROT / ... push guards in vm.c), never a crash; the Amiga
+ * suite has a test for it ("nlx budget" in tests/amiga/run-tests.lisp).
+ * MorphOS and the host have RAM to spare and keep 2048. */
+#if defined(PLATFORM_AMIGA) && !defined(PLATFORM_MORPHOS)
+#define CL_MAX_NLX_FRAMES 512
+#else
 #define CL_MAX_NLX_FRAMES 2048
+#endif
 
 typedef struct {
     uint8_t type;          /* CL_NLX_CATCH or CL_NLX_UWPROT */

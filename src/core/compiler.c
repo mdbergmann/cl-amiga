@@ -6032,7 +6032,18 @@ static CL_Compiler *cl_compiler_pool_head = NULL;
  * ~2.9 MB per cycle. */
 static int cl_compiler_pool_count = 0;
 
+/* 68k AmigaOS: 2 blocks (~160 KB) instead of 8 (~640 KB of Fast RAM per
+ * process, and Clamacs runs two).  The pool still grows on demand -- the
+ * pre-warm only insures against AllocVec failing for a block after the system
+ * pool has been churned, and since ab6e1001 a block is 80 KB rather than
+ * 375 KB, so two reserved blocks cover the common nested-compile chain and a
+ * deeper one falls back to an on-demand AllocVec that is now far more likely
+ * to succeed.  MorphOS and the host have RAM to spare and keep 8. */
+#if defined(PLATFORM_AMIGA) && !defined(PLATFORM_MORPHOS)
+#define CL_COMPILER_POOL_PREWARM 2
+#else
 #define CL_COMPILER_POOL_PREWARM 8
+#endif
 
 static CL_Compiler *cl_compiler_pool_acquire(void)
 {

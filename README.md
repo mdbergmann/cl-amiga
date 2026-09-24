@@ -890,7 +890,11 @@ example of the mapping.
   1024)`. With the m68k JIT enabled each active call level also crosses a
   C-stack trampoline and books a backtrace shadow frame — roughly 1 KB of
   `:stack-size` and two `:vm-frames` per level — so budget both for the
-  deepest call chain the thread will run. On
+  deepest call chain the thread will run. The main task's own
+  catch/unwind budget is also platform-sized: 68k AmigaOS reserves 512
+  nested `catch`/`block`/`handler-case` frames and 128 nested
+  `unwind-protect`s (MorphOS and the host: 2048 / 256); going past either
+  signals a catchable "stack overflow" error rather than crashing. On
   AmigaOS a worker also inherits the creator's console, so
   `*standard-output*` reaches the shell window (or a worker can open its own
   `CON:` window via `open`). See the size-keyword tests in
