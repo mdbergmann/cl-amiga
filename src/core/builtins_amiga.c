@@ -1217,7 +1217,27 @@ void cl_builtins_amiga_init(void)
     cl_register_builtin("%LAST-PUSHED-METHOD",    bi_amiga_last_pushed_method,    0, 0, cl_package_amiga);
 
     amiga_defun("OPEN-LIBRARY",      bi_amiga_open_library,       1,  2);
+#ifdef PLATFORM_AMIGA
     amiga_defun("CLOSE-LIBRARY",     bi_amiga_close_library,      1,  1);
+#else
+    /* AMIGA uses FFI, so AMIGA:CLOSE-LIBRARY *is* FFI:CLOSE-LIBRARY -- and
+     * on the host that symbol's function is the real one (dlclose of a
+     * LOAD-LIBRARY handle, builtins_ffi.c), registered before this.  The
+     * host stub used to replace it here, so every host caller of
+     * ffi:close-library got "only available on AmigaOS" (2026-09-25,
+     * found by the Clamacs host frontend's smoke run).  On the Amiga the
+     * Exec CloseLibrary registered above is the one that must win.  The
+     * symbol stays exported from AMIGA, so `amiga:close-library' reads on
+     * every build (lib/amiga/ffi.lisp spells it that way, and the host
+     * compiles those files). */
+    {
+        CL_Obj sym = cl_intern_in("CLOSE-LIBRARY", 13, cl_package_amiga);
+        CL_GC_PROTECT(sym);
+        cl_export_symbol(sym, cl_package_amiga);
+        CL_GC_UNPROTECT(1);
+    }
+    (void)bi_amiga_close_library;
+#endif
     amiga_defun("CALL-LIBRARY",      bi_amiga_call_library,       3,  4);
     amiga_defun("CALL-LIBRARY-FAST", bi_amiga_call_library_fast,  3, -1);
     amiga_defun("ALLOC-CHIP",        bi_amiga_alloc_chip,         1,  1);

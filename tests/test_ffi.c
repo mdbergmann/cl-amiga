@@ -504,6 +504,27 @@ TEST(lisp_ffi_symbol_pointer_missing)
     ASSERT_STR_EQ(eval_print("(ffi:symbol-pointer \"no_such_symbol_zzz\")"), "NIL");
 }
 
+/* AMIGA uses FFI, so AMIGA:CLOSE-LIBRARY and FFI:CLOSE-LIBRARY are one
+ * symbol; on the host its function must be the dlclose one, not the
+ * "only available on AmigaOS" stub that once replaced it (2026-09-25). */
+TEST(lisp_ffi_close_library_is_the_host_one)
+{
+#if defined(__APPLE__)
+    const char *lib = "libSystem.B.dylib";
+#elif defined(_WIN32)
+    const char *lib = "kernel32.dll";
+#else
+    const char *lib = "libc.so.6";
+#endif
+    char form[256];
+    snprintf(form, sizeof form,
+             "(let ((lib (ffi:load-library \"%s\")))"
+             "  (and lib (handler-case (ffi:close-library lib)"
+             "             (error (e) (princ-to-string e)))))", lib);
+    ASSERT_STR_EQ(eval_print(form), "T");
+    ASSERT_STR_EQ(eval_print("(eq 'ffi:close-library 'amiga:close-library)"), "T");
+}
+
 TEST(lisp_ffi_call_int)
 {
     ASSERT_STR_EQ(eval_print(
@@ -852,6 +873,7 @@ int main(void)
     /* Host-only: dlopen / libffi calls + callbacks */
     RUN(lisp_ffi_symbol_pointer_found);
     RUN(lisp_ffi_symbol_pointer_missing);
+    RUN(lisp_ffi_close_library_is_the_host_one);
     RUN(lisp_ffi_call_int);
     RUN(lisp_ffi_call_pointer_arg);
     RUN(lisp_ffi_call_double);
