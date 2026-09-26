@@ -192,6 +192,23 @@ cat > "$WORK/locks.lisp" <<'LISPEOF'
 LISPEOF
 run_case "no_leak_after_lock_condvar_churn" "$WORK/locks.lisp"
 
+# --- a thread that finished but was never joined ------------------------------
+# Its wrapper stays reachable (a global, as an editor's port struct or a
+# thread registry holds one) and the program only polls THREAD-ALIVE-P, so
+# neither JOIN-THREAD nor the wrapper's finalizer frees the worker's stacks;
+# cl_thread_shutdown reaps it.  Before the reap this leaked ~1.2 MB per such
+# thread on the host at every exit (the Clamacs editor had four).
+cat > "$WORK/unjoined.lisp" <<'LISPEOF'
+(defvar *workers* '())
+(dotimes (i 3)
+  (push (mp:make-thread (lambda () (loop for i from 1 to 100 sum i))) *workers*))
+(loop while (some #'mp:thread-alive-p *workers*) do (sleep 0.01))
+(unless (every (lambda (th) (not (mp:thread-alive-p th))) *workers*)
+  (error "workers still alive"))
+(quit)
+LISPEOF
+run_case "no_leak_after_unjoined_finished_threads" "$WORK/unjoined.lisp"
+
 # --- compile-file + FASL load: the reader's own allocations ----------------
 cat > "$WORK/src.lisp" <<'LISPEOF'
 (defun fl-a (x) (+ x 1))

@@ -696,6 +696,16 @@ CL_Thread *cl_thread_alloc_worker_sized(uint32_t vm_stack_size,
 /* Free a worker CL_Thread's resources */
 void cl_thread_free_worker(CL_Thread *t);
 
+/* Free every worker that finished (status >= 2) and that no JOIN-THREAD
+ * has claimed: its table slot is cleared, its OS handle detached, its
+ * stacks handed back.  The wrapper object stays (EQ identity, the name);
+ * its finalizer's table_gen compare keeps it from freeing a later
+ * occupant of the slot.  Called when MAKE-THREAD finds the table full,
+ * and by cl_thread_shutdown, because a thread the program only polled
+ * with THREAD-ALIVE-P is otherwise freed by nothing before exit -- on
+ * AmigaOS its stacks would be lost until reboot. */
+void cl_thread_reap_zombies(void);
+
 /* Point T's backtrace buffer at its inline block.  Must run for every
  * CL_Thread before anything reads cl_backtrace_buf. */
 void cl_thread_backtrace_init(CL_Thread *t);

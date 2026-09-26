@@ -539,26 +539,9 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
          * unrelated worker if the slot is later reused: reaping here
          * does not bump cl_thread_table_gen[slot], so once a new worker
          * later reoccupies the slot the wrapper's stale table_gen no
-         * longer matches and its finalize leaves the new occupant alone. */
-        CL_Thread *zombie;
-        int i;
-        platform_mutex_lock(cl_thread_list_lock);
-        for (i = 1; i < CL_MAX_THREADS; i++) {
-            zombie = cl_thread_table[i];
-            if (!zombie || zombie->status < 2) continue;
-            /* A claimed join owns this worker's cleanup: the joiner is
-             * (or will be) parked in platform_thread_join on the claimed
-             * handle and frees the worker itself.  Freeing it here would
-             * be a use-after-free / double free. */
-            if (zombie->join_in_progress) continue;
-            cl_thread_table[i] = NULL;
-            if (zombie->platform_handle) {
-                platform_thread_detach(zombie->platform_handle);
-                zombie->platform_handle = NULL;
-            }
-            cl_thread_free_worker(zombie);
-        }
-        platform_mutex_unlock(cl_thread_list_lock);
+         * longer matches and its finalize leaves the new occupant alone.
+         * The same walk runs at shutdown (cl_thread_reap_zombies). */
+        cl_thread_reap_zombies();
         thread_id = cl_thread_table_alloc(child);
     }
     if (thread_id < 0) {

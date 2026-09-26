@@ -1260,6 +1260,32 @@ void cl_thread_restore_main_tls(void)
     platform_tls_set(cl_saved_main_tls);
 }
 
+void cl_thread_reap_zombies(void)
+{
+    CL_Thread *zombie;
+    int i;
+
+    if (!cl_thread_list_lock)
+        return;
+    platform_mutex_lock(cl_thread_list_lock);
+    for (i = 1; i < CL_MAX_THREADS; i++) {
+        zombie = cl_thread_table[i];
+        if (!zombie || zombie->status < 2) continue;
+        /* A claimed join owns this worker's cleanup: the joiner is (or
+         * will be) parked in platform_thread_join on the claimed handle
+         * and frees the worker itself.  Freeing it here would be a
+         * use-after-free / double free. */
+        if (zombie->join_in_progress) continue;
+        cl_thread_table[i] = NULL;
+        if (zombie->platform_handle) {
+            platform_thread_detach(zombie->platform_handle);
+            zombie->platform_handle = NULL;
+        }
+        cl_thread_free_worker(zombie);
+    }
+    platform_mutex_unlock(cl_thread_list_lock);
+}
+
 void cl_thread_shutdown(void)
 {
     /* Clear BEFORE unregistering/freeing anything: a callback that lands on
@@ -1293,6 +1319,17 @@ void cl_thread_shutdown(void)
             fprintf(stderr, "[MP] shutdown: %u exiting worker thread(s) did "
                     "not finish within 2 s\n", (unsigned)left);
     }
+
+    /* Workers that finished but were never joined -- a thread the program
+     * only polled with THREAD-ALIVE-P, whose wrapper something still
+     * reaches -- keep their VM stack, frames, NLX and saved-pending stacks
+     * until MAKE-THREAD finds the table full or the wrapper's finalizer
+     * runs, neither of which happens at exit.  Hand them back now, while
+     * the registry lock still exists; every one is off-heap memory that
+     * AmigaOS would never reclaim (the Clamacs editor exited with four
+     * such threads, 4.8 MB, before this reap: its port's listener and
+     * connection threads, the self transport's worker, the REPL thread). */
+    cl_thread_reap_zombies();
 
     /* Main's MP park handle: unregistered above, so no release scan or
      * notify can find it, and interrupt delivery only unparks a thread
