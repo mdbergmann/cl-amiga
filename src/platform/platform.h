@@ -195,6 +195,11 @@ int            platform_socket_data_available(PlatformSocket sh);
  * to *actual_port when actual_port != NULL.
  * Returns a listener handle or PLATFORM_SOCKET_INVALID. */
 PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port);
+/* As platform_socket_listen, bound to ONE address: `addr` is a dotted-quad
+ * IPv4 address ("0.0.0.0" is every interface, "127.0.0.1" loopback), or
+ * NULL for every interface.  An address that is not dotted-quad, or that
+ * no interface of this machine has, fails with PLATFORM_SOCKET_INVALID. */
+PlatformSocket platform_socket_listen_addr(int port, const char *addr, int *actual_port);
 /* Block until a client connects to `listener`, returning a fresh connection
  * handle (a normal read/write socket) or PLATFORM_SOCKET_INVALID on error. */
 PlatformSocket platform_socket_accept(PlatformSocket listener);
@@ -357,6 +362,14 @@ int platform_break_pending(void);
  * Used to locate the bundled lib/ regardless of the process cwd.  Returns
  * buf on success, NULL when the location cannot be determined. */
 const char *platform_executable_prefix(char *buf, int bufsize);
+
+/* The running executable itself, as a path another process can start it
+ * by: "/usr/local/bin/clamiga" (symlinks resolved) on POSIX, "C:/.../
+ * clamiga.exe" on Windows, "PROGDIR:clamiga" on AmigaOS.  Backs
+ * EXT:EXECUTABLE-PATH, which is how the host Clamacs starts a second
+ * clamiga on the binary it runs on.  Returns buf, or NULL when the path
+ * cannot be determined. */
+const char *platform_executable_path(char *buf, int bufsize);
 
 /* Remaining C stack in bytes at the point of call, or -1 when the platform
  * cannot tell (POSIX — big default stacks plus OS guard pages make the

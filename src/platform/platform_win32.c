@@ -974,19 +974,39 @@ void platform_release_resources(void)
 {
 }
 
-const char *platform_executable_prefix(char *buf, int bufsize)
+/* The executable's path, UTF-8 with `/' separators, into `resolved`
+ * (PATH_MAX bytes); 0 when it cannot be determined. */
+static int executable_resolved(char *resolved)
 {
-    char resolved[PATH_MAX];
     wchar_t wresolved[PATH_MAX];
     DWORD n = GetModuleFileNameW(NULL, wresolved, (DWORD)PATH_MAX);
     if (n == 0 || n >= (DWORD)PATH_MAX)
-        return NULL;            /* failed, or the path was truncated */
+        return 0;               /* failed, or the path was truncated */
     /* Not GetModuleFileNameA: an installation under a user profile whose
      * name the ANSI code page cannot spell would come back with '?' in it,
      * and lib/ would then never be found. */
-    if (!cl_win_wide_to_utf8(wresolved, resolved, (int)sizeof(resolved)))
-        return NULL;
+    if (!cl_win_wide_to_utf8(wresolved, resolved, PATH_MAX))
+        return 0;
     win_normalize_seps(resolved);
+    return 1;
+}
+
+const char *platform_executable_path(char *buf, int bufsize)
+{
+    char resolved[PATH_MAX];
+    if (!executable_resolved(resolved))
+        return NULL;
+    if ((int)strlen(resolved) >= bufsize)
+        return NULL;
+    strcpy(buf, resolved);
+    return buf;
+}
+
+const char *platform_executable_prefix(char *buf, int bufsize)
+{
+    char resolved[PATH_MAX];
+    if (!executable_resolved(resolved))
+        return NULL;
     /* Strip the executable name, keep the trailing slash */
     {
         char *slash = strrchr(resolved, '/');
@@ -2035,10 +2055,43 @@ int platform_socket_flush(PlatformSocket sh)
     return socket_flush_wbuf(sh);
 }
 
+/* "a.b.c.d" -> the address in host byte order; 0 for anything else (the
+ * same parser as platform_posix.c's). */
+static int parse_ipv4(const char *s, uint32_t *out)
+{
+    uint32_t value = 0;
+    int part;
+    for (part = 0; part < 4; part++) {
+        int digits = 0, octet = 0;
+        while (*s >= '0' && *s <= '9' && digits < 3) {
+            octet = octet * 10 + (*s - '0');
+            s++; digits++;
+        }
+        if (digits == 0 || octet > 255) return 0;
+        value = (value << 8) | (uint32_t)octet;
+        if (part < 3) {
+            if (*s != '.') return 0;
+            s++;
+        }
+    }
+    if (*s != '\0') return 0;
+    *out = value;
+    return 1;
+}
+
 PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port)
+{
+    return platform_socket_listen_addr(port, loopback ? "127.0.0.1" : NULL, actual_port);
+}
+
+PlatformSocket platform_socket_listen_addr(int port, const char *bind_addr, int *actual_port)
 {
     struct sockaddr_in addr;
     SOCKET fd;
+    uint32_t ip = INADDR_ANY;
+
+    if (bind_addr && !parse_ipv4(bind_addr, &ip))
+        return PLATFORM_SOCKET_INVALID;
 
     socket_table_ensure_init();
 
@@ -2055,7 +2108,7 @@ PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port)
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons((uint16_t)port);
-    addr.sin_addr.s_addr = htonl(loopback ? INADDR_LOOPBACK : INADDR_ANY);
+    addr.sin_addr.s_addr = htonl(ip);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         closesocket(fd);

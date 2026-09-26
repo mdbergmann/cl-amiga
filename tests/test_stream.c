@@ -2661,6 +2661,60 @@ TEST(eval_socket_local_port_type_error)
     ASSERT(result == cl_intern_keyword("NOT-A-LISTENER", 14));
 }
 
+/* ext:socket-listen takes a dotted-quad ADDRESS string as the one address to
+ * bind (a development port reachable from one network, not every one):
+ * "127.0.0.1" spelled out serves a loopback client exactly as T does. */
+TEST(eval_socket_listen_named_address)
+{
+    CL_Obj result = cl_eval_string(
+        "(let ((l (ext:socket-listen 0 \"127.0.0.1\")))"
+        "  (prog1"
+        "    (let* ((p (ext:socket-local-port l))"
+        "           (c (ext:open-tcp-stream \"127.0.0.1\" p))"
+        "           (s (ext:socket-accept l)))"
+        "      (write-char #\\Q c)"
+        "      (force-output c)"
+        "      (prog1 (char-code (read-char s))"
+        "        (close c) (close s)))"
+        "    (close l)))");
+    ASSERT(CL_FIXNUM_P(result));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(result), 81);  /* #\Q */
+}
+
+/* An address no interface of this machine has (TEST-NET-3, RFC 5737), a
+ * name that is not dotted-quad, and an empty one: each is refused with an
+ * error that names the address, never a listener somewhere else. */
+TEST(eval_socket_listen_bad_address)
+{
+    CL_Obj result = cl_eval_string(
+        "(if (and"
+        "     (handler-case (progn (ext:socket-listen 0 \"203.0.113.1\") nil)"
+        "       (error (c) (search \"203.0.113.1\" (princ-to-string c))))"
+        "     (handler-case (progn (ext:socket-listen 0 \"localhost\") nil)"
+        "       (error (c) (search \"localhost\" (princ-to-string c))))"
+        "     (handler-case (progn (ext:socket-listen 0 \"\") nil)"
+        "       (error (c) (search \"dotted-quad\" (princ-to-string c))))"
+        "     (handler-case (progn (ext:socket-listen 0 \"1.2.3.4.5\") nil)"
+        "       (error (c) (declare (ignore c)) t)))"
+        "    :all-refused"
+        "    :one-listened)");
+    ASSERT(result == cl_intern_keyword("ALL-REFUSED", 11));
+}
+
+/* ext:executable-path names this very binary: what a process starts a
+ * second copy of itself with. */
+TEST(eval_executable_path)
+{
+    CL_Obj result = cl_eval_string(
+        "(let ((p (ext:executable-path)))"
+        "  (and (stringp p)"
+        "       (> (length p) (length \"test_stream\"))"
+        "       (search \"test_stream\" p :start2 (- (length p) 15))"
+        "       (probe-file p)"
+        "       t))");
+    ASSERT(result == CL_T);
+}
+
 /* Concurrent slot-claim: accept() runs on a worker thread while the main
  * thread connect()s.  Exercises the socket-table mutex — without it the two
  * claims could land on the same slot. */
@@ -4908,6 +4962,9 @@ int main(void)
     RUN(socket_stream_local_port_explicit);
     RUN(eval_socket_local_port);
     RUN(eval_socket_local_port_type_error);
+    RUN(eval_socket_listen_named_address);
+    RUN(eval_socket_listen_bad_address);
+    RUN(eval_executable_path);
     RUN(socket_concurrent_accept_connect);
     RUN(socket_read_parked_allows_same_socket_reply);
     RUN(socket_read_parked_high_handle_lock_independent);

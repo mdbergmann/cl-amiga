@@ -1998,8 +1998,13 @@ CL_Obj cl_make_udp_socket_stream(const char *host, int port)
 
 CL_Obj cl_make_listen_stream(int port, int loopback, int *actual_port)
 {
+    return cl_make_listen_stream_addr(port, loopback ? "127.0.0.1" : NULL, actual_port);
+}
+
+CL_Obj cl_make_listen_stream_addr(int port, const char *bind_addr, int *actual_port)
+{
     int bound_port = 0;
-    PlatformSocket sh = platform_socket_listen(port, loopback, &bound_port);
+    PlatformSocket sh = platform_socket_listen_addr(port, bind_addr, &bound_port);
     CL_Obj s;
     CL_Stream *st;
     if (sh == PLATFORM_SOCKET_INVALID)

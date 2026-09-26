@@ -868,26 +868,37 @@ void platform_release_resources(void)
 {
 }
 
-const char *platform_executable_prefix(char *buf, int bufsize)
+/* The executable's resolved absolute path into `resolved` (PATH_MAX bytes);
+ * 0 when the platform cannot tell. */
+static int executable_resolved(char *resolved)
 {
-    char resolved[PATH_MAX];
 #if defined(__APPLE__)
     char raw[PATH_MAX];
     uint32_t rawsz = (uint32_t)sizeof(raw);
     if (_NSGetExecutablePath(raw, &rawsz) != 0)
-        return NULL;
+        return 0;
     if (!realpath(raw, resolved))
-        return NULL;
+        return 0;
+    return 1;
 #elif defined(__linux__)
-    ssize_t n = readlink("/proc/self/exe", resolved, sizeof(resolved) - 1);
+    ssize_t n = readlink("/proc/self/exe", resolved, PATH_MAX - 1);
     if (n <= 0)
-        return NULL;
+        return 0;
     resolved[n] = '\0';
+    return 1;
 #else
     /* No portable way to find the executable on other POSIX systems —
      * callers fall back to cwd-relative lookup and $CLAMIGA_HOME. */
-    return NULL;
+    (void)resolved;
+    return 0;
 #endif
+}
+
+const char *platform_executable_prefix(char *buf, int bufsize)
+{
+    char resolved[PATH_MAX];
+    if (!executable_resolved(resolved))
+        return NULL;
     /* Strip the executable name, keep the trailing slash */
     {
         char *slash = strrchr(resolved, '/');
@@ -895,6 +906,17 @@ const char *platform_executable_prefix(char *buf, int bufsize)
             return NULL;
         slash[1] = '\0';
     }
+    if ((int)strlen(resolved) >= bufsize)
+        return NULL;
+    strcpy(buf, resolved);
+    return buf;
+}
+
+const char *platform_executable_path(char *buf, int bufsize)
+{
+    char resolved[PATH_MAX];
+    if (!executable_resolved(resolved))
+        return NULL;
     if ((int)strlen(resolved) >= bufsize)
         return NULL;
     strcpy(buf, resolved);
@@ -1670,10 +1692,45 @@ int platform_socket_flush(PlatformSocket sh)
     return socket_flush_wbuf(sh);
 }
 
+/* "a.b.c.d" -> the address in host byte order; 0 for anything else.  A
+ * parser of our own rather than inet_addr(): the same 15 lines on every
+ * platform, and no dependence on which of inet_aton / inet_pton the C
+ * library of the day provides. */
+static int parse_ipv4(const char *s, uint32_t *out)
+{
+    uint32_t value = 0;
+    int part;
+    for (part = 0; part < 4; part++) {
+        int digits = 0, octet = 0;
+        while (*s >= '0' && *s <= '9' && digits < 3) {
+            octet = octet * 10 + (*s - '0');
+            s++; digits++;
+        }
+        if (digits == 0 || octet > 255) return 0;
+        value = (value << 8) | (uint32_t)octet;
+        if (part < 3) {
+            if (*s != '.') return 0;
+            s++;
+        }
+    }
+    if (*s != '\0') return 0;
+    *out = value;
+    return 1;
+}
+
 PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port)
+{
+    return platform_socket_listen_addr(port, loopback ? "127.0.0.1" : NULL, actual_port);
+}
+
+PlatformSocket platform_socket_listen_addr(int port, const char *bind_addr, int *actual_port)
 {
     struct sockaddr_in addr;
     int fd, on = 1;
+    uint32_t ip = INADDR_ANY;
+
+    if (bind_addr && !parse_ipv4(bind_addr, &ip))
+        return PLATFORM_SOCKET_INVALID;
 
     socket_table_ensure_init();
 
@@ -1686,7 +1743,7 @@ PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port)
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons((uint16_t)port);
-    addr.sin_addr.s_addr = htonl(loopback ? INADDR_LOOPBACK : INADDR_ANY);
+    addr.sin_addr.s_addr = htonl(ip);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);

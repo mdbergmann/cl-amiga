@@ -769,6 +769,21 @@ Runnable macros are in [`examples/amiga/arexx/`](examples/amiga/arexx/): `clamig
 
 The command layer is portable Lisp (`lib/dev-commands.lisp`, package `EXT.DEV`) and runs on the host too, so `(ext.dev:handle-command "LOAD foo.lisp")` is testable without an Amiga; see `tests/test_dev_commands.sh` for the executable specification and `tests/amiga/arexx-tests.lisp` for the end-to-end port test. Your own verbs go in with `ext.dev:define-command`; a verb whose argument is text rather than syntax (an editor taking the REPL thread's `OUTPUT <chunk>`) uses `ext.dev:define-raw-command` and receives it verbatim, blanks and newlines included.
 
+## TCP development port (all platforms)
+
+The same commands over TCP: what the host Clamacs (macOS) talks to, and what lets a Clamacs on a Mac drive a clamiga on an Amiga across the LAN. Start it from inside clamiga:
+
+```lisp
+(require "dev-tcp")
+(ext.dev.tcp:start)                          ; 127.0.0.1:4005, token drawn and printed once
+(ext.dev.tcp:start :port 4005 :token "...")  ; a token of your own (an Amiga has no /dev/urandom)
+(ext.dev.tcp:start :host "192.168.1.5")      ; reachable from the LAN -- on this one address only
+```
+
+Every connection must authenticate before anything is served, the port binds loopback unless `:host` names one address of the machine (never a wildcard), and `start` refuses to listen without a token -- one it drew from the OS entropy source (printed to clamiga's own output, once) or the `:token` it was given. `(ext.dev.tcp:stop)` takes it down, and so does the process exit; `(ext.dev.tcp:wait)` blocks until then, which is what a `--load` file whose only job is to serve the port ends with. A port serves at most 8 connections at once, 3 of them before their `AUTH` (`ext.dev.tcp:*max-connections*` / `*max-unauthenticated*`); one beyond that is closed unanswered. On a trusted network the token authenticates but nothing is encrypted.
+
+The protocol is a length-framed line in each direction -- a request is `<n>\n` followed by `n` characters of command line, a reply `<rc> <n>\n` followed by the text, `<n>` counting characters with the bytes in UTF-8 -- and the first request on a connection is `AUTH <token>`, answered `0 2\nOK`. Every command of the table above works unchanged; the REPL attaches with `REPL-ATTACH tcp:<host>:<port>/<token>`, naming the *editor's* port and token, and clamiga's REPL thread opens a connection back to it for `OUTPUT`, `READLINE`, `RESULT` and `DEBUGGER`. `ext.dev.tcp:connect` / `ext.dev.tcp:request` are the client side in Lisp. `tests/test_dev_tcp.sh` is the executable specification (the refusals included), `tests/amiga/dev-tcp-tests.lisp` the same server on the Amiga's TCP stack.
+
 ## Package Reference
 
 Beyond `COMMON-LISP` / `COMMON-LISP-USER`, CL-Amiga ships several packages for

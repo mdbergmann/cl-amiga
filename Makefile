@@ -240,7 +240,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_fasl_reader_unwind test_mt_lock_contention_throughput \
                 test_mp_heap_locks \
                 test_mt_print_stress test_load_keywords test_load_rebind \
-                test_dev_commands test_userinit test_compile_file_package \
+                test_dev_commands test_dev_tcp test_userinit test_compile_file_package \
                 test_compile_file_stderr test_fasl_cache_dir test_fasl_struct_deps test_fasl_literal_identity test_make_load_form \
                 test_struct_slot_access test_defconstant_fasl test_peephole_diff \
                 test_tier4_phase1 test_tier4_phase2 test_tier4_phase3 test_local_inline \
@@ -356,6 +356,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_call_diag.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_defvar_init_once_fasl (CLAMIGA_GC_STRESS=1, forced compaction: DEFVAR's BOUNDP-guarded codegen) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_defvar_init_once_fasl.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_dev_tcp (CLAMIGA_GC_STRESS=1, forced compaction: the TCP dev port's frames, server, client, REPL leg and the two builtins under it) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_dev_tcp.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 
 # `make test-memleak` builds a DEBUG_MEM_TRACK binary — every platform_alloc
 # tagged with its call site — and asserts that a run ends with ZERO off-heap

@@ -964,6 +964,27 @@ const char *platform_executable_prefix(char *buf, int bufsize)
     return buf;
 }
 
+const char *platform_executable_path(char *buf, int bufsize)
+{
+    /* PROGDIR: plus the program's own file name (dos.library 36+ keeps the
+     * name for the process): what a Shell can start, whatever its cwd.
+     * GetProgramName hands back the command as the Shell found it, which
+     * can be a full path (Work:apps/clamiga) -- PROGDIR: already stands for
+     * its directory, so only the last component goes after it. */
+    char name[128];
+    const char *file;
+    if (!GetProgramName((STRPTR)name, (LONG)sizeof(name)) || name[0] == '\0')
+        return NULL;
+    file = (const char *)FilePart((STRPTR)name);
+    if (file[0] == '\0')
+        return NULL;
+    if (bufsize < (int)(sizeof("PROGDIR:") + strlen(file)))
+        return NULL;
+    strcpy(buf, "PROGDIR:");
+    strcat(buf, file);
+    return buf;
+}
+
 long platform_stack_headroom(void)
 {
 #ifdef PLATFORM_MORPHOS
@@ -1361,7 +1382,9 @@ typedef struct SockReq {
     PlatformSocket slot;         /* target slot (read/write/close; listener for accept) */
     const char    *host;         /* connect */
     int            port;         /* connect / listen */
-    int            loopback;     /* listen */
+    int            loopback;     /* listen: 127.0.0.1 only */
+    uint32_t       bind_addr;    /* listen: the one address to bind, host
+                                    order; 0 (with loopback 0) = every one */
     char          *buf;          /* readfill destination / write source */
     uint32_t       len;          /* readfill capacity / write length */
     int            timeout_ms;   /* readfill/write: 0 = block forever, else deadline */
@@ -2139,7 +2162,8 @@ static void reactor_do_listen(SockReq *req)
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons((unsigned short)req->port);
-    addr.sin_addr.s_addr = htonl(req->loopback ? INADDR_LOOPBACK : INADDR_ANY);
+    addr.sin_addr.s_addr = htonl(req->loopback ? INADDR_LOOPBACK
+                                 : req->bind_addr ? req->bind_addr : INADDR_ANY);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 4) < 0) {
         CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return;
@@ -3026,6 +3050,45 @@ PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port)
     SockReq req;
     memset(&req, 0, sizeof(req));
     req.op = REQ_LISTEN; req.port = port; req.loopback = loopback;
+    sock_call(&req);
+    if (req.out_slot != PLATFORM_SOCKET_INVALID && actual_port)
+        *actual_port = req.out_port;
+    return req.out_slot;
+}
+
+/* "a.b.c.d" -> the address in host byte order; 0 for anything else.  Parsed
+ * here, on the caller's task: inet_addr() is a bsdsocket.library call and
+ * the library base belongs to the reactor task. */
+static int parse_ipv4(const char *s, uint32_t *out)
+{
+    uint32_t value = 0;
+    int part;
+    for (part = 0; part < 4; part++) {
+        int digits = 0, octet = 0;
+        while (*s >= '0' && *s <= '9' && digits < 3) {
+            octet = octet * 10 + (*s - '0');
+            s++; digits++;
+        }
+        if (digits == 0 || octet > 255) return 0;
+        value = (value << 8) | (uint32_t)octet;
+        if (part < 3) {
+            if (*s != '.') return 0;
+            s++;
+        }
+    }
+    if (*s != '\0') return 0;
+    *out = value;
+    return 1;
+}
+
+PlatformSocket platform_socket_listen_addr(int port, const char *bind_addr, int *actual_port)
+{
+    SockReq req;
+    uint32_t ip = 0;
+    if (bind_addr && !parse_ipv4(bind_addr, &ip))
+        return PLATFORM_SOCKET_INVALID;
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_LISTEN; req.port = port; req.loopback = 0; req.bind_addr = ip;
     sock_call(&req);
     if (req.out_slot != PLATFORM_SOCKET_INVALID && actual_port)
         *actual_port = req.out_port;

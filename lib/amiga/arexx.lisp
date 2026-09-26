@@ -170,7 +170,22 @@ own port end to end without needing RexxMast."
   (amiga:arexx-send port command result-size))
 
 ;; The editor's REPL (lib/dev-repl.lisp) sends its OUTPUT / READLINE /
-;; RESULT traffic to the editor's own port with this.
-(setf ext.dev:*repl-send* #'send)
+;; RESULT traffic to the editor's own port with this.  A port name that is
+;; another transport's (`tcp:HOST:PORT/TOKEN', lib/dev-tcp.lisp) goes on
+;; to the sender that was installed before, so the two files may load in
+;; either order; installed once, however often this file is loaded.
+(defvar *previous-repl-send* nil)
+(defvar *send-installed* nil)
+
+(unless *send-installed*
+  (setf *previous-repl-send* ext.dev:*repl-send*
+        *send-installed* t
+        ext.dev:*repl-send*
+        (lambda (port command)
+          (if (and *previous-repl-send*
+                   (> (length port) 4)
+                   (string-equal port "tcp:" :end1 4))
+              (funcall *previous-repl-send* port command)
+              (send port command)))))
 
 (provide "amiga/arexx")

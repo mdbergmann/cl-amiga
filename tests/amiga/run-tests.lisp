@@ -4606,6 +4606,34 @@ y" 1))
 (check "socket-local-port on non-listener errors" :not-a-listener
   (handler-case (ext:socket-local-port (make-string-output-stream))
     (error (c) (declare (ignore c)) :not-a-listener)))
+; A named bind: the one address a listener takes as a string ("127.0.0.1"
+; spelled out serves loopback as T does); an address no interface has is
+; refused, with the address in the message.
+(check "socket-listen on a named address" 81  ; #\Q
+  (let ((l (ext:socket-listen 0 "127.0.0.1")))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p))
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (progn (write-char #\Q c) (force-output c) (char-code (read-char s)))
+             (close c) (close s)))
+      (close l))))
+(check "socket-listen refuses an address this machine does not have" :refused
+  (handler-case (progn (close (ext:socket-listen 0 "203.0.113.1")) :listened)
+    (error (c) (and (search "203.0.113.1" (princ-to-string c)) :refused))))
+; PROGDIR: already is the binary's directory, so what follows it is the bare
+; file name -- a Shell that recorded the command as found (Work:apps/clamiga)
+; must not leave that path behind it.
+(check "executable-path is PROGDIR: plus the binary's bare file name" t
+  (let ((p (ext:executable-path)))
+    (and (stringp p)
+         (> (length p) 8)
+         (string= "PROGDIR:" p :end2 8)
+         (let ((tail (subseq p 8)))
+           (and (not (find-if (lambda (c) (find c ":/")) tail))
+                (search "clamiga" tail :test #'char-equal)))
+         t)))
 ; Full round-trip driven entirely by the OS-assigned port from socket-local-port
 ; (the exact shape a Sly/SLYNK server uses to advertise its port).
 (check "socket round-trip via local-port" 90  ; #\Z
@@ -11812,6 +11840,16 @@ y" 1))
   (error (e)
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: dev-repl tests could not run: ~A~%" e)))
+
+; --- The development port over TCP (lib/dev-tcp.lisp) ---
+; The same server the host test drives, over loopback in the emulator:
+; the AUTH gate, a command, the REPL's way back through a `tcp:' name.
+; The file skips with a note when no TCP stack is up.
+#+amigaos
+(handler-case (load "tests/amiga/dev-tcp-tests.lisp")
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: dev-tcp tests could not run: ~A~%" e)))
 
 ; --- TLS over AmiSSL (AmigaOS / MorphOS) ---
 ; Loopback client/server through the reactor-owned TLS provider.  The file

@@ -30,7 +30,7 @@ read/write deadlines via `socket-stream-timeout` — a timed-out operation signa
 | Signature | Kind | Description |
 |-----------|------|-------------|
 | `(open-tcp-stream host port &optional connect-timeout)` | function | Connect to `host` `port`, return a bidirectional character stream |
-| `(socket-listen port &optional loopback)` | function | Open a listening server socket on a port (port `0` picks a free one; `loopback` non-`nil` binds 127.0.0.1 only) |
+| `(socket-listen port &optional address)` | function | Open a listening server socket on a port (port `0` picks a free one). `address` `t` binds 127.0.0.1 only, `nil` every interface, and a string names one dotted-quad IPv4 address of this machine (`"192.168.1.5"`) to bind alone |
 | `(socket-accept listener)` | function | Accept one incoming connection, returning its stream |
 | `(socket-local-port listener)` | function | The local port a listening/connected socket is bound to |
 | `(socket-stream-timeout stream direction)` | function | `setf`-able place: read/write deadline for a socket stream (`direction` is `:input` / `:output`, value in seconds): `(setf (socket-stream-timeout stream direction) seconds)` |
@@ -88,6 +88,7 @@ End-to-end examples: `tests/tls-loopback.lisp`
 |-----------|------|-------------|
 | `(gc)` | function | Force a garbage collection (and compaction when fragmented) |
 | `(getenv name)` | function | Read an environment variable |
+| `(executable-path)` | function | The running clamiga as a path another process can start it by (`/usr/local/bin/clamiga`, `PROGDIR:clamiga`), or `nil` |
 | `(getcwd)` | function | Current working directory |
 | `(system-command command)` | function | Run a host/AmigaOS shell command |
 | `(defglobal name value &optional doc)` | macro | Define a global (non-dynamic) variable |

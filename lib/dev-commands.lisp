@@ -964,9 +964,13 @@ handler thread can see them; lib/dev-repl.lisp keeps it current.")
 ;;; ================================================================
 
 (defvar *repl-send* nil
-  "Function of (PORT COMMAND) that delivers COMMAND to the editor's ARexx
-port PORT, returning (values RC TEXT).  AMIGA.AREXX installs its SEND;
-the host tests install a Lisp function that stands in for the editor.")
+  "Function of (PORT COMMAND) that delivers COMMAND to the editor's port
+PORT, returning (values RC TEXT); an editor that cannot be reached is an
+error, which stops the REPL thread.  AMIGA.AREXX installs its SEND (an
+ARexx port name), EXT.DEV.TCP its own (a name of the form
+tcp:HOST:PORT/TOKEN); each passes a name that is the other's on to the
+function it found here, so they load in either order.  The host tests
+install a Lisp function that stands in for the editor.")
 
 (define-command "REPL-ATTACH" (arg)
   ;; Loading dev-repl replaces this entry with the real command.

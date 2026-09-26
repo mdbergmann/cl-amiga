@@ -44,14 +44,15 @@
 #                           positions) and only files with icons
 #
 # lib/ packaging policy (correctness, not preference):
-#   FASL   boot clos ffi gray-streams dev-commands dev-repl
+#   FASL   boot clos ffi gray-streams dev-commands dev-repl dev-tcp
 #          — self-contained, no reader conditionals / compile-time feature
 #          detection, so a host-compiled FASL is portable (FASLs are
 #          arch/endian-neutral; boot.fasl + clos.fasl have shipped this way
 #          all along).  dev-commands + dev-repl are the EXT.DEV command
 #          layer behind the ARexx development port: amiga/arexx REQUIREs
 #          them, so without them Clamacs cannot connect to a released
-#          clamiga at all.
+#          clamiga at all; dev-tcp is the same port over TCP (what a
+#          host Clamacs drives an Amiga clamiga through).
 #   FASL + SOURCE
 #          amiga/**       — the curated modules, AMIGA.REACTION and the
 #                           generated raw OS bindings (lib/amiga/raw/**): no
@@ -263,7 +264,7 @@ fi
 # CL_FASL_VERSION matches the packaged binaries exactly.  The script compiles
 # with CLAMIGA_FASL_PORTABLE=1 and refuses a module whose compile printed an
 # error or produced no FASL (see its header).
-FASL_LIBS="boot clos ffi gray-streams dev-commands dev-repl"
+FASL_LIBS="boot clos ffi gray-streams dev-commands dev-repl dev-tcp"
 echo "--- compile-file $FASL_LIBS -> $REL/lib/*.fasl ---"
 sh scripts/compile-lib-fasls.sh -o "$STAGE" -b "$HOST_BIN" \
     $(for m in $FASL_LIBS; do printf 'lib/%s.lisp ' "$m"; done) \
@@ -468,6 +469,8 @@ if [ "$SMOKE" = 1 ]; then
         --eval '(format t "DEV-COMMANDS ~a~%" (find-package "EXT.DEV"))' \
         --eval '(require "dev-repl")' \
         --eval '(format t "DEV-REPL ~a~%" (find-symbol "*REPL-THREAD-STACK-SIZE*" "EXT.DEV"))' \
+        --eval '(require "dev-tcp")' \
+        --eval '(format t "DEV-TCP ~a~%" (find-package "EXT.DEV.TCP"))' \
         --eval '(require "asdf")' \
         --eval '(format t "SHIM-AT ~a~%" (asdf:system-source-directory (asdf:find-system "cl+ssl")))' \
         --eval '(require "amiga/raw/exec")' \
@@ -515,6 +518,12 @@ if [ "$SMOKE" = 1 ]; then
     grep -q "; Loading .*rel/.*lib/dev-repl\.fasl" "$OUT/smoke.log" &&
     grep -q "^DEV-REPL \*REPL-THREAD-STACK-SIZE\*" "$OUT/smoke.log" || {
         echo "ERROR: dev-repl did not load from the release FASL — see $OUT/smoke.log" >&2
+        exit 1; }
+    # dev-tcp is the same port over TCP: what a host Clamacs drives an
+    # Amiga clamiga through.
+    grep -q "; Loading .*rel/.*lib/dev-tcp\.fasl" "$OUT/smoke.log" &&
+    grep -q "^DEV-TCP #<PACKAGE EXT.DEV.TCP>" "$OUT/smoke.log" || {
+        echo "ERROR: dev-tcp did not load from the release FASL — see $OUT/smoke.log" >&2
         exit 1; }
     # The AmigaGuide docs: one per shipped page, in the package root or under
     # docs/, each a real guide file (@DATABASE first) with its Workbench icon

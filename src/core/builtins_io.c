@@ -4433,6 +4433,21 @@ static CL_Obj bi_copy_rows(CL_Obj *args, int n)
     return args[0];
 }
 
+/* (ext:executable-path) => string or NIL
+ * The path of the running clamiga as another process can start it:
+ * "/usr/local/bin/clamiga" (symlinks resolved), "C:/.../clamiga.exe",
+ * "PROGDIR:clamiga".  NIL when the platform cannot tell.  What the host
+ * Clamacs starts a second clamiga with. */
+static CL_Obj bi_executable_path(CL_Obj *args, int n)
+{
+    char buf[1024];
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+    if (!platform_executable_path(buf, (int)sizeof(buf)))
+        return CL_NIL;
+    return cl_make_string(buf, (uint32_t)strlen(buf));
+}
+
 static CL_Obj bi_getenv(CL_Obj *args, int n)
 {
     CL_Obj name_obj = args[0];
@@ -4560,26 +4575,49 @@ static CL_Obj bi_open_tcp_stream(CL_Obj *args, int n)
     return stream;
 }
 
-/* (ext:socket-listen port &optional loopback) => listening socket stream
- * Binds a TCP server socket to `port` and starts listening.  When `loopback`
- * is non-NIL it binds 127.0.0.1 only; otherwise it accepts on all interfaces.
- * A port of 0 lets the OS pick an ephemeral port.  Use ext:socket-accept to
- * wait for and accept client connections.  Close it with CLOSE. */
+/* (ext:socket-listen port &optional address) => listening socket stream
+ * Binds a TCP server socket to `port` and starts listening.  ADDRESS says
+ * where: T binds 127.0.0.1 only, NIL (or omitted) every interface, and a
+ * string names ONE dotted-quad IPv4 address of this machine ("192.168.1.5";
+ * "0.0.0.0" is every interface again) -- what a development port that must
+ * be reachable from another machine, and from nowhere else, binds.  A port
+ * of 0 lets the OS pick an ephemeral port.  Use ext:socket-accept to wait
+ * for and accept client connections.  Close it with CLOSE. */
 static CL_Obj bi_socket_listen(CL_Obj *args, int n)
 {
     CL_Obj port_obj = args[0];
-    int port, loopback;
+    int port;
     CL_Obj stream;
+    char addr_buf[16];
+    const char *addr = NULL;
     if (!CL_FIXNUM_P(port_obj))
         cl_error(CL_ERR_TYPE, "EXT:SOCKET-LISTEN: port must be an integer");
     port = CL_FIXNUM_VAL(port_obj);
     if (port < 0 || port > 65535)
         cl_error(CL_ERR_GENERAL, "EXT:SOCKET-LISTEN: port must be 0-65535");
-    loopback = (n >= 2 && !CL_NULL_P(args[1])) ? 1 : 0;
-    stream = cl_make_listen_stream(port, loopback, NULL);
-    if (CL_NULL_P(stream))
+    if (n >= 2 && CL_STRING_P(args[1])) {
+        /* Copied out of the arena: cl_make_listen_stream_addr allocates. */
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+        if (s->length == 0 || s->length >= sizeof(addr_buf))
+            cl_error(CL_ERR_GENERAL,
+                     "EXT:SOCKET-LISTEN: the address must be a dotted-quad IPv4 "
+                     "address such as \"192.168.1.5\" (T for 127.0.0.1, NIL for every interface)");
+        memcpy(addr_buf, s->data, s->length);
+        addr_buf[s->length] = '\0';
+        addr = addr_buf;
+    } else if (n >= 2 && !CL_NULL_P(args[1])) {
+        addr = "127.0.0.1";
+    }
+    stream = cl_make_listen_stream_addr(port, addr, NULL);
+    if (CL_NULL_P(stream)) {
+        if (addr && addr == addr_buf)
+            cl_error(CL_ERR_GENERAL,
+                     "EXT:SOCKET-LISTEN: failed to bind/listen on %s:%d (is it a "
+                     "dotted-quad address of an interface of this machine?)",
+                     addr_buf, port);
         cl_error(CL_ERR_GENERAL,
                  "EXT:SOCKET-LISTEN: failed to bind/listen on port %d", port);
+    }
     return stream;
 }
 
@@ -5226,6 +5264,7 @@ void cl_builtins_io_init(void)
     extfun("%HEAP-VERIFY", bi_ext_heap_verify, 0, 0);
     extfun("%CPU-STORE-SELFTEST", bi_ext_cpu_store_selftest, 0, 1);
     extfun("GETENV", bi_getenv, 1, 1);
+    extfun("EXECUTABLE-PATH", bi_executable_path, 0, 0);
     extfun("UNPACK-BYTERUN1", bi_unpack_byterun1, 5, 6);
     extfun("COPY-ROWS", bi_copy_rows, 8, 8);
     extfun("GETCWD", bi_getcwd, 0, 0);

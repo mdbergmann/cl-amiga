@@ -175,6 +175,9 @@ CL_Obj cl_make_udp_socket_stream(const char *host, int port);
  * When actual_port != NULL the OS-assigned port (relevant if port==0) is
  * written there.  Returns CL_NIL on failure. */
 CL_Obj cl_make_listen_stream(int port, int loopback, int *actual_port);
+/* The same, bound to one dotted-quad IPv4 address (NULL: every interface);
+ * NIL when the address is not one of this machine's or not dotted-quad. */
+CL_Obj cl_make_listen_stream_addr(int port, const char *bind_addr, int *actual_port);
 
 /* Accept one connection on a listening socket stream (blocks).
  * Returns a bidirectional socket stream, or CL_NIL on error. */
