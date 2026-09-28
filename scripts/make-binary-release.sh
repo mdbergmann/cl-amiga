@@ -320,10 +320,15 @@ grep -q "^CLAMACS-FASLS #<PACKAGE CLAMACS>" "$CLAMACS_LOG" &&
     exit 1; }
 # Every module load.lisp compiles must have left a FASL.  load.lisp itself
 # and clamacs.lisp (the run-from-source entry point) are not modules: they
-# ship as sources only and never get one.
+# ship as sources only and never get one.  Neither do the host editor's
+# three (the webview frontend, its port and the TCP wire -- the set
+# clamacs.lisp binds off the Amiga): they are compiled and loaded only on
+# macOS/Linux/Windows, where the editor runs from the source tree.
 for f in clamacs/lisp/*.lisp; do
     name=$(basename "${f%.lisp}")
-    case "$name" in load|clamacs) continue ;; esac
+    case "$name" in
+        load|clamacs|frontend-host|transport-host|transport-tcp) continue ;;
+    esac
     [ -s "$STAGE/lib/clamacs/$name.fasl" ] || {
         echo "ERROR: lib/clamacs/$name.fasl was not written — see $CLAMACS_LOG" >&2
         exit 1; }
