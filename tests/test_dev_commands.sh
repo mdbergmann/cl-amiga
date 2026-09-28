@@ -359,6 +359,15 @@ check "COMPLETE takes an explicit package"   '^handle-command$' "$out"
 out=$(run_intro 'COMPLETE zzz-nothing')
 check "COMPLETE with no candidate is rc 0"   '<<RC=0>>' "$out"
 
+# No symbol starts with `tro-': the ones that contain it (and only then,
+# checked below with the complete-order script).
+out=$(run_intro 'COMPLETE tro-')
+check "COMPLETE falls back to names containing the text" '^intro-fn$' "$out"
+check "COMPLETE fallback lists the macro too" '^intro-mac$' "$out"
+check "COMPLETE fallback is sorted"          'intro-fn.*intro-gf.*intro-mac.*intro-other' "$(echo "$out" | tr '\n' ' ')"
+out=$(run_intro 'COMPLETE cl:tiple-value-b')
+check "COMPLETE fallback keeps the package prefix" '^cl:multiple-value-bind$' "$out"
+
 out=$(run_intro 'COMPLETE x nopkg')
 check "COMPLETE with an unknown package is rc 10" 'no such package: nopkg' "$out"
 
@@ -373,10 +382,15 @@ cat > "$TMPD/complete-order.lisp" <<EOF
 (let ((ext.dev:*max-completions* 2))
   (multiple-value-bind (rc text) (ext.dev:handle-command "COMPLETE m")
     (format t "~&<<CAP rc=~d lines=~d>>~%" rc (1+ (count #\\Newline text)))))
+;; intro- has prefix matches: MAPCAR-INTRO-INTERNAL, which only contains
+;; it, is not among them.
+(multiple-value-bind (rc text) (ext.dev:handle-command "COMPLETE intro-")
+  (format t "~&<<PREFIX rc=~d diluted=~a>>~%" rc (and (search "mapcar" text) t)))
 EOF
 out=$(run_script "$TMPD/complete-order.lisp")
 check "COMPLETE puts exported candidates first" 'mapcar mapcar-intro-internal' "$out"
 check "COMPLETE caps the candidate list"     '<<CAP rc=0 lines=2>>' "$out"
+check "COMPLETE prefix matches are not diluted with substring matches" '<<PREFIX rc=0 diluted=NIL>>' "$out"
 
 # --- DESCRIBE --------------------------------------------------------------
 

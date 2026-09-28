@@ -138,6 +138,13 @@
                       (search "arexx-intro-mac" text)
                       (< (search "arexx-intro-fn" text) (search "arexx-intro-mac" text))
                       t)))
+        ;; No symbol starts with `xx-intro-': the ones that contain it.
+        (multiple-value-bind (rc text) (amiga.arexx:send port "COMPLETE xx-intro-")
+          (check "arexx COMPLETE fallback rc" 0 rc)
+          (check "arexx COMPLETE lists the names containing the text" t
+                 (and (search "arexx-intro-fn" text)
+                      (search "arexx-intro-mac" text)
+                      t)))
         (multiple-value-bind (rc text) (amiga.arexx:send port "DESCRIBE arexx-intro-fn")
           (check "arexx DESCRIBE rc" 0 rc)
           (check "arexx DESCRIBE shows the lambda list" t

@@ -738,7 +738,7 @@ Work:src/foo.lisp:40: ERROR: Too many arguments to DRAW: expected 2, got 3
 | `IN-PACKAGE <pkg>` | Set the package used by `EVAL`, `LOAD` and the commands below |
 | `LASTRESULT` | Re-fetch the previous reply (see below) |
 | `ARGLIST <symbol>` | The lambda list, on one line, in lower case: a function's as written, a macro's, a generic function's, a builtin's with `arg0 arg1 ...` placeholders, a special operator's from a table |
-| `COMPLETE <prefix> [<pkg>]` | One candidate per line, exported symbols first, each group sorted, at most `ext.dev:*max-completions*` (200); `cl:map`, `pkg::name` and `:key` prefixes are honoured and kept |
+| `COMPLETE <prefix> [<pkg>]` | One candidate per line, exported symbols first, each group sorted, at most `ext.dev:*max-completions*` (200); `cl:map`, `pkg::name` and `:key` prefixes are honoured and kept; when no name starts with the text, the names that contain it |
 | `DESCRIBE <symbol>` | `describe` output (lambda list, docstring, source file:line included) |
 | `APROPOS <string> [<pkg>]` | One matching symbol per line with its kinds: `function`, `macro`, `special-operator`, `variable`, `class`; the symbols accessible in `<pkg>`, or in the command package |
 | `SOURCE-LOCATION <symbol>` | `<file>:<line>` of the definition; rc 10 when none was recorded |

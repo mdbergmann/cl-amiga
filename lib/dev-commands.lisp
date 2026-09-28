@@ -550,8 +550,10 @@ served by the common prefix than by the list.")
   "(values CANDIDATES NIL) or (values NIL REASON).  CANDIDATES are the
 symbol names starting with PREFIX -- spelled PKG:NAME / PKG::NAME / :NAME
 as PREFIX was -- exported ones first, each group sorted, capped at
-*MAX-COMPLETIONS*.  PACKAGE-NAME, when given, is where to look; otherwise
-the package part of PREFIX, else *COMMAND-PACKAGE*."
+*MAX-COMPLETIONS*.  When no name starts with it, the names that contain
+it, the same way: `foo-' finds MAKE-FOO-THING for a user who remembers
+the middle of a name.  PACKAGE-NAME, when given, is where to look;
+otherwise the package part of PREFIX, else *COMMAND-PACKAGE*."
   (multiple-value-bind (pkg-prefix name internal-p) (%split-symbol-name prefix)
     (let* ((pkg-designator (or package-name pkg-prefix))
            (pkg (if pkg-designator
@@ -573,13 +575,18 @@ the package part of PREFIX, else *COMMAND-PACKAGE*."
       (if (null pkg)
           (values nil (format nil "no such package: ~a" pkg-designator))
           (progn
-            (do-symbols (s pkg)
-              (when (%prefix-p uname (symbol-name s))
-                (multiple-value-bind (found status) (find-symbol (symbol-name s) pkg)
-                  (declare (ignore found))
-                  (if (eq status :internal)
-                      (unless externals-only (pushnew s internal))
-                      (pushnew s external)))))
+            (flet ((collect (matches-p)
+                     (do-symbols (s pkg)
+                       (when (funcall matches-p uname (symbol-name s))
+                         (multiple-value-bind (found status) (find-symbol (symbol-name s) pkg)
+                           (declare (ignore found))
+                           (if (eq status :internal)
+                               (unless externals-only (pushnew s internal))
+                               (pushnew s external)))))))
+              (collect #'%prefix-p)
+              ;; Nothing starts with it: what contains it.
+              (when (and (null external) (null internal) (plusp (length uname)))
+                (collect (lambda (part name) (and (search part name) t)))))
             (let ((names
                     (%with-reply-printing
                       (let ((*print-gensym* nil))
