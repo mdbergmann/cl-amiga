@@ -669,7 +669,7 @@ Then run `icl --lisp clamiga`. ICL spawns clamiga, loads SLYNK via ASDF, and con
 
 ![The Clamacs icon: a lambda on a blue card, the icon of Clamacs.app on a Mac and the lambda card of the Workbench icons](docs/scrshts/clamacs-icon.png)
 
-[Clamacs](https://github.com/mdbergmann/clamacs) is an Emacs-flavoured Common Lisp editor and IDE for AmigaOS 3 and MorphOS: a native MUI application (a subclass of `TextEditor.mcc` with Emacs key handling, minibuffer, kill ring, Lisp indentation and sexp navigation) that drives a running clamiga over the [ARexx port](#arexx-port-amigaos--morphos) below — load, compile and evaluate from the buffer with clickable diagnostics, arglists, completion, jump to definition, describe and apropos, a REPL window (`C-c C-z`) fed by a REPL thread in clamiga, a debugger window (restarts, backtrace, locals, eval in a frame) and an inspector (`C-c I`). It is the on-Amiga counterpart to the SLY setup above: two processes, so a GC pause or a crash in one never freezes the other.
+[Clamacs](https://github.com/mdbergmann/clamacs) is an Emacs-flavoured Common Lisp editor and IDE for AmigaOS 3 and MorphOS, with a host variant for macOS and Linux (below): on the Amiga a native MUI application (a subclass of `TextEditor.mcc` with Emacs key handling, minibuffer, kill ring, Lisp indentation and sexp navigation) that drives a running clamiga over the [ARexx port](#arexx-port-amigaos--morphos) below — load, compile and evaluate from the buffer with clickable diagnostics, arglists, completion, jump to definition, describe and apropos, a REPL window (`C-c C-z`) fed by a REPL thread in clamiga, a debugger window (restarts, backtrace, locals, eval in a frame) and an inspector (`C-c I`). It is the on-Amiga counterpart to the SLY setup above: two processes, so a GC pause or a crash in one never freezes the other.
 
 ![Clamacs on a Vampire V4: the editor, the REPL window and the debugger window](https://raw.githubusercontent.com/mdbergmann/clamacs/master/docs/screenshots/debugger.png)
 
@@ -689,7 +689,7 @@ bin/aos3/clamiga --image bin/aos3/clamacs.img --non-interactive --eval "(clamacs
 
 (the `Clamacs` Workbench icon runs that line; from a checkout, `clamiga --heap 8M --non-interactive --load clamacs/lisp/clamacs.lisp -- file.lisp` loads it from source). `S:.clamacsrc` is loaded before the first window opens and can define commands and bind keys (see `clamacs.guide`).
 
-The same editor runs on macOS and Linux, in one native window with the buffers as tabs (its menus on the screen's menu bar on a Mac): `clamacs/host/run.sh file.lisp` starts it from a checkout (`make host-app` in the submodule builds `Clamacs.app` on a Mac), and the Lisp behind it is a separate clamiga reached over the [TCP development port](#tcp-development-port-all-platforms) below, started by the editor itself or found through `CLAMACS_CLAMIGA=host:port`. The submodule's README has the details under [On the host](https://github.com/mdbergmann/clamacs#on-the-host-macos-linux).
+**On the host.** The same editor runs on macOS and Linux, in one native window with the buffers as tabs (its menus on the screen's menu bar on a Mac): `clamacs/host/run.sh file.lisp` starts it from a checkout (`make host-app` in the submodule builds `Clamacs.app` on a Mac), and the Lisp behind it is a separate clamiga reached over the [TCP development port](#tcp-development-port-all-platforms) below, started by the editor itself or found through `CLAMACS_CLAMIGA=host:port`. The submodule's README has the details under [On the host](https://github.com/mdbergmann/clamacs#on-the-host-macos-linux).
 
 The editor's own suites and design notes are in the submodule (`clamacs/README.md`, `clamacs/CLAUDE.md`, `clamacs/specs/clamacs-lisp.md`); the Lisp-side commands it speaks are `EXT.DEV` (`lib/dev-commands.lisp`, `tests/test_dev_commands.sh`). `make -f Makefile.cross editor-image-amiga` saves and verifies a `clamacs.img` beside a cross build in FS-UAE, `make -f Makefile.mos editor-image` does the same natively on MorphOS.
 
@@ -2246,7 +2246,7 @@ examples/
     gfx/            Graphics demos (bouncing-lines, doublebuffer, sprite)
     reaction/       ReAction GUI examples ported from the NDK 3.2 (buttons, checkbox, chooser, ...)
     mui/            MUI GUI examples (hello)
-clamacs/          Clamacs, the native MUI editor/IDE (git submodule, shipped in the binary release)
+clamacs/          Clamacs, the native MUI editor/IDE, with a macOS/Linux host variant (git submodule, shipped in the binary release)
 tests/
   test_*.c        Host test suites (C)
   amiga/          Amiga test suite (Lisp)
