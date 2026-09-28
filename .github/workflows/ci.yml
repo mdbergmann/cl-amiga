@@ -60,9 +60,13 @@ jobs:
           # openssl is not linked against — the TLS backend dlopens it at run
           # time — but its presence is what lets the TLS tests actually run
           # instead of reporting "no provider".
+          # perl is not in the MSYS2 base install any more (dropped
+          # 2026-09-27); three shell tests need it (the ASCII-literal check,
+          # the gc-arg-order lint, the exit-drain millisecond clock).
           install: >-
             make
             diffutils
+            perl
             mingw-w64-clang-aarch64-clang
             mingw-w64-clang-aarch64-libffi
             mingw-w64-clang-aarch64-pkgconf

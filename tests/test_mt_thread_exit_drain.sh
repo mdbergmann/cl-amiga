@@ -34,7 +34,18 @@ fails=0
 fail() { echo "FAIL $1"; fails=$((fails + 1)); }
 ok()   { echo "  ok  $1"; }
 
-now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
+# A millisecond clock: perl where there is one, date +%N otherwise (GNU and
+# recent BSD; an older BSD date prints a literal N).  Without either the
+# wall-time checks below would compare against 0 and fail for the wrong
+# reason, so say so and skip.
+if command -v perl >/dev/null 2>&1; then
+    now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
+elif date +%N 2>/dev/null | grep -qx '[0-9][0-9]*'; then
+    now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
+else
+    echo "SKIP test_mt_thread_exit_drain: no millisecond clock (neither perl nor GNU date)"
+    exit 0
+fi
 
 # --- the hooks -----------------------------------------------------------
 cat > "$tmp/hooks.lisp" <<'EOF'

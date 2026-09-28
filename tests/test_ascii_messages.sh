@@ -16,6 +16,13 @@
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 status=0
 
+# The scanners below are perl one-liners under xargs; without perl they
+# find nothing and the check would pass vacuously -- skip out loud instead.
+if ! command -v perl >/dev/null 2>&1; then
+    echo "  skip  ascii_messages (no perl)"
+    exit 0
+fi
+
 # C: drop /* */ and // comments, then report every "..." literal that holds
 # a byte above 0x7F.  A `//' inside a string ("http://...") loses the rest
 # of that line to the comment stripper, which only ever hides a literal --
