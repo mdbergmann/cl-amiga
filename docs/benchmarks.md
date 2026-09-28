@@ -7,6 +7,47 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-09-28 — sento matrix for 0.11: five cells hold 0.10, pinned/tell −15% (open), sento 3.5.0 +2% to +132%
+
+**Context**: the full matrix on `80572be7` (the 0.11 tree a week after
+its bump), same protocol as the 0.10 entry — cold cache, speed 3, the
+bench's default queue cap, sento 3.4.5 pinned — with a same-session A/B
+against a binary built from the 0.10 bump (`814c7017`), and both binaries
+again on sento 3.5.0. Full entry:
+[sento-bench-results-0.11.md](sento-bench-results-0.11.md).
+
+| Cell | 0.11 (3.4.5) | 0.10 binary (3.4.5) | 0.11 vs 0.10 | 0.11 (3.5.0) | 3.5.0 vs 3.4.5 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| pinned/tell | 287,984 | 325,110 | −11.4% (interleaved: −15%, 9 of 9 pairs) | 370,121 | +28.5% |
+| pinned/ask-s | 135,934 | 142,576 | −4.7% (warm repeat +1.5%) | 138,258 | +1.7% |
+| pinned/ask | 33,440 | 33,755 | −0.9% | 77,706 | +132% |
+| shared/tell | 121,895 | 122,712 | −0.7% | 254,813 | +109% |
+| shared/ask-s | 69,404 | 69,828 | −0.6% | 106,330 | +53.2% |
+| shared/ask | 28,171 | 28,698 | −1.8% | 61,506 | +118% |
+
+**Finding**: the 0.11 cycle left the host message path alone, and five
+cells say so. Pinned/tell is 15% under the 0.10 binary in nine of nine
+interleaved single-cell pairs while every row underneath it reads equal
+or faster on 0.11 — all 34 `bench-opt` rows (the `vm.*` rows 4–10%
+faster, `safety1.svref-loop` −20% from the AREF opcode), all 40
+`bench-prims` rows (locks, condvars, handler-case, struct access, calls),
+a contended eight-producer lock-and-condvar probe, and the GC telemetry.
+An interleaved bisect (three pairs per step) gives a slope of +10% →
++5.5% → +1.6% → −5% → −2% across commits #24, #30, #31, #33, #36 of 48,
+inside the probe's ±5% resolution, and the commits it brackets do not run
+on the path; the entry argues for a cache-line layout effect (38 writable
+statics differ between the binaries) and leaves it open. sento 3.5.0
+(batch dequeue under one lock, direct dispatch into workers, futures
+resolved from the reply, notify-when-waiting queues) doubles the two
+async cells and shared/tell on either binary, so the 0.11 / 3.5.0 column
+is the one to carry forward.
+
+Reproduce: as the 0.10 entry, plus `ATOMICS_DIR=<sento worktree>` per
+leg; single-cell pairs = the matrix driver with five `run-cell` lines
+removed, one process per run, alternating binaries.
+
+---
+
 ## 2026-09-22 — JIT compiles when hot: boot 720 → 520 ms, native code for boot + editor 857 KB → 35 KB
 
 **Context**: the m68k JIT compiled every function at definition, which
