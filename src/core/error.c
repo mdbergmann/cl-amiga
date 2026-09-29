@@ -417,6 +417,8 @@ void cl_error(int code, const char *fmt, ...)
  * emitting a "Debugger entered" banner on every disconnect. */
 CL_NORETURN void cl_abort_current_thread(const char *msg)
 {
+    /* A wanted death, not one to report (see cl_run_thread_death_hooks). */
+    CT->destroyed = 1;
     cl_error_code = CL_ERR_GENERAL;
     strncpy(cl_error_msg, msg, sizeof(cl_error_msg) - 1);
     cl_error_msg[sizeof(cl_error_msg) - 1] = '\0';

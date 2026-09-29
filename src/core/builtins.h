@@ -43,6 +43,14 @@ void cl_internal_time_init(void);
  * ends the sequence.  Idempotent — the list is taken before the first call. */
 void cl_run_exit_hooks(void);
 
+/* Funcall the hooks in MP:*THREAD-DEATH-HOOKS* with (THREAD MESSAGE) on the
+ * current thread, which an unhandled error just ended: MSG is that error's
+ * text.  Called by the thread entry while the thread is still registered.
+ * Does nothing (and allocates nothing) while the list is empty.  Each hook
+ * runs in its own CL_CATCH; a hook that fails -- the heap may be as full as
+ * when the thread died -- is dropped, reported under CLAMIGA_THREAD_ERRORS. */
+void cl_run_thread_death_hooks(const char *msg);
+
 /* Register a builtin function in a specific package.
  * NAME must have static lifetime (every caller passes a string literal);
  * the image-relink registry below keeps the pointer for the life of the

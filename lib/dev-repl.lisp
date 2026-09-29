@@ -28,6 +28,12 @@
 ;;;       <values>           (one per line), or rc 10 and the error text;
 ;;;                          PKG is the current package for the prompt
 ;;;
+;;; A REPL thread that dies -- of the one error no handler sees, the heap
+;;; exhausted -- still ends its form with RESULT: rc 10, the error, and the
+;;; news that a new thread took its place (%REPL-THREAD-DIED, called through
+;;; MP:*THREAD-DEATH-HOOKS*).  The editor has its prompt back and its next
+;;; REPL-EVAL finds a REPL.
+;;;
 ;;; Why the editor never replies to READLINE directly: MUI answers an
 ;;; application's ARexx command the moment the command hook returns, so the
 ;;; editor cannot hold the reply until the user has typed the line.  The
@@ -421,10 +427,8 @@ checks on the REPL thread itself."
   (let ((getter (find-symbol "%JIT-FRAMES-P" "CLAMIGA")))
     (and getter (fboundp getter) (funcall getter))))
 
-(defun %repl-start (port debug)
-  (when debug
-    (setf *repl-jit-frames-before* (%repl-jit-frames-p))
-    (%repl-jit-frames t))
+(defun %repl-spawn (port debug)
+  "A fresh REPL thread for the editor's PORT, the shared state reset."
   (mp:with-lock-held (*repl-lock*)
     (setf *repl-port* port
           *repl-debug* debug
@@ -442,6 +446,47 @@ checks on the REPL thread itself."
                         :name "repl"
                         :stack-size *repl-thread-stack-size*
                         :vm-frames *repl-thread-vm-frames*)))
+
+(defun %repl-start (port debug)
+  (when debug
+    (setf *repl-jit-frames-before* (%repl-jit-frames-p))
+    (%repl-jit-frames t))
+  (%repl-spawn port debug))
+
+;;; ----------------------------------------------------------------
+;;; A REPL thread that died
+;;;
+;;; Every error a form can signal ends in %REPL-RUN's HANDLER-CASE -- but
+;;; an exhausted heap is not signalled: the runtime drops the thread's
+;;; handlers and stacks and leaves through the thread's entry, so neither
+;;; that handler nor %REPL-LOOP's cleanup runs, and RESULT is never sent.
+;;; The editor would wait for it for good.  The runtime calls the hook
+;;; below on the dying thread instead, where the form's garbage is
+;;; collectable again: it starts a new REPL thread for the same editor
+;;; and sends the RESULT the form still owes.
+;;;
+;;; What this cannot cover: a thread that died holding the transport's
+;;; lock (it died inside a send), or a heap with no room left even for the
+;;; message.  The hook fails quietly then, the thread is simply gone, and
+;;; the editor finds out from "no REPL attached" as before.
+;;; ----------------------------------------------------------------
+
+(defun %repl-thread-died (thread message)
+  (when (and (eq thread *repl-thread*) *repl-port*)
+    (cond (*repl-stop*
+           ;; On its way out anyway: what %REPL-LOOP's cleanup would have done.
+           (mp:with-lock-held (*repl-lock*)
+             (setf *repl-busy* nil
+                   *repl-reading* nil
+                   *repl-port* nil)))
+          (t
+           (%repl-spawn *repl-port* *repl-debug*)
+           (%repl-send
+            (format nil "RESULT ~d ~a~%ERROR: ~a~%; The REPL thread ended with that error; a new one has taken its place"
+                    +rc-error+ (%prompt-package-name *command-package*)
+                    (%truncate message)))))))
+
+(pushnew '%repl-thread-died mp:*thread-death-hooks*)
 
 ;;; ----------------------------------------------------------------
 ;;; The debugger (on the REPL thread)

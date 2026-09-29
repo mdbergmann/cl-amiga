@@ -404,6 +404,9 @@ typedef struct CL_Thread_s {
     /* ---- Thread interruption ---- */
     volatile uint8_t interrupt_pending;   /* 1 = check interrupt_func or destroy */
     volatile uint8_t destroy_requested;   /* 1 = abort at next safepoint */
+    uint8_t destroyed;                    /* 1 = MP:DESTROY-THREAD is ending this thread
+                                           * (own thread only): its death is wanted,
+                                           * MP:*THREAD-DEATH-HOOKS* stay quiet */
     CL_Obj interrupt_func;               /* function for interrupt-thread */
 
     /* ---- Thread registry ---- */

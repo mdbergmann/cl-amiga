@@ -231,7 +231,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_mt_gc_compact_hang test_mt_stream_mutex_leak test_mt_dispatch_addmethod_race \
                 test_mt_dispatch_cache_race test_mt_thread_exit_gc test_mt_thread_identity \
                 test_mt_intern_stw test_mt_stream_close_race test_mt_interrupt_parked \
-                test_mt_thread_exit_drain test_mt_stop_workers \
+                test_mt_thread_exit_drain test_mt_stop_workers test_mt_thread_death_hook \
                 test_lock_diag test_break_diag test_call_diag test_heap_verify test_cpu_selftest test_debugger_backtrace test_backtrace_lines \
                 test_debugger_eof test_inspect_eof \
                 test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
@@ -326,6 +326,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) sh $(TEST_SRCDIR)/test_gc_stress_regression.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_mt_intern_stw (CLAMIGA_GC_STRESS=1) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_mt_intern_stw.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_mt_thread_death_hook (CLAMIGA_GC_STRESS=1) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_mt_thread_death_hook.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_peephole_diff (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_peephole_diff.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_tier4_phase1 (CLAMIGA_GC_STRESS=1, forced compaction) ---"

@@ -2047,6 +2047,78 @@ void cl_run_exit_hooks(void)
     CL_GC_UNPROTECT(2);
 }
 
+/* --- Thread death hooks (MP:*THREAD-DEATH-HOOKS*) -------------------------
+ *
+ * A worker thread that an unhandled error ends is gone without a word: its
+ * status says so to whoever asks, but nobody is told.  And the error that
+ * ends most of them in practice -- the heap exhausted, cl_storage_error --
+ * resets the handler and NLX stacks before it unwinds, so no HANDLER-CASE
+ * and no UNWIND-PROTECT in the thread's own code ever sees it.  The editor's
+ * REPL thread died that way in the middle of a system load, and the editor
+ * went on showing "Loading system ..." (lib/dev-repl.lisp is the first user).
+ *
+ * MP:*THREAD-DEATH-HOOKS* is a list of function designators, called with
+ * the thread object and the error's message, ON the dying thread, after its
+ * stacks were dropped and before it leaves the thread list -- so what the
+ * thread held is garbage by now and a hook has the room a collection finds.
+ * Not called for a thread that returned, that took its ABORT restart, or
+ * that MP:DESTROY-THREAD ended.  The symbol is looked up when a thread dies
+ * (rare) rather than cached in a static a heap image would have to carry. */
+void cl_run_thread_death_hooks(const char *msg)
+{
+    CL_Obj sym, hooks;
+    CL_Obj fn = CL_NIL, text = CL_NIL;
+    char saved[512];
+
+    sym = cl_find_symbol("*THREAD-DEATH-HOOKS*", 20, cl_package_mp);
+    if (!CL_SYMBOL_P(sym)) return;
+    hooks = cl_symbol_value(sym);
+    if (hooks == CL_UNBOUND || !CL_CONS_P(hooks)) return;
+
+    /* MSG is the thread's error buffer, which a failing hook writes over. */
+    strncpy(saved, msg ? msg : "", sizeof(saved) - 1);
+    saved[sizeof(saved) - 1] = '\0';
+
+    /* The error longjmp'd out of arbitrarily deep VM frames (see
+     * cl_run_exit_hooks). */
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+
+    /* Protected BEFORE the CL_CATCH, as in cl_run_exit_hooks: an unwind
+     * restores gc_root_count to a snapshot that still includes these. */
+    CL_GC_PROTECT(hooks);
+    CL_GC_PROTECT(fn);
+    CL_GC_PROTECT(text);
+    while (CL_CONS_P(hooks)) {
+        int err;
+        CL_CATCH(err);
+        if (err == CL_ERR_NONE) {
+            CL_Obj call_args[2];
+            /* Inside the catch: the string is the first allocation of a
+             * thread that may have died of having no room for one. */
+            text = cl_make_string(saved, (uint32_t)strlen(saved));
+            fn = cl_coerce_funcdesig(cl_car(hooks), "thread death hook");
+            call_args[0] = CT->thread_obj;
+            call_args[1] = text;
+            cl_vm_apply(fn, call_args, 2);
+            CL_UNCATCH();
+        } else {
+            char envbuf[8];
+            if (platform_getenv("CLAMIGA_THREAD_ERRORS", envbuf, sizeof(envbuf))) {
+                cl_write_cstring_to_error("; Warning: error in thread death hook: ");
+                cl_write_cstring_to_error(cl_error_msg);
+                cl_write_cstring_to_error("\n");
+            }
+            cl_vm.sp = 0;
+            cl_vm.fp = 0;
+            CL_UNCATCH();
+            if (err == CL_ERR_EXIT) break;   /* (QUIT) in a hook: no more */
+        }
+        hooks = cl_cdr(hooks);
+    }
+    CL_GC_UNPROTECT(3);
+}
+
 /* Single shared stub for CL functions not yet implemented in clamiga.
  * Any call signals an error; registering the stub satisfies FBOUNDP and
  * SYMBOL-FUNCTION checks in the ANSI test suite without a full implementation. */

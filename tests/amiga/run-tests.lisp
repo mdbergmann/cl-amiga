@@ -8784,6 +8784,28 @@ y" 1))
 (check "thread make with name" "worker"
   (mp:thread-name (mp:make-thread (lambda () nil) :name "worker")))
 
+; --- MP:*THREAD-DEATH-HOOKS* ---
+; A thread an unhandled error ends tells the hooks, on its own thread, with
+; the error's message; a thread that returned does not.  (The case the hook
+; was made for, a heap exhausted, is tests/test_mt_thread_death_hook.sh on
+; the host: exhausting the suite's heap here would take the run with it.)
+(defvar *death-hook-seen* nil)
+(defun death-hook-probe (thread message)
+  (push (list (mp:thread-name thread)
+              (and (search "death probe" message) t)
+              (eq thread (mp:current-thread)))
+        *death-hook-seen*))
+(check "thread death hooks start empty" nil mp:*thread-death-hooks*)
+(push 'death-hook-probe mp:*thread-death-hooks*)
+(check "thread death hook: not for a thread that returned" nil
+  (progn (mp:join-thread (mp:make-thread (lambda () 42) :name "returns"))
+         *death-hook-seen*))
+(check "thread death hook: called for an unhandled error" '(("dies" t t))
+  (let ((th (mp:make-thread (lambda () (error "death probe")) :name "dies")))
+    (loop repeat 200 while (mp:thread-alive-p th) do (sleep 0.05))
+    *death-hook-seen*))
+(setf mp:*thread-death-hooks* nil)
+
 ; --- Per-thread *PACKAGE* (SLYNK-IO-PACKAGE fasl-poisoning regression) ---
 ; cl_current_package used to be one shared C global: a *PACKAGE* bind on any
 ; thread redirected every other thread's reader/INTERN, so a Sly-session

@@ -38,6 +38,32 @@ with safepoints across all live threads.
 | `(interrupt-thread thread function)` | function | Run a function in the context of another thread |
 | `(destroy-thread thread)` | function | Forcibly terminate a thread |
 | `(dump-thread-waits)` | function | Debug: print what each thread is waiting on |
+| `*thread-death-hooks*` | variable | Functions called when an unhandled error ends a thread (below) |
+
+### Hearing of a thread that died
+
+A thread that an unhandled error ends is otherwise just gone: `thread-alive-p`
+says so to whoever asks, but nobody is told. And an exhausted heap, the error
+that ends most worker threads in practice, is not signalled as a condition --
+no `handler-case` and no `unwind-protect` in the thread's own code sees it.
+
+`mp:*thread-death-hooks*` is a list of function designators. Each is called
+with the thread object and the error's message, on the dying thread, after
+its stacks were dropped -- so what the thread held is garbage again and the
+hook has room to allocate, to send a message or to start a replacement:
+
+```lisp
+(push (lambda (thread message)
+        (format *error-output* "~&; ~a died: ~a~%" (mp:thread-name thread) message))
+      mp:*thread-death-hooks*)
+```
+
+The hooks are not called for a thread whose function returned, that took
+its `abort` restart, or that `destroy-thread` ended. A hook that fails is
+dropped without a word (`CLAMIGA_THREAD_ERRORS=1` in the environment reports
+it, as it reports every thread an error ended) and the next one still runs.
+A lock the thread held when it died stays held: no cleanup ran for it. See
+`tests/test_mt_thread_death_hook.sh`.
 
 ## Locks
 

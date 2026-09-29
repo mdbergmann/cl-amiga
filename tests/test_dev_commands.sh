@@ -649,6 +649,71 @@ check "and so does the REPL"                    '^2$'              "$(block reco
 check "RESULT means idle: the next REPL-EVAL sent on it is taken" '<<CHAINED=0 >>' "$repl_out"
 check "and that form runs"                      '^42$'             "$(block chain)"
 
+# --- A REPL thread that dies ------------------------------------------------
+#
+# An exhausted heap is the one error %REPL-RUN's handler never sees: the
+# runtime drops the thread's handlers and leaves through the thread's entry.
+# The form still ends with RESULT (rc 10, the error), sent from the dying
+# thread through MP:*THREAD-DEATH-HOOKS*, and a new REPL thread has taken
+# its place by then -- with DEBUG attached too, where the debugger must not
+# be what the editor hears of instead.
+
+cat > "$TMPD/repl-death.lisp" <<'EOF'
+(require "dev-commands")
+(defvar *keep* nil)
+(defvar *sent* '())
+(defvar *sent-lock* (mp:make-lock))
+(defun result-p (command)
+  (and (>= (length command) 6) (string= "RESULT" command :end2 6)))
+(setf ext.dev:*repl-send*
+      (lambda (port command)
+        (mp:with-lock-held (*sent-lock*) (push (cons port command) *sent*))
+        (values 0 "")))
+(defun cmd (label command)
+  (multiple-value-bind (rc text) (ext.dev:handle-command command)
+    (format t "<<~a RC=~d>>~%~a~%" label rc text)))
+(defun results ()
+  (mp:with-lock-held (*sent-lock*) (count-if #'result-p *sent* :key #'cdr)))
+(defun show (label expected)
+  (loop repeat 1200 until (>= (results) expected) do (sleep 0.05))
+  (format t "<<~a>>~%" label)
+  (dolist (entry (reverse (mp:with-lock-held (*sent-lock*)
+                            (prog1 *sent* (setf *sent* '())))))
+    (format t "SENT ~a|~a~%" (car entry) (cdr entry)))
+  (format t "<<END ~a>>~%" label))
+(defun eat (option)
+  (cmd "attach" (format nil "REPL-ATTACH EDITOR~a" option))
+  (let ((before ext.dev::*repl-thread*))
+    (cmd "eat" "REPL-EVAL (loop (push (make-string 10000) cl-user::*keep*))")
+    (show (format nil "died~a" option) 1)
+    (format t "<<OLD-ALIVE~a=~a NEW=~a NEW-ALIVE=~a>>~%" option
+            (mp:thread-alive-p before)
+            (not (eq before ext.dev::*repl-thread*))
+            (mp:thread-alive-p ext.dev::*repl-thread*)))
+  (setf *keep* nil)
+  (cmd (format nil "eval-after~a" option) "REPL-EVAL (+ 1 2)")
+  (show (format nil "after~a" option) 1))
+(eat "")
+(eat " DEBUG")
+(cmd "detach" "REPL-DETACH")
+(format t "<<ALIVE-AFTER-DETACH=~a>>~%" (and ext.dev::*repl-thread* t))
+EOF
+death_out=$("$CLAMIGA" --heap 4M --no-userinit --batch < "$TMPD/repl-death.lisp" 2>&1)
+dblock() { echo "$death_out" | sed -n "/<<$1>>/,/<<END $1>>/p"; }
+
+check "a REPL thread out of heap still sends RESULT, rc 10" \
+      '^SENT EDITOR|RESULT 10 CL-USER$' "$(dblock died)"
+check "RESULT carries what it died of"          '^ERROR: Heap exhausted' "$(dblock died)"
+check "RESULT says a new thread took over"      'a new one has taken its place' "$(dblock died)"
+check "the old thread is gone, a new one runs"  '<<OLD-ALIVE=NIL NEW=T NEW-ALIVE=T>>' "$death_out"
+check "the next REPL-EVAL is taken"             '<<eval-after RC=0>>' "$death_out"
+check "and evaluated by the new thread"         '^3$'              "$(dblock after)"
+check "the same under DEBUG: RESULT, rc 10"     '^SENT EDITOR|RESULT 10 CL-USER$' "$(dblock 'died DEBUG')"
+check_not "no debugger is announced for it"     'DEBUGGER'         "$(dblock 'died DEBUG')"
+check "a new thread there too"                  '<<OLD-ALIVE DEBUG=NIL NEW=T NEW-ALIVE=T>>' "$death_out"
+check "which evaluates"                         '^3$'              "$(dblock 'after DEBUG')"
+check "REPL-DETACH stops the new thread"        '<<ALIVE-AFTER-DETACH=NIL>>' "$death_out"
+
 # --- The debugger and the inspector (phase 4 of the editor) -----------------
 #
 # With REPL-ATTACH <port> DEBUG an unhandled error parks the REPL thread on

@@ -373,10 +373,18 @@ static void *thread_entry(void *arg)
                 fprintf(stderr,
                         "[THREAD-ERROR] worker tid=%u died: err=%d msg=\"%s\"\n",
                         t->id, err,
-                        t->pending_error_msg[0] ? t->pending_error_msg : "(none)");
+                        t->pending_error_msg[0] ? t->pending_error_msg :
+                        t->error_msg[0] ? t->error_msg : "(none)");
                 fflush(stderr);
             }
         }
+        /* Tell whoever asked to hear of it (MP:*THREAD-DEATH-HOOKS*), while
+         * this thread's own error frame still catches what a hook cannot
+         * and the thread is still registered, so a collection the hook
+         * triggers sees its roots.  Not for a death MP:DESTROY-THREAD asked
+         * for, and not for a (QUIT) called on a worker. */
+        if (!t->destroyed && err != CL_ERR_EXIT)
+            cl_run_thread_death_hooks(t->error_msg);
     }
 
     /* CL_UNCATCH inline */
@@ -2294,6 +2302,15 @@ void cl_builtins_thread_init(void)
      * THREAD-NAME on a freshly-built wrapper agree with main_thread_obj. */
     if (cl_main_thread_ptr)
         cl_main_thread_ptr->name = main_name;
+
+    /* MP:*THREAD-DEATH-HOOKS* (cl_run_thread_death_hooks in builtins.c) */
+    {
+        CL_Obj hooks_sym = cl_intern_in("*THREAD-DEATH-HOOKS*", 20, cl_package_mp);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(hooks_sym);
+        s->flags |= CL_SYM_SPECIAL;
+        s->value = CL_NIL;
+        cl_export_symbol(hooks_sym, cl_package_mp);
+    }
 
     /* Register MP builtins */
     mp_defun("MAKE-THREAD",             bi_make_thread,             1, -1);
