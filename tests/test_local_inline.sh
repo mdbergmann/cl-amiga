@@ -21,9 +21,10 @@
 #      declaration, recursion in LABELS, a large body called twice, an
 #      (optimize (space > speed)) or (debug 3) policy, and the
 #      CLAMIGA_NO_LOCAL_INLINE=1 switch — each pinned through DISASSEMBLE.
-#   4. The analysis sees through macros and symbol-macros; a macro that
-#      expands differently on each expansion yields a clear compile error,
-#      never a call to an empty slot.
+#   4. The analysis sees through macros, MACROLET macros and symbol-macros
+#      (so does the BLOCK / TAGBODY exit analysis); a macro that expands
+#      differently on each expansion yields a clear compile error, never a
+#      call to an empty slot.
 #   5. COMPILE-FILE round trip; a method body; the bench-prims row shape.
 
 CLAMIGA="${1:-build/host/clamiga}"
@@ -372,6 +373,75 @@ else
     echo "  FAIL  flip-flop macro: $nflip/4 acceptable outcomes"; echo "$out" | grep "R4f" | sed 's/^/      /'; failed=$((failed + 1))
 fi
 check_contains "t4 completes"                                    "T4-DONE" "$out"
+
+# ---------------------------------------------------------------------------
+# 4b. MACROLET: the analysis expands local macros like global ones
+#     (flexi-streams' decoders: FILL-BUFFER called from the expansion of a
+#     local macro, inside a nested FLET that keeps its closure)
+# ---------------------------------------------------------------------------
+cat > "$WORK/t4b.lisp" <<'EOF'
+;; the call / the #' sits in the local macro's template
+(defun li-ml-lam (n) (let ((p 0)) (flet ((f (e) (setq p e))) (macrolet ((via () '(f n))) (funcall (lambda () (via))) p))))
+(defun li-ml-ref (n) (flet ((f (x) (* 2 x))) (macrolet ((fn () '#'f)) (mapcar (fn) (list n)))))
+;; the local macro wraps its ARGUMENT in a closure
+(defun li-ml-arg (n) (let ((p 0)) (flet ((f (e) (setq p e))) (macrolet ((delay (x) `(lambda () ,x))) (funcall (delay (f n))) p))))
+;; the MACROLET encloses the FLET
+(defun li-ml-out (n) (let ((p 0)) (macrolet ((via () '(f n))) (flet ((f (e) (setq p e))) (funcall (lambda () (via))) p))))
+;; a direct call through a local macro is still inlined
+(defun li-ml-inl (n) (flet ((f (x) (* 2 x))) (macrolet ((via (x) `(f ,x))) (+ (via n) (via 1)))))
+;; symbol-macro inside the local macro's expansion (the flexi-streams shape)
+(defun li-ml-flexi (n)
+  (let ((pos 0) (log nil))
+    (flet ((fill-it (end) (setq pos end) t))
+      (fill-it 1)
+      (macrolet ((iterate (tag)
+                   `(symbol-macrolet ((getter (progn (fill-it n) pos)))
+                      (flet ((get2 () (push (list ,tag getter getter getter getter getter getter
+                                                  getter getter getter getter getter getter) log)
+                               getter))
+                        (list (get2) (get2))))))
+        (list (iterate :a) (length log))))))
+;; &environment and a local macro calling another one
+(defun li-ml-chain (n)
+  (flet ((f (x) (* 3 x)))
+    (macrolet ((inner (x) `(f ,x))
+               (outer (x &environment env) (macroexpand `(inner ,x) env)))
+      (mapcar (lambda (y) (outer y)) (list n)))))
+(dolist (fn '(li-ml-lam li-ml-ref li-ml-arg li-ml-out li-ml-inl li-ml-flexi li-ml-chain))
+  (format t "~%=== DIS ~A ===~%" fn)
+  (if (fboundp fn) (disassemble fn) (format t "UNDEFINED~%")))
+(format t "~%R4b ~S~%" (list (li-ml-lam 5) (li-ml-ref 5) (li-ml-arg 6) (li-ml-out 7)
+                             (li-ml-inl 3) (li-ml-flexi 9) (li-ml-chain 2)))
+;; The same blind spot in the BLOCK / TAGBODY analysis: an exit hidden in a
+;; local macro and crossing a closure needs the non-local path.
+(defun li-ml-rf () (block b (macrolet ((ret () '(return-from b :ok))) (mapc (lambda (x) (declare (ignore x)) (ret)) '(1)) :wrong)))
+(defun li-ml-ret () (block nil (macrolet ((ret () '(return :ok))) (mapc (lambda (x) (declare (ignore x)) (ret)) '(1)) :wrong)))
+(defun li-ml-go ()
+  (let ((n 0))
+    (tagbody
+       (macrolet ((wrap (x) `(funcall (lambda () ,x)))) (wrap (go out)))
+       (setq n 1)
+     out)
+    n))
+(defun li-ml-rf-out () (macrolet ((ret () '(return-from b :ok))) (block b (mapc (lambda (x) (declare (ignore x)) (ret)) '(1)) :wrong)))
+(format t "R4c ~S~%" (list (li-ml-rf) (li-ml-ret) (li-ml-go) (li-ml-rf-out)))
+;; A malformed binding is the compiler's error to report, not the scan's.
+(format t "R4d ~S~%" (handler-case (eval '(flet ((f () 1)) (macrolet ((m)) (f))))
+                       (error () :error)))
+(format t "T4B-DONE~%")
+EOF
+out=$(run "$WORK/t4b.lisp")
+dis() { echo "$out" | awk -v fn="=== DIS $1 ===" '$0 == fn {p=1; next} /^=== DIS / {p=0} p'; }
+check_absent   "no inlining diagnostic for a local macro"        "compiled inline" "$out"
+check_contains "call in a local macro, from a lambda: closure"   "CLOSURE" "$(dis LI-ML-LAM)"
+check_contains "#'f in a local macro keeps a closure"            "CLOSURE" "$(dis LI-ML-REF)"
+check_contains "local macro wraps its argument in a lambda"      "CLOSURE" "$(dis LI-ML-ARG)"
+check_contains "MACROLET around the FLET"                        "CLOSURE" "$(dis LI-ML-OUT)"
+check_absent   "direct call through a local macro is inlined"    "CLOSURE" "$(dis LI-ML-INL)"
+check_contains "local macros compute the right values"           "R4b (5 (10) 6 7 8 ((9 9) 2) (6))" "$out"
+check_contains "RETURN-FROM / RETURN / GO hidden in a local macro" "R4c (:OK :OK 0 :OK)" "$out"
+check_contains "malformed MACROLET binding still answers"        "R4d " "$out"
+check_contains "t4b completes"                                   "T4B-DONE" "$out"
 
 # ---------------------------------------------------------------------------
 # 5. COMPILE-FILE, methods, the bench row

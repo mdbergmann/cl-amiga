@@ -323,7 +323,7 @@ int cl_local_inline_enabled = 1;
 
 /* A reference to an inlined FLET/LABELS function that the escape analysis
  * did not foresee (compile_flet's scan ran over a macro that expanded
- * differently, or a symbol-macro it could not see through).  There is no
+ * differently, or one whose expansion failed in the scan).  There is no
  * closure to load, so say exactly what happened and how to get one. */
 static void inline_local_misuse(CL_Compiler *c, CL_Obj name, const char *how)
 {

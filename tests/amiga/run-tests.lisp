@@ -12352,6 +12352,37 @@ y" 1))
   (labels ((leaf (x) (* x 2))
            (rec (n acc) (if (zerop n) acc (rec (1- n) (+ acc n)))))
     (+ (leaf 4) (rec 3 0))))
+; The analysis expands MACROLET macros like global ones (flexi-streams'
+; decoders call FILL-BUFFER from a local macro's expansion, inside a nested
+; FLET that keeps its closure) -- and so does the BLOCK / TAGBODY analysis.
+(check "local macro hides a call from a closure, a #'f, a wrapped argument" '(5 (10) 6 7 8)
+  (list (let ((p 0)) (flet ((f (e) (setq p e))) (macrolet ((via () '(f 5))) (funcall (lambda () (via))) p)))
+        (flet ((f (x) (* 2 x))) (macrolet ((fn () '#'f)) (mapcar (fn) (list 5))))
+        (let ((p 0)) (flet ((f (e) (setq p e))) (macrolet ((delay (x) `(lambda () ,x))) (funcall (delay (f 6))) p)))
+        (let ((p 0)) (macrolet ((via () '(f 7))) (flet ((f (e) (setq p e))) (funcall (lambda () (via))) p)))
+        (flet ((f (x) (* 2 x))) (macrolet ((via (x) `(f ,x))) (+ (via 3) (via 1))))))
+(check "local macro: symbol-macro in its expansion, nested FLET" '((9 9) 2)
+  (let ((pos 0) (log nil) (n 9))
+    (flet ((fill-it (end) (setq pos end) t))
+      (fill-it 1)
+      (macrolet ((iterate (tag)
+                   `(symbol-macrolet ((getter (progn (fill-it n) pos)))
+                      (flet ((get2 () (push (list ,tag getter getter getter getter getter getter
+                                                  getter getter getter getter getter getter) log)
+                               getter))
+                        (list (get2) (get2))))))
+        (list (iterate :a) (length log))))))
+(check "local macro hides RETURN-FROM / RETURN / GO crossing a closure" '(:ok :ok 0)
+  (list (block b (macrolet ((ret () '(return-from b :ok)))
+                   (mapc (lambda (x) (declare (ignore x)) (ret)) '(1)) :wrong))
+        (block nil (macrolet ((ret () '(return :ok)))
+                     (mapc (lambda (x) (declare (ignore x)) (ret)) '(1)) :wrong))
+        (let ((n 0))
+          (tagbody
+             (macrolet ((wrap (x) `(funcall (lambda () ,x)))) (wrap (go out)))
+             (setq n 1)
+           out)
+          n)))
 
 ; --- Tier-4 phase 3: superinstructions (specs/performance.md 4.3) ---
 ; The peephole pass runs at every speed above 0 now and fuses fourteen

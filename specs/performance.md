@@ -776,7 +776,9 @@ planning phase 3 against it.
    lookup tables (`CL_CompEnv.hide_*`, `CL_Compiler.hide_block/tagbody_*`),
    so free names resolve in the definition environment (CLHS 3.1.1).
    The escape analysis is one macro-aware `nlx_scan` walk per form
-   (`NLX_FUNUSE` mode; it also sees through symbol-macros).  Shape
+   (`NLX_FUNUSE` mode; it also sees through symbol-macros and, since
+   2026-09-29, `macrolet` macros — the walk installs a `macrolet`'s
+   expanders for the scan of its body, as the boxing scan does).  Shape
    limits: required parameters only (≤ 8), no special parameter or
    `(special ...)` declaration, no `load-time-value` anywhere in the body
    (the walk finds it through macros; an inlined body is compiled — and

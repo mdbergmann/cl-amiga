@@ -52,6 +52,14 @@ cat > "$tmp" <<'EOF'
 (defun wide-and () (macrolet ((gen () `(and ,@(loop for i from 1 to 600 collect i)))) (gen)))
 (defun wide-or  () (macrolet ((gen () `(or ,@(loop for i from 1 to 600 collect nil) :last))) (gen)))
 (format t "WIDE-AND-OR:~A,~A~%" (wide-and) (wide-or))
+;; The same through a GLOBAL macro: AND/OR expand to one nesting level per
+;; argument, and the BLOCK exit analysis ran out of GC roots walking it
+;; (process abort) until it learned to stop with roots to spare.
+(defmacro gwide-or () `(or ,@(loop for i from 1 to 600 collect nil) :last))
+(defmacro gwide-and () `(and ,@(loop for i from 1 to 600 collect i)))
+(defun wide-or-g () (gwide-or))
+(defun wide-and-g () (flet ((f (x) x)) (f (gwide-and))))
+(format t "WIDE-GLOBAL:~A,~A~%" (wide-or-g) (wide-and-g))
 
 ;; ECASE fall-through must still build the full (member ...) expected-type
 (format t "WIDE-ECASE-HIT:~A~%"
@@ -100,6 +108,8 @@ printf '%s' "$out" | grep -q "WIDE-CASE:599,0,MISS" \
     || fail "wide CASE (>512 clauses) miscompiled"
 printf '%s' "$out" | grep -q "WIDE-AND-OR:600,LAST" \
     || fail "wide AND/OR (>512 args) miscompiled"
+printf '%s' "$out" | grep -q "WIDE-GLOBAL:LAST,600" \
+    || fail "wide AND/OR from a global macro (exit analysis out of GC roots)"
 printf '%s' "$out" | grep -q "WIDE-ECASE-HIT:99" \
     || fail "wide ECASE match miscompiled"
 printf '%s' "$out" | grep -q "WIDE-ECASE-MISS:TYPE-ERROR" \

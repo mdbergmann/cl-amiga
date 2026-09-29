@@ -659,6 +659,63 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
 static int scan_nlx_macro_depth = 0;
 #define SCAN_NLX_MACRO_MAX_DEPTH 50
 
+/* Whether a form with this HEAD is a macro call the scan expands: a global
+ * macro, or a local one — a MACROLET the compiler is inside of, or one the
+ * scan itself walked into (scan_nlx_install_macrolet).  cl_macro_p knows
+ * the global table only. */
+static int scan_nlx_macro_call_p(CL_Obj head)
+{
+    if (!CL_SYMBOL_P(head)) return 0;
+    if (cl_macro_p(head)) return 1;
+    return cl_active_compiler && cl_active_compiler->env &&
+           !CL_NULL_P(cl_env_lookup_local_macro(cl_active_compiler->env, head));
+}
+
+/* Install the expanders of a MACROLET's BINDINGS into ENV for the scan of
+ * its body; the caller pops them again.  Compiling an expander runs the
+ * compiler and the VM, so it is guarded like an expansion: a malformed
+ * binding leaves the scan without these expanders (the macro's calls are
+ * then walked as function calls, as before) instead of aborting it. */
+static void scan_nlx_install_macrolet(CL_CompEnv *env, CL_Obj bindings)
+{
+    int saved_lmc = env->local_macro_count;
+    int saved_sp, saved_fp, saved_dyn, saved_nlx, saved_handler,
+        saved_restart, saved_debugger, saved_gc_roots;
+
+    if (scan_nlx_macro_depth >= SCAN_NLX_MACRO_MAX_DEPTH) return;
+
+    saved_sp = cl_vm.sp;
+    saved_fp = cl_vm.fp;
+    saved_dyn = cl_dyn_top;
+    saved_nlx = cl_nlx_top;
+    saved_handler = cl_handler_top;
+    saved_restart = cl_restart_top;
+    saved_debugger = cl_debugger_enabled;
+    saved_gc_roots = gc_root_count;
+    cl_debugger_enabled = 0;
+
+    scan_nlx_macro_depth++;
+    {
+        int err; CL_CATCH(err);
+        if (err == 0) {
+            cl_macrolet_install_expanders(env, bindings);
+            CL_UNCATCH();
+        } else {
+            CL_UNCATCH();
+            cl_vm.sp = saved_sp;
+            cl_vm.fp = saved_fp;
+            cl_dynbind_restore_to(saved_dyn);
+            cl_nlx_top = saved_nlx;
+            gc_root_count = saved_gc_roots;
+            env->local_macro_count = saved_lmc;
+        }
+    }
+    scan_nlx_macro_depth--;
+    cl_debugger_enabled = saved_debugger;
+    cl_handler_top = saved_handler;
+    cl_restart_top = saved_restart;
+}
+
 /* Macroexpand FORM once for NLX-detection scanning, with full VM/compiler
  * state save+restore so a side-effecting or failing expander cannot corrupt
  * compiler state.  Returns the expansion, or FORM unchanged when its head is
@@ -672,7 +729,7 @@ static CL_Obj scan_nlx_macroexpand_1(CL_Obj form)
 
     if (!CL_CONS_P(form)) return form;
     head = cl_car(form);
-    if (!CL_SYMBOL_P(head) || !cl_macro_p(head)) return form;
+    if (!scan_nlx_macro_call_p(head)) return form;
     if (scan_nlx_macro_depth >= SCAN_NLX_MACRO_MAX_DEPTH) return form;
 
     saved_sp = cl_vm.sp;
@@ -730,6 +787,9 @@ static int scan_nlx_recurse_depth = 0;
 static int scan_nlx_arg_depth = 0;
 extern CL_Obj bi_special_operator_p(CL_Obj *args, int n);   /* builtins_mutation.c */
 #define SCAN_NLX_MAX_RECURSE_DEPTH 500
+/* GC roots left free for what one more level takes: its own cursors, a
+ * macro expansion, a MACROLET's expander compile. */
+#define SCAN_NLX_ROOT_HEADROOM 128
 
 /* NLX walker modes:
  *   NLX_ANY_CLOSURE — true if the body contains any closure form
@@ -837,7 +897,22 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
     CL_Obj head, rest;
     int r = 0;
 
-    if (scan_nlx_recurse_depth >= SCAN_NLX_MAX_RECURSE_DEPTH) return 0;
+    /* Too deep to go on: the recursion cap, or the GC root stack nearly
+     * full — every level holds roots across its recursive call, and a wide
+     * AND/OR (one nesting level per argument once expanded) reaches the
+     * ceiling, where cl_gc_push_root aborts the process.  What lies below
+     * is unknown, so answer the safe way round: the exit needs the
+     * non-local path, no candidate is inlined. */
+    if (scan_nlx_recurse_depth >= SCAN_NLX_MAX_RECURSE_DEPTH ||
+        gc_root_count >= CL_GC_ROOT_STACK_SIZE - SCAN_NLX_ROOT_HEADROOM) {
+        if (!CL_CONS_P(form)) return 0;
+        if (mode == NLX_FUNUSE) {
+            if (cl_active_compiler)
+                cl_active_compiler->funuse_escaped = ~(uint32_t)0;
+            return 0;
+        }
+        return 1;
+    }
     if (!CL_CONS_P(form)) {
         /* A bare symbol is a symbol-macro reference when one is bound: the
          * escape scan must see what it expands to (`(symbol-macrolet ((s
@@ -1229,9 +1304,25 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         goto done;
     }
 
-    /* (macrolet (bindings) body...) — skip bindings, scan body. */
+    /* (macrolet (bindings) body...) — the bindings are templates, not code;
+     * scan the body with their expanders installed, so a call of a local
+     * macro is expanded like a global one (the macro branch below).  What
+     * a local macro hides is as real as what a global one hides: a call of
+     * an inlining candidate from inside a closure (flexi-streams' decoders
+     * lost eight READ-SEQUENCE* methods to the inlining guard over it), a
+     * RETURN-FROM crossing a lambda.  Mirrors scan_body_for_boxing(). */
     if (head == SYM_MACROLET) {
-        if (CL_CONS_P(rest)) r = nlx_scan_body(cl_cdr(rest), mode, tag, anon);
+        CL_CompEnv *env = cl_active_compiler ? cl_active_compiler->env : NULL;
+        int saved_lmc = env ? env->local_macro_count : 0;
+        CL_Obj body;
+        if (!CL_CONS_P(rest)) goto done;
+        body = cl_cdr(rest);
+        CL_GC_PROTECT(body);
+        if (env) scan_nlx_install_macrolet(env, cl_car(rest));
+        r = nlx_scan_body(body, mode, tag, anon);
+        CL_GC_UNPROTECT(1);
+        /* compile_macrolet installs them again for the real compile. */
+        if (env) env->local_macro_count = saved_lmc;
         goto done;
     }
     /* (symbol-macrolet ((sym expansion)...) body...) — skip bindings, but
@@ -1273,7 +1364,7 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
      * with a stale reference that, after the freed slot is reused by the
      * expansion's own conses, reads back a different form ("Unbound variable:
      * NEW<n>" from a dropped INCF/DECF LET* binding). */
-    if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
+    if (scan_nlx_macro_call_p(head)) {
         CL_Obj expanded;
         CL_GC_PROTECT(form);
         expanded = scan_nlx_macroexpand_1(form);
