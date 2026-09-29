@@ -943,6 +943,7 @@ cat > "$TMPD/systems.lisp" <<EOF
 (format t "~&<<TESTED=~s>>~%" (ext.dev:test-asd-system "$TMPD/devsys/devsys.asd"))
 EOF
 sys_out=$(run_script "$TMPD/systems.lisp")
+sys_failed_before=$failed
 check "ASDF is not loaded before a system is asked for" '<<ASDF-BEFORE=NIL>>' "$sys_out"
 check "a file that is no .asd is refused"        '<<not-asd RC=10>>'  "$sys_out"
 check "and the refusal names it"                 'Not a system definition file (.asd): .*one.lisp' "$sys_out"
@@ -955,6 +956,12 @@ check "the system's files are loaded in order"   '<<TWO=2>>'          "$sys_out"
 check "the test system is not loaded by a load"  '<<TESTS-LOADED-BY-LOAD=NIL>>' "$sys_out"
 check "TEST-ASD-SYSTEM runs the test-op"         '<<DEVSYS-TESTS two=2>>' "$sys_out"
 check "and returns the tested system's name"     '<<TESTED="devsys">>' "$sys_out"
+# check shows the head of the output only, and what went wrong with a system
+# is said after the refusals -- so a failure here prints all of it.
+if [ "$failed" -ne "$sys_failed_before" ]; then
+    echo "    --- full output of the systems script ---"
+    echo "$sys_out" | sed 's/^/    | /'
+fi
 
 echo ""
 echo "test_dev_commands: $passed passed, $failed failed, $total total"
