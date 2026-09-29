@@ -3768,6 +3768,10 @@ Note that this operation is usually NOT thread-safe."
 (with-upgradability ()
   (defun inter-directory-separator ()
     "What character does the current OS conventionally uses to separate directories?"
+    ;; CL-Amiga on Windows is :UNIX to UIOP, but a directory there starts
+    ;; with a drive letter and its colon.
+    #+(and cl-amiga windows) #\;
+    #-(and cl-amiga windows)
     (os-cond ((or (os-unix-p) (os-amigaos-p)) #\:) (t #\;)))
 
   (defun split-native-pathnames-string (string &rest constraints &key &allow-other-keys)

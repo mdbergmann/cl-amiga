@@ -121,8 +121,10 @@ platform layer to `src/platform/platform_win32.c` (Winsock, the console API,
 Everything the runtime offers on a POSIX host is available: threads (MP),
 sockets and TLS, the FFI, the generational GC, the debugger and the REPL.
 
-Two Windows-specific notes:
+Three Windows-specific notes:
 
+- **Features.** `*features*` carries `:windows` next to `:unix` and `:posix`;
+  use `#+windows` for what differs.
 - **Paths.** Namestrings use `/`; a drive letter appears as the pathname's
   device, so `(truename "Makefile")` prints as `#P"C:/Users/you/cl-amiga/Makefile"`.
 - **OpenSSL** is loaded at runtime, as on every other host. It is found by DLL

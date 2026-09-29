@@ -335,6 +335,18 @@ TEST(feature_plus_posix)
     ASSERT_STR_EQ(cl_symbol_name(obj), "YES");
 }
 
+TEST(feature_windows_only_on_windows)
+{
+    /* :WINDOWS tells the Windows build apart; it is :UNIX like the others */
+    CL_Obj obj = reads("#+windows :yes #-windows :no");
+    ASSERT(CL_SYMBOL_P(obj));
+#ifdef PLATFORM_WIN32
+    ASSERT_STR_EQ(cl_symbol_name(obj), "YES");
+#else
+    ASSERT_STR_EQ(cl_symbol_name(obj), "NO");
+#endif
+}
+
 TEST(feature_plus_common_lisp)
 {
     CL_Obj obj = reads("#+common-lisp :yes");
@@ -1192,6 +1204,7 @@ int main(void)
     RUN(feature_minus_present);
     RUN(feature_minus_absent);
     RUN(feature_plus_posix);
+    RUN(feature_windows_only_on_windows);
     RUN(feature_plus_common_lisp);
     RUN(feature_in_list);
     RUN(feature_skip_in_list);

@@ -927,6 +927,14 @@ void cl_symbol_init(void)
 #elif defined(__linux__)
         kw = cl_intern_keyword("LINUX", 5);
         features = cl_cons(kw, features);
+#elif defined(PLATFORM_WIN32)
+        /* The Windows build keeps :UNIX (paths are spelled with `/`), so
+         * :WINDOWS is what tells it apart -- a list of directories in an
+         * environment variable is separated by `;` there, since every
+         * entry carries a `:` after its drive letter (lib/asdf.lisp,
+         * INTER-DIRECTORY-SEPARATOR). */
+        kw = cl_intern_keyword("WINDOWS", 7);
+        features = cl_cons(kw, features);
 #endif
         /* Host CPU architecture — cl+ssl keys homebrew detection on :ARM64 */
 #if defined(__aarch64__) || defined(__arm64__)

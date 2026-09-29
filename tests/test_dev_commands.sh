@@ -927,6 +927,24 @@ cat > "$TMPD/devsys/tests.lisp" <<'EOF'
 (defun run-tests () (format t "~&<<DEVSYS-TESTS two=~a>>~%" (two)))
 EOF
 
+# A list of directories in the environment, which is what ASDF reads its
+# source registry from (XDG_DATA_DIRS): entries are separated by ":", and by
+# ";" on Windows, where each of them has a colon after its drive letter.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) dirsep=';' ;;
+    *)                    dirsep=':' ;;
+esac
+cat > "$TMPD/dirlist.lisp" <<EOF
+(require "asdf")
+(let ((dirs (uiop:getenv-pathnames "CLAMIGA_TEST_DIRS" :want-absolute t)))
+  (format t "~&<<DIRS=~d>>~%" (length dirs))
+  (format t "~&<<DIRS-EXIST=~a>>~%"
+          (and dirs (every (function uiop:directory-exists-p) dirs) t)))
+EOF
+dirs_out=$(CLAMIGA_TEST_DIRS="$TMPD/devsys/$dirsep$TMPD/" run_script "$TMPD/dirlist.lisp")
+check "a directory list in the environment is split at the separator" '<<DIRS=2>>' "$dirs_out"
+check "and each entry is a directory that exists" '<<DIRS-EXIST=T>>' "$dirs_out"
+
 cat > "$TMPD/systems.lisp" <<EOF
 (require "dev-commands")
 (format t "~&<<ASDF-BEFORE=~a>>~%" (and (find-package "ASDF") t))
