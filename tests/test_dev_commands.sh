@@ -930,9 +930,10 @@ EOF
 # A list of directories in the environment, which is what ASDF reads its
 # source registry from (XDG_DATA_DIRS): entries are separated by ":", and by
 # ";" on Windows, where each of them has a colon after its drive letter.
+# What Windows itself puts there is spelled with "\", so the second entry is.
 case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) dirsep=';' ;;
-    *)                    dirsep=':' ;;
+    MINGW*|MSYS*|CYGWIN*) dirsep=';'; dir2=$(printf '%s' "$TMPD/" | tr '/' '\\') ;;
+    *)                    dirsep=':'; dir2="$TMPD/" ;;
 esac
 cat > "$TMPD/dirlist.lisp" <<EOF
 (require "asdf")
@@ -941,7 +942,7 @@ cat > "$TMPD/dirlist.lisp" <<EOF
   (format t "~&<<DIRS-EXIST=~a>>~%"
           (and dirs (every (function uiop:directory-exists-p) dirs) t)))
 EOF
-dirs_out=$(CLAMIGA_TEST_DIRS="$TMPD/devsys/$dirsep$TMPD/" run_script "$TMPD/dirlist.lisp")
+dirs_out=$(CLAMIGA_TEST_DIRS="$TMPD/devsys/$dirsep$dir2" run_script "$TMPD/dirlist.lisp")
 check "a directory list in the environment is split at the separator" '<<DIRS=2>>' "$dirs_out"
 check "and each entry is a directory that exists" '<<DIRS-EXIST=T>>' "$dirs_out"
 

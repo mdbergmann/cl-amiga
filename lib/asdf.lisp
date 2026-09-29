@@ -3289,6 +3289,9 @@ you need to still be able to use compile-op on that lisp file."))
         #+sbcl (sb-ext:native-namestring p)
         #-(or clozure cmucl sbcl scl)
         (os-cond
+         ;; CL-Amiga on Windows is :UNIX to UIOP, but a namestring there
+         ;; has a drive letter, which is the pathname's device
+         #+(and cl-amiga windows) (t (namestring p))
          ((os-unix-p) (unix-namestring p))
          ;; AmigaOS uses Device:path — unix-namestring loses device component
          ((os-amigaos-p) (namestring p))
@@ -3307,6 +3310,10 @@ a CL pathname satisfying all the specified constraints as per ENSURE-PATHNAME"
                  #+scl (lisp::parse-unix-namestring string)
                  #-(or clozure cmucl sbcl scl)
                  (os-cond
+                  ;; CL-Amiga on Windows: the drive letter is the device, and
+                  ;; what the environment hands over may be spelled with "\"
+                  #+(and cl-amiga windows)
+                  (t (parse-namestring (substitute #\/ #\\ string)))
                   ((os-unix-p) (parse-unix-namestring string :ensure-directory ensure-directory))
                   ;; AmigaOS uses Device:path — parse-unix-namestring loses device component
                   ((os-amigaos-p) (parse-namestring string))
