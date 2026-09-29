@@ -832,6 +832,65 @@ check "CONTINUE still works after that"           ':STILL-CONTINUES' "$(dblock c
 check "REPL-DETACH while parked stops the thread" '<<THREAD-ALIVE-AFTER-DETACH=NIL>>' "$debug_out"
 check "without DEBUG an error is RESULT 10 as before" 'ERROR: plain' "$(dblock plain)"
 
+# --- Systems (LOAD-ASD-SYSTEM / TEST-ASD-SYSTEM) ----------------------------
+#
+# What an editor's Load System evaluates: the system is named by its .asd
+# file, ASDF is loaded on first use, and the system loaded is the one the
+# file is named after.
+
+mkdir "$TMPD/devsys"
+cat > "$TMPD/devsys/devsys.asd" <<'EOF'
+(asdf:defsystem "devsys"
+  :components ((:file "one") (:file "two" :depends-on ("one")))
+  :in-order-to ((asdf:test-op (asdf:test-op "devsys/tests"))))
+(asdf:defsystem "devsys/tests"
+  :depends-on ("devsys")
+  :components ((:file "tests"))
+  :perform (asdf:test-op (o c) (uiop:symbol-call :devsys :run-tests)))
+EOF
+cat > "$TMPD/devsys/one.lisp" <<'EOF'
+(defpackage :devsys (:use :cl) (:export #:one #:two #:run-tests))
+(in-package :devsys)
+(defun one () 1)
+EOF
+cat > "$TMPD/devsys/two.lisp" <<'EOF'
+(in-package :devsys)
+(defun two () (1+ (one)))
+EOF
+cat > "$TMPD/devsys/tests.lisp" <<'EOF'
+(in-package :devsys)
+(defun run-tests () (format t "~&<<DEVSYS-TESTS two=~a>>~%" (two)))
+EOF
+
+cat > "$TMPD/systems.lisp" <<EOF
+(require "dev-commands")
+(format t "~&<<ASDF-BEFORE=~a>>~%" (and (find-package "ASDF") t))
+(multiple-value-bind (rc text)
+    (ext.dev:handle-command "EVAL (ext.dev:load-asd-system \"$TMPD/devsys/one.lisp\")")
+  (format t "~&<<not-asd RC=~d>>~%~a~%" rc text))
+(multiple-value-bind (rc text)
+    (ext.dev:handle-command "EVAL (ext.dev:load-asd-system \"$TMPD/devsys/nope.asd\")")
+  (format t "~&<<missing RC=~d>>~%~a~%" rc text))
+(format t "~&<<ASDF-AFTER-REFUSALS=~a>>~%" (and (find-package "ASDF") t))
+(format t "~&<<LOADED=~s>>~%" (ext.dev:load-asd-system "$TMPD/devsys/devsys.asd"))
+(format t "~&<<TWO=~a>>~%" (funcall (find-symbol "TWO" "DEVSYS")))
+(format t "~&<<TESTS-LOADED-BY-LOAD=~a>>~%" (and (fboundp (find-symbol "RUN-TESTS" "DEVSYS")) t))
+(format t "~&<<TESTED=~s>>~%" (ext.dev:test-asd-system "$TMPD/devsys/devsys.asd"))
+EOF
+sys_out=$(run_script "$TMPD/systems.lisp")
+check "ASDF is not loaded before a system is asked for" '<<ASDF-BEFORE=NIL>>' "$sys_out"
+check "a file that is no .asd is refused"        '<<not-asd RC=10>>'  "$sys_out"
+check "and the refusal names it"                 'Not a system definition file (.asd): .*one.lisp' "$sys_out"
+check "a missing .asd is refused"                '<<missing RC=10>>'  "$sys_out"
+check "and that refusal names it"                'No such system definition file: .*nope.asd' "$sys_out"
+check "a refusal did not load ASDF"              '<<ASDF-AFTER-REFUSALS=NIL>>' "$sys_out"
+check "LOAD-ASD-SYSTEM says what it loads"       '; loading system devsys from .*devsys.asd' "$sys_out"
+check "and returns the system's name"            '<<LOADED="devsys">>' "$sys_out"
+check "the system's files are loaded in order"   '<<TWO=2>>'          "$sys_out"
+check "the test system is not loaded by a load"  '<<TESTS-LOADED-BY-LOAD=NIL>>' "$sys_out"
+check "TEST-ASD-SYSTEM runs the test-op"         '<<DEVSYS-TESTS two=2>>' "$sys_out"
+check "and returns the tested system's name"     '<<TESTED="devsys">>' "$sys_out"
+
 echo ""
 echo "test_dev_commands: $passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

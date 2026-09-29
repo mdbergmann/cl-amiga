@@ -294,6 +294,24 @@
 (check "dev-repl: and its form runs" t
        (drt-sent-p (lambda (c) (and (drt-prefix-p "RESULT 0" c) (search "42" c) t))))
 
+;;; Systems (EXT.DEV:LOAD-ASD-SYSTEM): what is refused is refused before
+;;; ASDF is asked for, so a wrong pick in the editor costs no memory.  The
+;;; load itself is host-tested (tests/test_dev_commands.sh); ASDF is more
+;;; than this suite's heap is for.
+(let ((asdf-before (and (find-package "ASDF") t)))
+  (multiple-value-bind (rc text)
+      (drt-cmd "EVAL (ext.dev:load-asd-system \"T:drt-no-system.lisp\")")
+    (check "dev-systems: a file that is no .asd is refused" 10 rc)
+    (check "dev-systems: and the refusal names it" t
+           (and (search "Not a system definition file (.asd): T:drt-no-system.lisp" text) t)))
+  (multiple-value-bind (rc text)
+      (drt-cmd "EVAL (ext.dev:test-asd-system \"T:drt-no-such-system.asd\")")
+    (check "dev-systems: a missing .asd is refused" 10 rc)
+    (check "dev-systems: and that refusal names it" t
+           (and (search "No such system definition file: T:drt-no-such-system.asd" text) t)))
+  (check "dev-systems: a refusal does not load ASDF" asdf-before
+         (and (find-package "ASDF") t)))
+
 (multiple-value-bind (rc text) (drt-cmd "REPL-DETACH")
   (declare (ignore text))
   (check "dev-repl: REPL-DETACH" 0 rc))

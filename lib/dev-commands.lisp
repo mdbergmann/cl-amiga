@@ -29,6 +29,8 @@
    "*MAX-COMPLETIONS*" "*PRETTY-MARGIN*" "*MAX-INSPECT-PARTS*"
    ;; The REPL's way back to the editor (lib/dev-repl.lisp)
    "*REPL-SEND*"
+   ;; Systems: what an editor's Load System / Test System evaluate
+   "LOAD-ASD-SYSTEM" "TEST-ASD-SYSTEM"
    ;; Introspection / extension
    "*COMMANDS*" "DEFINE-COMMAND" "DEFINE-RAW-COMMAND" "*RAW-COMMANDS*"))
 
@@ -960,6 +962,60 @@ handler thread can see them; lib/dev-repl.lisp keeps it current.")
          (values +rc-error+ "ERROR: already at the object INSPECT started from"))
         (t (pop *inspect-stack*)
            (%inspect-reply))))
+
+;;; ================================================================
+;;; Systems
+;;;
+;;; What an editor's `Load System' and `Test System' evaluate, on the
+;;; REPL thread: a system is minutes of compiling, which wants its output
+;;; as it happens, an interrupt and the debugger -- none of which the
+;;; port's handler thread has.  So these are functions, not verbs.
+;;;
+;;; The system is named by its definition FILE, since that is what an
+;;; editor has in a window; the system loaded is the one the file is named
+;;; after (foo.asd defines "foo", and "foo/tests" beside it).  ASDF is
+;;; loaded on first use -- a session that never loads a system never pays
+;;; for it -- so nothing here may name an ASDF symbol at read time.
+;;; ================================================================
+
+(defun %asdf (name &rest args)
+  (let ((function (find-symbol name "ASDF")))
+    (unless (and function (fboundp function))
+      (error "ASDF has no function ~a: is lib/asdf.lisp the one loaded?" name))
+    (apply function args)))
+
+(defun %system-file (path)
+  "PATH as the truename of a system definition file, or an error that
+says what is wrong with it."
+  (let ((type (pathname-type (pathname path))))
+    (unless (and (stringp type) (string-equal type "asd"))
+      (error "Not a system definition file (.asd): ~a" path))
+    (or (probe-file path)
+        (error "No such system definition file: ~a" path))))
+
+(defun %load-asd (path)
+  "Load the definitions in PATH; the name of its primary system and the
+file's truename."
+  (let ((file (%system-file path)))
+    (require "asdf")
+    (%asdf "LOAD-ASD" file)
+    (values (string-downcase (pathname-name file)) file)))
+
+(defun load-asd-system (path)
+  "Load the system definition file PATH and then the system it is named
+after, with everything that system depends on.  Returns the system's name."
+  (multiple-value-bind (name file) (%load-asd path)
+    (format t "~&; loading system ~a from ~a~%" name (namestring file))
+    (%asdf "LOAD-SYSTEM" name)
+    name))
+
+(defun test-asd-system (path)
+  "Load the system definition file PATH and run ASDF:TEST-SYSTEM on the
+system it is named after.  Returns the system's name."
+  (multiple-value-bind (name file) (%load-asd path)
+    (format t "~&; testing system ~a from ~a~%" name (namestring file))
+    (%asdf "TEST-SYSTEM" name)
+    name))
 
 ;;; ================================================================
 ;;; REPL

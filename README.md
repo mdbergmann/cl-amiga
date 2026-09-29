@@ -769,6 +769,8 @@ A command string starting with `(` is evaluated directly, so `ADDRESS CLAMIGA '(
 
 Replies are capped at `ext.dev:*max-result-length*` (8 KB) and truncated on a line boundary.
 
+**ASDF systems** are loaded by their definition file: `(ext.dev:load-asd-system "Work:src/foo/foo.asd")` loads ASDF if it is not there yet, then the file, then the system named after it with everything it depends on; `(ext.dev:test-asd-system ...)` runs `asdf:test-system` on it. Both are functions rather than commands, meant for `REPL-EVAL`: a system takes long enough to want its output as it happens, an interrupt and the debugger.
+
 Runnable macros are in [`examples/amiga/arexx/`](examples/amiga/arexx/): `clamiga.rexx` (a shell client — `rx clamiga.rexx LOAD Work:src/foo.lisp`) and `load-current-file.ced` (save-and-load bound to a CygnusEd key). `AMIGA.AREXX:SEND` drives *other* applications' ARexx ports from Lisp with the same protocol.
 
 The command layer is portable Lisp (`lib/dev-commands.lisp`, package `EXT.DEV`) and runs on the host too, so `(ext.dev:handle-command "LOAD foo.lisp")` is testable without an Amiga; see `tests/test_dev_commands.sh` for the executable specification and `tests/amiga/arexx-tests.lisp` for the end-to-end port test. Your own verbs go in with `ext.dev:define-command`; a verb whose argument is text rather than syntax (an editor taking the REPL thread's `OUTPUT <chunk>`) uses `ext.dev:define-raw-command` and receives it verbatim, blanks and newlines included.

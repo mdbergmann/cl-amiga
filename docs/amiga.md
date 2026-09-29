@@ -759,6 +759,11 @@ README. They are implemented by the portable `EXT.DEV` package
 `(ext.dev:handle-command "LOAD foo.lisp")` returns `(values rc text)` with no
 Amiga in sight, which is how the command layer is tested.
 
+The same package loads ASDF systems for an editor:
+`(ext.dev:load-asd-system "Work:src/foo/foo.asd")` loads ASDF on first use,
+the definition file and the system named after it, and
+`(ext.dev:test-asd-system ...)` runs `asdf:test-system` on it.
+
 ## Source of truth
 
 `tests/amiga/test-gui.lisp` exercises the Intuition/Graphics/GadTools path on
