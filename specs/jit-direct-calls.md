@@ -1,6 +1,8 @@
 # Direct native-to-native calls (m68k JIT)
 
-Status: **in progress** (2026-10-01): phases 1 to 4 done.  Follows the open lever in
+Status: **done on FS-UAE** (2026-10-01): phases 1 to 5 done, results in
+§"Results".  The Vampire leg of phase 5 is still to be measured.  Follows
+the open lever in
 `specs/native-backend.md` §"Status (2026-09-16, direct call dispatch from
 JIT'd code)": *direct JSR to a native callee from the call site (no helper
 at all)*.  The idea is borrowed from Evergreen CL's T1 baseline JIT
@@ -292,6 +294,16 @@ on a foreign task (MUI hooks on `input.device`) enters through
 5. Dispatch this call through `jit_dispatch`, unchanged.  The next call
    through the site hits.
 
+   As built (phase 5), steps 3 and 5 are one: the fill attempt sits in
+   `jit_dispatch`'s native arm, after that arm's own classification.
+   Calls into builtins, FFI stubs and interpreted functions miss on every
+   call, and the first build classified each of them a second time before
+   dispatching.  That cost ~0.2 µs per builtin call on FS-UAE 040, enough
+   to cancel the gain on the decode-key mix.  The site helpers also pass
+   the thread to `jit_dispatch` instead of looking it up again.  The
+   refusal counters keep their meaning, but `:refused-not-native` now
+   counts with the kill switch on as well.
+
 Callees that are still counting toward the lazy-JIT threshold do not fill.
 They go through the stub frame, where `OP_CALL` counts them, exactly as
 today.  Once compiled they fill on the next miss.  No bump is needed when
@@ -430,6 +442,54 @@ bound as the existing `jit-direct-*` block does):
 - **Cache-layout effects** on the Vampire (see the `jit_dispatch_apply`
   note in `specs/native-backend.md`).  Use interleaved A/B pairs with the
   kill switch, not before/after binaries.
+
+## Results
+
+FS-UAE A4000/68040 (`verify/realamiga/verify.fs-uae`), one binary, one
+boot, three interleaved rounds of `trunk/bench-jit-call.lisp` (200k
+iterations per row), alternating the default with `CLAMIGA_JIT_DIRECT=0`.
+The figures are medians in µs per iteration, including the 0.5 µs loop.
+
+| Row                              | bytecode | JIT, direct off | JIT, direct on |
+|----------------------------------|---------:|----------------:|---------------:|
+| call native leaf                 | 13.6 |  6.2 |  0.9 |
+| call same-state leaf             | 13.3 |  6.2 |  0.9 |
+| FUNCALL native leaf              | 12.1 |  5.8 |  1.1 |
+| call bytecode leaf               | 13.5 | 12.4 | 12.4 |
+| call &optional leaf              | 17.3 | 16.9 | 16.9 |
+| builtin 2-arg (LOGTEST)          | 12.8 |  4.1 |  4.1 |
+| builtin GETHASH                  | 21.7 | 13.1 | 13.0 |
+| FFI PEEK-U16                     | 11.5 |  3.9 |  3.9 |
+| decode-key mix (native helper)   | 56.2 | 37.1 | 34.7 |
+| decode-key mix (bytecode helper) | 56.1 | 39.2 | 39.2 |
+
+Net of the loop, a call to a native leaf goes from 5.7 to 0.4 µs.  That
+beats the spec's ≤ 2 µs target, which was set for the Vampire.  Every row
+whose callee does not fill is unchanged.  The decode-key mix gains 6%:
+only a quarter of its iterations reach the helper call, and the rest of
+the mix is builtin calls.  `%jit-direct-call-stats` after one pass of the
+file reads 889 fills against 9.15 M refusals for not-native callees.  So in
+this file nearly every call that misses goes to a builtin or an interpreted
+function.  For those the levers are the `&optional` prologue below and the
+builtins themselves, not the call path.
+
+The first build placed the fill check ahead of `jit_dispatch` (see §5, "As
+built").  In the same setup it measured the builtin rows 0.2 µs slower with
+direct calls on, the native-helper mix equal (39.5 vs 39.7), and the
+bytecode-helper mix 7% *slower* (45.1 vs 42.3).
+
+The Clamacs per-key spike (`clamacs/spike/run-spike.sh 040`: 1,051 keys,
+44 RETs) ran in four boots, on / off / on / off (`SPIKE_SETENV=
+CLAMIGA_JIT_DIRECT=0` for off).  Per key, median / p90: 321 / 385 and
+383 / 385 µs on, against 385 / 449 and 392 / 449 µs off.  RET median: 32.9
+and 31.5 ms on, against 32.8 and 33.2 ms off.  The spike's clock ticks in
+about 64 µs steps, so the per-key gain is about one tick at p90.  Explicit
+full GCs are equal.
+
+**Vampire V4: still to be measured.**  The box was offline on 2026-10-01.
+Measure it the same way: one binary, kill-switch pairs, interleaved, plus
+the spike through `clamacs/spike/run-vamp.py` with the same
+`SPIKE_SETENV`.
 
 ## Later (not in this spec)
 

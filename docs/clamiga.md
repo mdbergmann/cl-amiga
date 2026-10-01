@@ -53,6 +53,8 @@ isolating JIT bugs around a single `defun`.
 | `(%jit-frames-p)` | function | Whether shadow frames are on |
 | `(%jit-disassemble fn)` | function | Disassemble a function's native m68k code |
 | `(%jit-invoke-count)` | function | How many times the JIT path was entered |
+| `(%jit-set-direct-calls enable)` | function | Enable/disable direct native-to-native calls (on by default; `CLAMIGA_JIT_DIRECT=0` starts with them off) — for A/B runs and bisecting |
+| `(%jit-direct-call-stats)` | function | Call-site counters as a plist: `:fills`, `:misses`, the refusal reasons, `:gen`, `:enabled` |
 | `(%trace-function name)` / `(%untrace-function name)` / `(%untrace-all)` | function | Low-level tracing primitives behind `trace`/`untrace` (`name` is a symbol) |
 | `(%get-gc-count)` | function | Number of GCs performed (diagnostics) |
 

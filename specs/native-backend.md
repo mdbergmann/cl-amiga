@@ -1568,11 +1568,54 @@ the load-time cost, which is a separate lever (`specs/lazy-jit.md`).
 
 - `&optional` / `&rest` prologue shapes for the walker (the interpreted-callee
   row above).
-- Direct JSR to a native callee from the call site (no helper at all) when
-  the resolved function carries native code — the remaining ~4.5 us per
-  native call on the Vampire is the helper, `cl_jit_invoke`'s bookkeeping
-  and the C-stack probe.  Specified in `specs/jit-direct-calls.md`
-  (generation-guarded call-site cells, 2026-10-01).
+- ~~Direct JSR to a native callee from the call site (no helper at all)
+  when the resolved function carries native code~~ -- done 2026-10-01, see
+  "Status (2026-10-01, direct native-to-native calls)" below.
 - ~~Lazy compilation / a hot-function gate for load time~~ -- done 2026-09-22:
   functions compile once hot, loops on their first call, `(speed 3)` at
   definition (`specs/lazy-jit.md`).
+
+## Status (2026-10-01, direct native-to-native calls)
+
+A call site in native code now jumps straight into a native callee's
+code when the call fits the callee's positional ABI.  There is no C
+helper, no argument copy and no `FindTask` on that path.  Each site owns
+a 12-byte cell (gen, func, entry) in the code buffer.  One global word,
+`cl_call_gen`, guards every cell, and every event that could make a cell
+wrong bumps it: function-cell writes (a setter funnel plus a lint), each
+collection, freed native code, TRACE, shadow frames and the kill switch.
+Design, as-built notes and tests are in `specs/jit-direct-calls.md`.
+Native code now passes arguments in operand-stack order and keeps the
+current `CL_Thread*` in A3.  The asm `cl_jit_enter` sets this up, and an
+inline C-stack floor check keeps runaway recursion reaching the guard.
+
+FS-UAE 040, kill-switch pairs in one boot (`CLAMIGA_JIT_DIRECT=0`), µs per
+iteration including the 0.5 µs loop:
+
+| Row                              | JIT, direct off | JIT, direct on |
+|----------------------------------|----------------:|---------------:|
+| call native leaf                 |  6.2 |  0.9 |
+| FUNCALL native leaf              |  5.8 |  1.1 |
+| builtin 2-arg (LOGTEST)          |  4.1 |  4.1 |
+| decode-key mix (native helper)   | 37.1 | 34.7 |
+| decode-key mix (bytecode helper) | 39.2 | 39.2 |
+
+The Clamacs per-key spike, in on/off pairs, reads about one timer tick
+(64 µs) better per key at p90; RET medians overlap (31.5-32.9 ms on vs
+32.8-33.2 off).
+
+Calls into builtins and interpreted functions take the helper as before,
+at the same cost.  The fill attempt sits in `jit_dispatch`'s native arm,
+so those misses pay nothing extra.  The Vampire leg has not been measured
+yet; see the spec's §Results.
+
+**Open levers, after this:**
+
+- `&optional` / `&rest` prologue shapes for the walker.  Callees that stay
+  interpreted are the largest remaining call cost, and a direct-called
+  `&optional` callee needs `nargs` in D1 (spec §Later).
+- `&key` callees through a site (they keep the helper).
+- Save `jit_c_floor` beside the saved JIT depth and restore it on unwind.
+  Today a throw out of a Lisp callback that ran on another task's stack
+  leaves the floor parked, and that thread's sites take the slow path
+  until the outermost native call returns.  It costs speed only.

@@ -7,6 +7,64 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-10-01 — JIT direct native-to-native calls: a call to a native leaf 6.2 → 0.9 us (FS-UAE 040)
+
+**Context**: `specs/jit-direct-calls.md`.  A call site in native code now
+jumps straight into a native callee whose positional ABI the call fits.
+One generation word guards all the call-site cells.  Every other callee
+takes the helper as before.
+
+**Environment**: FS-UAE A4000/68040 (`verify/realamiga/verify.fs-uae`),
+the cross-built `build/cross/clamiga` of branch `spec/jit-direct-calls`,
+`--no-image --heap 8M`, `stack 128000`.  One boot runs three interleaved
+rounds of the same binary, alternating the default with
+`CLAMIGA_JIT_DIRECT=0` (the kill switch).  Medians, µs per iteration
+including the loop, 200,000 iterations per row.
+
+| Row                              | bytecode | JIT, direct off | JIT, direct on |
+|----------------------------------|---------:|----------------:|---------------:|
+| loop only                        |  7.6 |  0.5 |  0.5 |
+| builtin 2-arg (LOGTEST)          | 12.8 |  4.1 |  4.1 |
+| builtin 1-arg (HASH-TABLE-P)     | 12.6 |  3.5 |  3.5 |
+| builtin GETHASH                  | 21.7 | 13.1 | 13.0 |
+| call bytecode leaf               | 13.5 | 12.4 | 12.4 |
+| call native leaf                 | 13.6 |  6.2 |  0.9 |
+| call &optional leaf              | 17.3 | 16.9 | 16.9 |
+| call same-state leaf             | 13.3 |  6.2 |  0.9 |
+| FUNCALL native leaf              | 12.1 |  5.8 |  1.1 |
+| local BLOCK/RETURN-FROM          | 13.6 |  3.7 |  3.7 |
+| fixnum CASE (8 keys)             | 23.7 |  6.2 |  6.2 |
+| FFI PEEK-U16                     | 11.5 |  3.9 |  3.9 |
+| decode-key mix (native helper)   | 56.2 | 37.1 | 34.7 |
+| decode-key mix (bytecode helper) | 56.1 | 39.2 | 39.2 |
+
+Net of the loop, a native call costs 0.4 µs, against 5.7 through the
+helper and 13.1 in the interpreter.  The first build checked the fill rule
+*before* dispatching, which made every builtin call 0.2 µs slower with
+direct calls on.  It also cancelled the mix's gain (native helper 39.5 vs
+39.7) and made the bytecode-helper mix 7% slower (45.1 vs 42.3).  Moving
+the fill into the dispatcher's native arm removed that, as the table shows.
+The same change made the miss path look up the thread once instead of
+twice, which is why the "off" column also beats the 2026-09-16 numbers.
+
+The Clamacs per-key spike (`clamacs/spike/run-spike.sh 040`: 1,051 keys,
+44 RETs) ran in four boots, on / off / on / off (`SPIKE_SETENV=
+CLAMIGA_JIT_DIRECT=0` for off).  Per key, median / p90: 321 / 385 and
+383 / 385 µs on, against 385 / 449 and 392 / 449 µs off.  RET median: 32.9
+and 31.5 ms on, against 32.8 and 33.2 ms off.  The spike's clock ticks in
+about 64 µs steps, so the per-key gain is about one tick at p90.  Explicit
+full GCs are equal.
+
+**Vampire V4: not measured yet** (the box was offline).
+
+**Reproduce**: build with `make -f Makefile.cross amiga`, then boot with a
+boot-override (see `verify/realamiga/call-on-ustartup`).  Per round it
+runs `clamiga --no-userinit --no-image --heap 8M --non-interactive --load
+trunk/bench-jit-call.lisp` twice, once plain and once after `setenv
+CLAMIGA_JIT_DIRECT 0`, with `unsetenv` after it.
+
+---
+
 ## 2026-09-28 — sento matrix for 0.11: five cells hold 0.10, pinned/tell −15% (open), sento 3.5.0 +2% to +132%
 
 **Context**: the full matrix on `80572be7` (the 0.11 tree a week after
