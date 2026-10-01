@@ -328,6 +328,21 @@ void m68k_emit_subq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn)
     cb_emit_u16(cb, enc);
 }
 
+/* SUBQ.W #imm,(d16,An): 0101 ddd 1 01 101 nnn + d16 -- size=01 (word),
+ * mode=101 ((d16,An)).  #1,(d16,a3) is $536B.  4 bytes. */
+void m68k_emit_subq_w_disp_an(CodeBuf *cb, uint8_t imm, int16_t disp,
+                              M68kReg an)
+{
+    uint8_t data;
+    uint16_t enc;
+    M68K_CHECK_QIMM(imm);
+    data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
+    enc = (uint16_t)(0x5100 | ((uint16_t)data << 9) |
+                     (1 << 6) | (5 << 3) | (an & 7));
+    cb_emit_u16(cb, enc);
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
 /* ADDQ.L #imm,Dn: bit 8 = 0 (ADDQ).  2 bytes. */
 void m68k_emit_addq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn)
 {

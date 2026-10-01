@@ -1615,3 +1615,59 @@ yet; see the spec's §Results.
   interpreted are the largest remaining call cost, and a direct-called
   `&optional` callee needs `nargs` in D1 (spec §Later).
 - `&key` callees through a site (they keep the helper).
+
+## Status (2026-10-01, native loops poll)
+
+**The bug.**  The interpreter runs `CL_SAFEPOINT` and the Ctrl-C poll on
+every backward jump (`vm.c`, `OP_JMP`).  Native code polled only on its
+way into a call (the call-site miss path, `jit_dispatch`).  A native loop
+that called nothing therefore ran to its end without stopping:
+
+- a peer thread's stop-the-world collection waited for the whole loop;
+- `MP:INTERRUPT-THREAD` was not delivered;
+- Ctrl-C did not break it.  Since the lazy JIT compiles a function with a
+  loop on its first call, that included a loop typed at the REPL.
+
+A self tail call that the walker turns into a branch back to the entry had
+the same gap.
+
+**The fix.**  The pre-scan marks every target of a backward branch
+(`JIT_LOOP_HEAD` in `is_target[]`).  The walker emits a 14-byte poll there,
+and before each self-tail-call branch:
+
+```
+subq.w  #1,jit_loop_ctr(a3)   ; per-thread countdown, through A3
+bcc.w   .skip                 ; no borrow: not yet
+jsr     cl_jit_runtime_loop_poll
+.skip:
+```
+
+Every `CL_JIT_LOOP_POLL_EVERY` (256) iterations, `cl_jit_runtime_loop_poll`
+resets the countdown and runs the interpreter's checks: the GC safepoint,
+any pending interrupt, and `cl_vm_poll_break` (the interpreter's own Ctrl-C
+handler).  Branch targets have an empty register cache, so every live value
+is on the m68k stack, where the conservative scan finds it if the poll
+collects.
+
+**Cost**, FS-UAE 040, interleaved runs without and with the poll, ns per
+iteration:
+
+| Loop                 | without | with |
+|----------------------|--------:|-----:|
+| tight fixnum add     | 500-510 | 510-520 |
+| list walk (CAR/CDR)  | 820     | 840-850 |
+| loop calling a leaf  | 920     | 960-1000 |
+| self tail call       | 950-970 | 1000-1030 |
+
+That is 2-8% on the emulator, whose JIT flatters straight-line code.  The
+68020 and the Vampire are not measured.
+
+**Tests** (`tests/amiga/test-jit.lisp`, "jit-loop-poll-*"):
+- a worker thread spinning in a loop with no calls receives an interrupt,
+  does not hold up a full GC requested by the main thread, and is broken by
+  a real `SIGBREAKF_CTRL_C`;
+- the same holds for a self tail call (this check fails with the poll
+  removed from that path);
+- a compaction stress run walks a list while a peer compacts;
+- a byte golden shows the poll at the loop header and no poll in
+  straight-line code.

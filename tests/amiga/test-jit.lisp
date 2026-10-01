@@ -2597,6 +2597,126 @@
 ;; (A peer's stop-the-world collection while threads loop on direct calls:
 ;; jit-direct-native-callee-across-concurrent-gc above.)
 
+;; --- Loops without calls poll (the interpreter's OP_JMP safepoint).
+;; The interpreter checks for a pending GC, an interrupt and Ctrl-C on every
+;; backward jump; native code used to check only on its way into a call.
+;; So a native loop that calls nothing ran to its end deaf: a peer's
+;; stop-the-world collection waited for it, MP:INTERRUPT-THREAD was not
+;; delivered, Ctrl-C did not break it.  JLP-SPIN is such a loop: an inline
+;; fixnum add, an inline compare and a special-variable read per iteration.
+;; It also stops by itself after N iterations (several seconds native), so
+;; a regression costs time but cannot hang the suite.
+(require "amiga/raw/exec")
+(defvar *jlp-stop* nil)
+(defvar *jlp-task* nil)
+(defun jlp-spin (n)
+  (let ((i 0))
+    (loop until (or *jlp-stop* (>= i n)) do (setq i (+ i 1)))
+    i))
+(defconstant +jlp-n+ 5000000)
+(jlp-spin 10)
+(check "jit-loop-poll-spin-is-native" t
+  (not (null (clamiga::%jit-dump-bytes #'jlp-spin))))
+;; The poll at the loop header: subq.w #1,jit_loop_ctr(a3) ($536B d16),
+;; bcc.w over the call ($6400 $0008), jsr abs.l ($4EB9).
+(check "jit-loop-poll-emitted-at-loop-header" t
+  (let ((b (clamiga::%jit-dump-bytes #'jlp-spin)))
+    (let ((p (search '(#x53 #x6B) b)))
+      (and p (equal (subseq b (+ p 4) (+ p 10)) '(#x64 #x00 #x00 #x08 #x4E #xB9))))))
+;; A function without a loop gets no poll.
+(defun jlp-straight (a b) (if (< a b) (+ a b) (- a b)))
+(jlp-straight 1 2)
+(check "jit-loop-poll-not-in-straight-code" '(t nil)
+  (let ((b (clamiga::%jit-dump-bytes #'jlp-straight)))
+    (list (not (null b)) (not (null (search '(#x53 #x6B) b))))))
+
+;; A self tail call is a loop too: the native code branches back to its
+;; entry, and polls on the way round.
+(defun jlp-tail (i n)
+  (if (or *jlp-stop* (>= i n)) i (jlp-tail (+ i 1) n)))
+(jlp-tail 0 10)
+(check "jit-loop-poll-self-tail-call-interrupt-delivered" '(:interrupted t)
+  (progn
+    (setq *jlp-stop* nil)
+    (let ((th (mp:make-thread (lambda () (jlp-tail 0 +jlp-n+)) :name "jlp-tail")))
+      (sleep 0.2)
+      (mp:interrupt-thread th (lambda () (setq *jlp-stop* :interrupted)))
+      (loop repeat 50 until *jlp-stop* do (sleep 0.1))
+      (let ((r *jlp-stop*))
+        (unless r (setq *jlp-stop* :forced))
+        (list r (< (mp:join-thread th) +jlp-n+))))))
+
+(check "jit-loop-poll-interrupt-delivered" '(:interrupted t)
+  (progn
+    (setq *jlp-stop* nil)
+    (let ((th (mp:make-thread (lambda () (jlp-spin +jlp-n+)) :name "jlp-spin")))
+      (sleep 0.2)
+      (mp:interrupt-thread th (lambda () (setq *jlp-stop* :interrupted)))
+      (loop repeat 50 until *jlp-stop* do (sleep 0.1))
+      (let ((r *jlp-stop*))
+        (unless r (setq *jlp-stop* :forced))
+        (list r (< (mp:join-thread th) +jlp-n+))))))
+
+;; A full GC requested from here has to stop the spinning thread at its
+;; next loop iteration, not after its last one: the collection returns
+;; while the spinner is still alive and short of N.
+(check "jit-loop-poll-stw-gc-not-delayed" '(t t t)
+  (progn
+    (setq *jlp-stop* nil)
+    (let ((th (mp:make-thread (lambda () (jlp-spin +jlp-n+)) :name "jlp-spin")))
+      (sleep 0.3)
+      (let* ((t0 (get-internal-real-time))
+             (dummy (ext:gc))
+             (dt (/ (- (get-internal-real-time) t0)
+                    internal-time-units-per-second))
+             (alive (mp:thread-alive-p th)))
+        (declare (ignore dummy))
+        (setq *jlp-stop* :done)
+        (list (< dt 1) alive (< (mp:join-thread th) +jlp-n+))))))
+
+;; Collections that now run INSIDE a native loop (at its poll) move the
+;; objects the loop holds in its frame: a list walked over and over while a
+;; peer compacts must still sum to the same value every pass.
+(defun jlp-walk (l n)
+  (let ((s 0))
+    (dotimes (k n)
+      (let ((p l))
+        (loop while p do (setq s (+ s (car p)) p (cdr p)))))
+    s))
+(jlp-walk '(1 2) 1)
+(stress-check "jit-loop-poll-compaction-inside-loop" '(t t)
+  (let* ((l (loop for i from 1 to 50 collect i))
+         (walker (mp:make-thread (lambda () (jlp-walk l 1500)) :name "jlp-walk"))
+         (compactor (mp:make-thread
+                     (lambda () (dotimes (i 15) (ext:gc-compact)) t)
+                     :name "jlp-compactor")))
+    (list (= (mp:join-thread walker) (* 1500 1275))
+          (mp:join-thread compactor))))
+
+;; Ctrl-C (SIGBREAKF_CTRL_C on the thread's own task) breaks the loop.  BREAK
+;; goes through *DEBUGGER-HOOK*, which the spinner binds to leave the loop.
+(check "jit-loop-poll-ctrl-c-breaks" '(:break t)
+  (progn
+    (setq *jlp-stop* nil *jlp-task* nil)
+    (let ((th (mp:make-thread
+               (lambda ()
+                 (let ((*debugger-hook*
+                         (lambda (c h)
+                           (declare (ignore c h))
+                           (setq *jlp-stop* :break)
+                           (throw 'jlp-out 0))))
+                   (catch 'jlp-out
+                     (setq *jlp-task* (amiga.raw.exec:find-task nil))
+                     (jlp-spin +jlp-n+))))
+               :name "jlp-spin")))
+      (loop repeat 50 until *jlp-task* do (sleep 0.1))
+      (sleep 0.2)
+      (when *jlp-task* (amiga.raw.exec:signal *jlp-task* #x1000))
+      (loop repeat 50 until *jlp-stop* do (sleep 0.1))
+      (let ((r *jlp-stop*))
+        (unless r (setq *jlp-stop* :forced))
+        (list r (< (mp:join-thread th) +jlp-n+))))))
+
 
 ; --- String-scan fast path (opcodes.h 0xC0-0xC4, specs/performance.md 4.4).
 ; Five opcodes, each with a walker template: AREF (helper call with the

@@ -316,6 +316,10 @@ void cl_vm_init(uint32_t stack_size, int frame_size);
 /* Shutdown VM (free dynamic allocations) */
 void cl_vm_shutdown(void);
 
+/* Ctrl-C check of the interpreter's backward jumps: when a break is
+ * pending, report it and call BREAK.  For native loops (jit/runtime.c). */
+void cl_vm_poll_break(void);
+
 /* Execute a bytecode object, return result */
 CL_Obj cl_vm_eval(CL_Obj bytecode);
 

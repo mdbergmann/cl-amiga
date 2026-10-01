@@ -168,6 +168,11 @@ void m68k_emit_sub_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm);
  * strip the surplus tag bit after fixnum + fixnum. */
 void m68k_emit_subq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn);
 
+/* SUBQ.W #imm,(d16,An) — decrement a word in memory; C is set on borrow.
+ * imm in 1..8.  4 bytes.  The native loop poll's countdown. */
+void m68k_emit_subq_w_disp_an(CodeBuf *cb, uint8_t imm, int16_t disp,
+                              M68kReg an);
+
 /* ADDQ.L #imm,Dn — symmetric to SUBQ.L.  2 bytes. */
 void m68k_emit_addq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn);
 

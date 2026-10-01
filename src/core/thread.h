@@ -318,6 +318,14 @@ typedef struct CL_Thread_s {
      * jit_stack_top it is only meaningful while jit_depth > 0.  See
      * specs/jit-direct-calls.md §4. */
     char  *jit_c_floor;
+    /* Countdown of native loop iterations to the next poll.  Every loop
+     * header in native code (the target of a backward branch, and the
+     * entry of a function that may tail-call itself) decrements it through
+     * A3; when it wraps, cl_jit_runtime_loop_poll runs the interpreter's
+     * OP_JMP checks -- GC safepoint, pending interrupt, Ctrl-C -- and
+     * resets it to CL_JIT_LOOP_POLL_EVERY - 1.  Zero-initialised like the
+     * rest of the struct, so the first header polls at once. */
+    uint16_t jit_loop_ctr;
     /* Captured C stack pointer at the moment this thread PARKED for a
      * stop-the-world GC (safepoint or safe-region entry).  A peer thread that
      * initiates a compaction cannot use its own SP as the lower bound when

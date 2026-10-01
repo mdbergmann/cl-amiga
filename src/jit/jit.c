@@ -976,11 +976,20 @@ static uint32_t compute_landing_ip(int32_t offset, uint32_t base,
     return landing;
 }
 
+/* is_target[] flags.  JIT_TARGET: some branch lands here.  JIT_LOOP_HEAD:
+ * a backward branch (target at or before the branch) lands here, so the
+ * walker emits the loop poll at this IP (emit_loop_poll). */
+#define JIT_TARGET    1
+#define JIT_LOOP_HEAD 2
+#define JIT_BRANCH_FLAGS(target, ip) \
+    ((uint8_t)((target) <= (ip) ? (JIT_TARGET | JIT_LOOP_HEAD) : JIT_TARGET))
+
 /* Walk the bytecode once to find every IP that is the target of a
- * branch.  Sets `is_target[ip] = 1` for each such IP.  Used by
+ * branch.  Sets JIT_TARGET in `is_target[ip]` for each such IP, plus
+ * JIT_LOOP_HEAD for the target of a backward branch.  Used by
  * walker_compile to know where to flush the cache so the cache state
  * at every branch boundary is depth=0 — see the comment above the
- * cache primitives.
+ * cache primitives — and where loops poll.
  *
  * Also doubles as a structural validator: returns 0 if it sees an
  * opcode the walker doesn't know how to handle or a malformed
@@ -1056,7 +1065,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             offset = read_i32_be(bc->code + ip + 1 + pre);
             target = compute_landing_ip(offset, ip + step, bc->code_len, &ok);
             if (!ok) return 0;
-            is_target[target] = 1;
+            is_target[target] |= JIT_BRANCH_FLAGS(target, ip);
             break;
         }
         case OP_JMP: case OP_JNIL: case OP_JTRUE: {
@@ -1069,7 +1078,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             /* catch_ip in the VM = ip after the i32 = ip + 5. */
             target = compute_landing_ip(offset, ip + 5, bc->code_len, &ok);
             if (!ok) return 0;
-            is_target[target] = 1;
+            is_target[target] |= JIT_BRANCH_FLAGS(target, ip);
             break;
         }
         case OP_BLOCK_PUSH: {
@@ -1086,7 +1095,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             /* catch_ip in the VM = ip after reading u16 + i32 = ip + 7. */
             landing_ip = compute_landing_ip(offset, ip + 7, bc->code_len, &ok);
             if (!ok) return 0;
-            is_target[landing_ip] = 1;
+            is_target[landing_ip] |= JIT_TARGET;
             break;
         }
         case OP_TAGBODY_PUSH: {
@@ -1105,7 +1114,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             offset = read_i32_be(bc->code + ip + 3);
             landing_ip = compute_landing_ip(offset, ip + 7, bc->code_len, &ok);
             if (!ok) return 0;
-            is_target[landing_ip] = 1;
+            is_target[landing_ip] |= JIT_TARGET;
             break;
         }
         case OP_CATCH: {
@@ -1122,7 +1131,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             offset = read_i32_be(bc->code + ip + 1);
             landing_ip = compute_landing_ip(offset, ip + 5, bc->code_len, &ok);
             if (!ok) return 0;
-            is_target[landing_ip] = 1;
+            is_target[landing_ip] |= JIT_TARGET;
             break;
         }
         case OP_UWPROT: {
@@ -1139,7 +1148,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             offset = read_i32_be(bc->code + ip + 1);
             landing_ip = compute_landing_ip(offset, ip + 5, bc->code_len, &ok);
             if (!ok) return 0;
-            is_target[landing_ip] = 1;
+            is_target[landing_ip] |= JIT_TARGET;
             break;
         }
         case OP_HANDLER_CASE_PUSH: {
@@ -1167,7 +1176,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             while (CL_CONS_P(types)) { n++; types = cl_cdr(types); }
             if (n == 0 || n > 127 || landing_ip + 5 * n > bc->code_len) return 0;
             for (k = 0; k < n; k++)
-                is_target[landing_ip + 5 * k] = 1;
+                is_target[landing_ip + 5 * k] |= JIT_TARGET;
             break;
         }
         case OP_HANDLER_CASE_POP:
@@ -1372,6 +1381,30 @@ static void jit_sites_record(JitSites *s, uint32_t off)
 #define JIT_C_FLOOR_DISP ((int16_t)offsetof(CL_Thread, jit_c_floor))
 typedef char jit_c_floor_disp_fits_d16[
     (offsetof(CL_Thread, jit_c_floor) < 32768) ? 1 : -1];
+
+/* The loop poll counts down CL_Thread.jit_loop_ctr through A3. */
+#define JIT_LOOP_CTR_DISP ((int16_t)offsetof(CL_Thread, jit_loop_ctr))
+typedef char jit_loop_ctr_disp_fits_d16[
+    (offsetof(CL_Thread, jit_loop_ctr) < 32768) ? 1 : -1];
+
+/* Emit the loop poll (runtime.h, cl_jit_runtime_loop_poll) at a loop
+ * header: the target of a backward branch, or right before a self tail
+ * call branches back to the entry.  The interpreter runs CL_SAFEPOINT and
+ * the Ctrl-C poll on every backward jump; without this, a native loop that
+ * calls nothing never stops for a peer's collection, an MP:INTERRUPT-THREAD
+ * or Ctrl-C.  The cache must be empty (depth 0, which every branch target
+ * is) and no flags are live.  14 bytes:
+ *
+ *     subq.w  #1,jit_loop_ctr(a3)
+ *     bcc.w   .skip
+ *     jsr     cl_jit_runtime_loop_poll
+ *   .skip: */
+static void emit_loop_poll(CodeBuf *cb)
+{
+    m68k_emit_subq_w_disp_an(cb, 1, JIT_LOOP_CTR_DISP, REG_A3);
+    m68k_emit_bcc_w(cb, 4 /* BCC: no borrow */, 2 + 6);
+    m68k_emit_jsr_abs_l(cb, (uint32_t)(uintptr_t)&cl_jit_runtime_loop_poll);
+}
 
 /* Emit one call through a direct-call site.  The cache is flushed and the
  * NARGS arguments are on the operand stack ((a7) = the last); for OP_CALL /
@@ -1657,6 +1690,8 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             cache_flush(cb, &cache_head, &cache_depth);
         }
         bc_to_native[ip] = (int32_t)cb_len(cb);
+        /* A loop header: the backward branch lands on the poll. */
+        if (is_target[ip] & JIT_LOOP_HEAD) emit_loop_poll(cb);
         op = bc->code[ip++];
         switch (op) {
         case OP_NIL:
@@ -2472,6 +2507,8 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                 m68k_emit_lea_disp_an_to_am(cb,
                     (int16_t)(frame_size - 12), REG_A6, REG_A7);
 
+                /* The self tail call is a loop: poll before going round. */
+                emit_loop_poll(cb);
                 entry_off = bc_to_native[0];
                 bra_disp = entry_off - ((int32_t)cb_len(cb) + 2);
                 if (bra_disp < -32768 || bra_disp > 32767) goto fail;
@@ -2601,6 +2638,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                 }
                 m68k_emit_lea_disp_an_to_am(cb,
                     (int16_t)(frame_size - 12), REG_A6, REG_A7);
+                emit_loop_poll(cb);   /* a loop, as in OP_TAILCALL */
                 entry_off = bc_to_native[0];
                 bra_disp = entry_off - ((int32_t)cb_len(cb) + 2);
                 if (bra_disp < -32768 || bra_disp > 32767) goto fail;
@@ -4430,6 +4468,16 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
         int dn = op & 7;
         if (data == 0) data = 8;
         snprintf(mnemonic, (size_t)msize, "addq.l #%d,d%d", data, dn);
+        matched = 1;
+    } else if ((op & 0xF1F8) == 0x5168) {           /* SUBQ.W #imm,(d16,An) */
+        int data = (op >> 9) & 7;
+        int an = op & 7;
+        int16_t d;
+        if (pos + 2 > len) return 0;
+        d = (int16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
+        pos += 2;
+        if (data == 0) data = 8;
+        snprintf(mnemonic, (size_t)msize, "subq.w #%d,%d(a%d)", data, (int)d, an);
         matched = 1;
     } else if ((op & 0xF1C0) == 0x5180) {           /* SUBQ.L #imm,Dn */
         int data = (op >> 9) & 7;

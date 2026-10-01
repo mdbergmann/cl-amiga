@@ -84,6 +84,13 @@ static void vm_handle_break(void)
     }
 }
 
+/* The same check for native loops (cl_jit_runtime_loop_poll), which keep
+ * their own countdown in CL_Thread.jit_loop_ctr. */
+void cl_vm_poll_break(void)
+{
+    vm_handle_break();
+}
+
 /* Counter-gated poll, cheap enough for the OP_JMP/OP_CALL hot path.  Uses
  * cl_vm_run's `thr` local (per-thread counter — see the note above). */
 #define VM_POLL_BREAK() \

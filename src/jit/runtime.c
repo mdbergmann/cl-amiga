@@ -1051,6 +1051,15 @@ int cl_jit_runtime_is_self_tco(CL_Obj func, CL_Obj self_bc)
     return 0;
 }
 
+void cl_jit_runtime_loop_poll(void)
+{
+    CL_Thread *thr = cl_get_current_thread();
+    thr->jit_loop_ctr = (uint16_t)(CL_JIT_LOOP_POLL_EVERY - 1);
+    if (thr->gc_requested) cl_gc_safepoint();
+    if (thr->interrupt_pending) cl_thread_handle_interrupt(thr);
+    cl_vm_poll_break();
+}
+
 /* Backing for OP_MV_RESET.  Bytecode VM does `cl_mv_count = 1` (= a
  * single store into the current thread's CL_Thread.mv_count field).
  * The walker doesn't have CT cached in an A-register and the broader

@@ -285,6 +285,23 @@ CL_Obj cl_jit_runtime_cell_set_upval(CL_Obj func_obj, uint32_t index,
  * fallback without dereferencing closures inline in m68k. */
 int cl_jit_runtime_is_self_tco(CL_Obj func, CL_Obj self_bc);
 
+/* Native loop poll: what the interpreter does on every backward jump (GC
+ * safepoint, pending interrupt, Ctrl-C), run once every
+ * CL_JIT_LOOP_POLL_EVERY loop iterations.  The walker emits, at every loop
+ * header (cache depth 0, so every live value is on the m68k stack for the
+ * conservative scan):
+ *
+ *     subq.w  #1,jit_loop_ctr(a3)
+ *     bcc.w   .skip                  ; no borrow: not yet
+ *     jsr     cl_jit_runtime_loop_poll
+ *   .skip:
+ *
+ * The helper resets the countdown first, then may collect garbage, run an
+ * interrupt function or enter the debugger -- any of which may leave
+ * non-locally, as from any other helper. */
+#define CL_JIT_LOOP_POLL_EVERY 256
+void cl_jit_runtime_loop_poll(void);
+
 /* Backing for OP_MV_RESET — sets cl_mv_count = 1 on the current
  * thread.  Non-allocating, doesn't touch the operand stack: a plain
  * JSR with no cache flush needed. */
