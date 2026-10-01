@@ -1,6 +1,7 @@
 # Native Code Backend (AArch64)
 
-Status: proposal, 2026-10-01.  Nothing here is implemented yet.  Both
+Status: phases 0 and 1 done on branch `feat/a64-jit` (2026-10-01; see
+each phase's status note).  Proposal from 2026-10-01; both
 prerequisites are on master: direct native-to-native calls
 (`specs/jit-direct-calls.md`, 27c74b00) and the loop poll
 (`specs/native-backend.md`, "Status (2026-10-01, native loops poll)",
@@ -173,8 +174,19 @@ stay m68k-only.  This rule is the AArch64 form of the m68k
 `cache_flush`-before-JSR rule, with memory instead of the CPU stack as
 the target.
 
-**Rule 2: heap constants are loaded from a literal pool, never encoded in
-instructions.**  An AArch64 instruction cannot carry a 32-bit immediate
+**Rule 2 (as built in phase 1): heap constants are read from
+`bc->constants` at each use, never encoded in instructions.**  The prologue
+loads the array's address (a 64-bit literal after the code) into x22, and
+`OP_CONST` is `ldr w, [x22, #4*i]`.  The array is `platform_alloc`'d once
+when the bytecode is born and never moves, and both collectors -- minor
+collections included -- already forward its words in place, because the
+interpreter reads constants from it.  `T` is read through the address of
+the `CL_T` global.  So native code bakes no heap object at all: no pool, no
+relocation table, and Rules 2 and 3 below as first proposed (kept for the
+record) are not needed.
+
+*As first proposed:* heap constants are loaded from a literal pool, never
+encoded in instructions.  An AArch64 instruction cannot carry a 32-bit immediate
 the way an m68k `move.l #imm` does, so the m68k scheme of patching
 immediates inside the code does not carry over.
 - Each compiled function gets a pool: an array of 32-bit words holding
@@ -335,7 +347,7 @@ so it also needs `make -f Makefile.cross test-amiga`.
   shutdown), `test_jit_a64.sh` (also in `make test-gc-stress`), and the
   `no_leak_after_jit_stubs` memleak scenario.
 
-For phase 1:
+Done in phase 1:
 - `cl_jitc_invoke_count` is a process-wide counter written on every native
   entry.  That is harmless for stubs, but under threads it is the
   shared-cache-line cost the hot-path rule in `CLAUDE.md` forbids; make
@@ -363,6 +375,61 @@ For phase 1:
     differential run against the interpreter.
   - A threaded test: a call-free native loop in one thread while another
     thread forces GCs, which must finish (Rule 4).
+
+**Status (2026-10-01): done** on branch `feat/a64-jit`.
+- `jit_a64.c` walks the bytecode once.  Covered: the stack and local
+  opcodes and their superinstructions, constants, every branch (with the
+  loop poll at each backward-branch target), `RET`, the calls (`CALL`,
+  `CALL_GLOBAL` and its fused heads, `APPLY`), arithmetic and comparisons,
+  `EQ`/`NOT`, `CAR`/`CDR`/`CONS`/`LIST`/`RPLACA`/`RPLACD`, the global and
+  function cells, struct slots, `ASET`/`AREF`, `ASSERT_TYPE`, and the
+  string-scan opcodes.  Each runs the helper the m68k walker calls, or an
+  AArch64 one in `runtime.c` that takes pointers into `cl_vm.stack`
+  (`cl_jit_runtime_a64_*`), and writes `cl_mv_count` where the interpreter
+  does.  `EQ`, `NOT` and the branches are inline.  Everything else declines:
+  the NLX frames, dynamic binding, `PROGV`, the multiple-value opcodes,
+  closures and upvalues, `&key`/`&optional`/`&rest`, handlers and restarts.
+- The walker tracks the operand-stack depth; an edge whose depth disagrees
+  with its target's declines the function, and the deepest point sizes the
+  prologue's overflow check (bytecode carries no max-stack field).
+- A self tail call reuses the frame behind a runtime guard
+  (`cl_jit_runtime_a64_is_self`: same bytecode, nothing traced), storing the
+  callee as the frame's function.  Any other tail call to a native callee is
+  handed to `cl_jit_invoke` (`CL_Thread.jit_tail_pending`): the arguments
+  are moved to the frame base and the callee entered from there, so mutual
+  tail recursion between native functions runs in constant space, as in the
+  interpreter.  A tail call into an interpreted function is still a nested
+  call, as on m68k; hot compilation makes such a chain native quickly.
+- `vm.c`'s hot-call counting and its tail call into native code are
+  switched from `JIT_M68K` to `CL_JIT_NATIVE`; `%JIT-INVOKE-COUNT` counts
+  per thread (`CL_Thread.jit_invoke_count`) on AArch64.
+- `CLAMIGA_JIT_HOT=N` sets the hot threshold at boot; `make test-jit-eager`
+  runs the fast tier with every function compiled at definition.
+- Tests: `tests/test_jit_a64_walk.sh` (also under gc-stress) runs the
+  behavioural checks of `tests/amiga/test-jit.lisp` eager -- its
+  m68k-specific checks are now `#+m68k` -- and this backend's own: the
+  covered shapes, bignum/ratio/float slow paths, deep and runaway
+  recursion, self and mutual tail calls, errors unwinding through native
+  frames, values across collections, redefinition, the multiple-value
+  state, native code on four threads, and the loop poll (a call-free native
+  loop in one thread while another collects).
+- `make test-jit-eager` (the fast tier, every function compiled at
+  definition) computes every result the interpreter does.  What fails
+  there is introspection only: a native frame is not in the VM's frame
+  list unless `%JIT-SET-FRAMES` is on, so the backtrace, line-attribution
+  and `FRAME`-locals tests (`test_debugger_backtrace`,
+  `test_backtrace_lines`, `test_backtrace_after_handled_error`,
+  `test_call_diag`, `test_dev_commands`' frame session, two lines each of
+  `test_tier4_phase2/3` and `test_fasl_source_name`) miss the native
+  callee's frame -- the m68k JIT's open item too.  Phase 3's shadow frames
+  close it.
+- No inline fast path yet, but the dispatch is gone: on an M-series Mac
+  `trunk/bench-jit-call.lisp` runs every row faster than the interpreter
+  (builtin calls and native leaves 2-3x, `case` dispatch 3x, the mixed
+  decode-key rows 1.8x; a call into a bytecode leaf or an `&optional` one
+  equal), and none slower.  The `vm.*` and `mt.*` rows of `bench-opt`
+  (interpreted) are unchanged within 1 ms against phase 0, three
+  interleaved pairs.
 
 ### Phase 2: inline fast paths and the register cache
 Fixnum templates check both operands before touching the stack (taken
@@ -424,6 +491,15 @@ bench-opt, the backend is not worth its maintenance cost, and it stops
 there.
 
 ## Open questions
+
+- **Source layout once more CPUs come** (PPC, x86-64).  `jit.c` is the m68k
+  backend and could become `jit_m68k.c`; `runtime.c` mixes helpers every
+  backend shares, the m68k walker's own (inline-setjmp NLX frames,
+  direct-call sites, `OP_AMIGA_CALL`), and the helpers for a VM-stack frame
+  (`cl_jit_runtime_a64_*`), which a PPC or x86-64 walker built like this one
+  would reuse.  A split by frame design rather than by CPU --
+  `runtime.c` / `runtime_m68k.c` / `runtime_vmstack.c` -- is a refactor of
+  its own, after phase 1.
 
 - Is a full minor pass over the pool list cheap enough, or should pools
   of old bytecodes be skipped unless a constant was young at install?

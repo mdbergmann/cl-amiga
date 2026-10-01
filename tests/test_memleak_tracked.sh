@@ -344,6 +344,38 @@ cat > "$WORK/jitstub.lisp" <<'LISPEOF'
 LISPEOF
 run_case "no_leak_after_jit_stubs" "$WORK/jitstub.lisp"
 
+# --- AArch64 JIT: the walker (phase 1) --------------------------------------
+# Every compile builds label, depth and literal tables off-heap and frees
+# them whether it installs code or declines the function; installed code is
+# freed with a redefined or dead function.  Eager, so every DEFUN compiles;
+# a function with more than 16 helper and data addresses grows the literal
+# table.  Without the backend this is a plain churn.
+cat > "$WORK/jitwalk.lisp" <<'LISPEOF'
+(clamiga::%jit-set-hot-threshold 0)
+(defun jit-walk-probe () 1)
+(defvar *jit-walk-backend* (clamiga::%jit-compile-stub #'jit-walk-probe))
+(defvar *jit-walk-g* 0)
+(defun jit-walk-loop (n) (let ((s 0)) (dotimes (i n s) (setq s (+ s i)))))
+(defun jit-walk-many (x)
+  (list (car x) (cdr x) (cons x x) (+ 1 2) (- 3 1) (* 2 2) (< 1 2) (> 1 2)
+        (<= 1 2) (>= 1 2) (= 1 1) (setq *jit-walk-g* (1+ *jit-walk-g*))
+        (symbol-function 'car) (list 1 2 3) (eq x x) (not x) 'a "b" 3.5))
+(defun jit-walk-declined (x &optional y) (catch 'k (list x y)))
+(when (and *jit-walk-backend*
+           (not (and (clamiga::%jit-dump-bytes #'jit-walk-loop)
+                     (clamiga::%jit-dump-bytes #'jit-walk-many))))
+  (format t "SCENARIO-FAILED: the walker compiled nothing~%"))
+(jit-walk-loop 1000)
+(jit-walk-many '(1 . 2))
+(jit-walk-declined 1)
+(dotimes (i 50)
+  (funcall (compile nil `(lambda (x) (if (< x ,i) (list x ,i) (cons ,i x)))) 3))
+(defun jit-walk-loop (n) n)
+(gc)
+(quit)
+LISPEOF
+run_case "no_leak_after_jit_walker" "$WORK/jitwalk.lisp"
+
 # --- heap image save + restore ----------------------------------------------
 # The save builds an off-heap source-file table; the restore attaches every
 # function's bytecode side buffers and interns each source-file name once

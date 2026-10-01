@@ -1,4 +1,10 @@
-/* runtime.c — C helpers invoked by JIT-emitted m68k code.
+/* runtime.c — C helpers invoked by JIT-emitted native code.
+ *
+ * Shared by both backends where the helper's contract is CPU-neutral; the
+ * m68k walker's own machinery (its call sites, the inline-setjmp NLX frames,
+ * OP_AMIGA_CALL) is under JIT_M68K, the AArch64 walker's VM-stack entry
+ * points under JIT_A64 at the end.  The rest of this banner is the m68k
+ * view.
  *
  * Each helper has a stable C ABI (args on stack, result in D0) so that
  * JIT'd native code can call it via plain JSR.  Slow paths for the
@@ -15,7 +21,7 @@
  * Lisp callee that allocates, …) are safe for general workloads.
  */
 
-#ifdef JIT_M68K
+#if defined(JIT_M68K) || defined(JIT_A64)
 
 #include "jit/runtime.h"
 #include "core/types.h"
@@ -75,12 +81,14 @@ extern CL_Obj cl_symbol_value(CL_Obj sym);
  * would let its frame disappear before longjmp could rewind to it,
  * which is undefined behaviour per C99 §7.13.1.1.  Captured at
  * init-time rather than recomputed on every emit. */
+#ifdef JIT_M68K
 uint32_t cl_jit_setjmp_addr;
 
 void cl_jit_runtime_init(void)
 {
     cl_jit_setjmp_addr = (uint32_t)(uintptr_t)&setjmp;
 }
+#endif
 
 /* Slow-path `+` (2 args).  Matches the VM's OP_ADD slow path: type-
  * check both operands as NUMBER, then call cl_arith_add which handles
@@ -391,6 +399,7 @@ CL_Obj cl_jit_runtime_progv_unbind(CL_Obj mark_obj, CL_Obj result)
  * under the callee for the whole call, and native recursion nests one such
  * frame per level (a 1 KB array there let a 100-deep recursion exhaust the
  * 128 KB suite stack).  Never inlined, for the same reason. */
+#ifdef JIT_M68K
 static CL_Obj jit_dispatch_apply(CL_Obj func, CL_Obj *operand_top,
                                  uint32_t nargs) CL_NOINLINE;
 static CL_Obj jit_dispatch_apply(CL_Obj func, CL_Obj *operand_top,
@@ -402,6 +411,8 @@ static CL_Obj jit_dispatch_apply(CL_Obj func, CL_Obj *operand_top,
         args[i] = operand_top[nargs - 1 - i];
     return cl_vm_apply(func, args, (int)nargs);
 }
+
+#endif /* JIT_M68K */
 
 /* Raw CL_Bytecode* a callee (bytecode or closure) carries, or NULL.  Called
  * twice by the TYPE_BYTECODE/TYPE_CLOSURE arm below: once to decide whether
@@ -419,6 +430,7 @@ static CL_Bytecode *jit_dispatch_bytecode_of(CL_Obj func, uint32_t ftype)
     return (CL_Bytecode *)CL_OBJ_TO_PTR(func);
 }
 
+#ifdef JIT_M68K
 /* --- Direct native-to-native calls (specs/jit-direct-calls.md) ----------
  *
  * Every call site in native code owns a CL_JitCallSite cell.  The emitted
@@ -619,6 +631,8 @@ CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
     return jit_dispatch(thr, func, operand_top, nargs, site, g);
 }
 
+#endif /* JIT_M68K */
+
 /* Backing for OP_APPLY.  Flatten `arglist` into a stack-local buffer, resolve
  * a SYMBOL func through its function cell, then delegate to cl_vm_apply which
  * handles builtins, closures, and JIT-compiled callees uniformly.  The VM's
@@ -692,6 +706,12 @@ CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val)
         cl_error(CL_ERR_ARGS,
                  "%%STRUCT-SET: index %u out of range (n_slots=%u)",
                  (unsigned)idx, (unsigned)st->n_slots);
+#ifdef JIT_A64
+    /* The VM's publication barrier (vm.c, OP_STRUCT_SET): on a weakly
+     * ordered multi-core host the initializing stores of the object VAL
+     * points to must be visible before the slot that publishes it. */
+    if (CL_MT()) platform_memory_barrier();
+#endif
     st->slots[idx] = val;
     return val;
 }
@@ -1073,6 +1093,11 @@ void cl_jit_runtime_mv_reset(void)
 {
     cl_mv_count = 1;
 }
+
+/* Everything below is the m68k walker's: the inline-setjmp NLX frames, the
+ * &key prologue, OP_AMIGA_CALL and the handler/restart stacks.  The AArch64
+ * walker declines those opcodes until its phase 3. */
+#ifdef JIT_M68K
 
 /* --- OP_BLOCK_PUSH / OP_BLOCK_POP / OP_BLOCK_RETURN ----------------------
  *
@@ -2139,4 +2164,191 @@ void cl_jit_runtime_tagbody_go(CL_Obj tagbody_id, CL_Obj tag_index)
              cl_nlx_boundary_hint(tagbody_id, CL_NLX_TAGBODY));
 }
 
-#endif /* JIT_M68K */
+#endif /* JIT_M68K (NLX and friends) */
+
+#ifdef JIT_A64
+/* --- The AArch64 walker's own entry points (specs/native-backend-a64.md) --
+ *
+ * AArch64 native code keeps its locals and operand stack in cl_vm.stack,
+ * the arguments of a call in call order right under the operand-stack top,
+ * and writes cl_vm.sp before every helper call ("Rule 1": every live value
+ * is below sp, a GC root the collectors forward in place).  So these
+ * helpers take pointers into that stack, never a CL_Obj that a collection
+ * inside them could leave stale, and the arguments of a call need no copy:
+ * they already sit where cl_jit_invoke, the builtins and the stub frame
+ * expect them. */
+
+/* The prologue's overflow check failed: the frame (locals, the function
+ * slot, the deepest operand stack) does not fit the VM stack. */
+void cl_jit_runtime_a64_stack_overflow(void)
+{
+    cl_error(CL_ERR_OVERFLOW, "VM stack overflow");
+}
+
+/* Dispatch FUNC with the NARGS arguments at ARGS (on the VM stack, below
+ * thr->vm.sp, which the caller set to ARGS + NARGS).  The arms of
+ * jit_dispatch: a builtin or an FFI stub is called directly, a native
+ * callee the call fits enters through cl_jit_invoke (one C-stack probe:
+ * native frames nest on the C stack), any other bytecode/closure takes the
+ * stub frame (whose OP_CALL counts it hot, and signals an arity mismatch
+ * with OP_CALL's own diagnostic), and everything else -- a generic
+ * function, a symbol, a traced callee -- cl_vm_apply. */
+static CL_Obj a64_dispatch(CL_Thread *thr, CL_Obj func, CL_Obj *args,
+                           uint32_t nargs)
+{
+    uint32_t ftype = 0xFFu;
+
+    if (CL_HEAP_P(func) && func < cl_heap.arena_size)
+        ftype = CL_HDR_TYPE(CL_OBJ_TO_PTR(func));
+    if (thr->trace_count == 0) {
+        if (ftype == TYPE_FUNCTION)
+            return cl_vm_call_builtin(thr, (CL_Function *)CL_OBJ_TO_PTR(func),
+                                      args, (int)nargs);
+        if (ftype == TYPE_FFI_STUB) {
+            CL_Obj result = cl_ffi_stub_call(func, args, (int)nargs);
+            thr->mv_count = 1;
+            thr->mv_values[0] = result;
+            return result;
+        }
+        if (ftype == TYPE_BYTECODE || ftype == TYPE_CLOSURE) {
+            CL_Bytecode *bc = jit_dispatch_bytecode_of(func, ftype);
+            if (bc != NULL && bc->native_code != NULL) {
+                uint32_t arity = bc->arity & 0x7FFF;
+                if ((bc->arity & 0x8000) == 0 && bc->n_optional == 0 &&
+                    ((bc->flags & 1) ? nargs >= arity : nargs == arity)) {
+                    cl_check_c_stack("a native call");
+                    return cl_jit_invoke(func, bc, (int)nargs);
+                }
+            }
+            if (bc != NULL)
+                return cl_vm_call_bytecode(thr, func, args, (int)nargs, 0);
+        }
+    }
+    return cl_vm_apply(func, args, (int)nargs);
+}
+
+/* Poll first, as the interpreter's OP_CALL does (VM_SAFEPOINT): the
+ * collection it may run moves objects, so nothing is read before it. */
+static void a64_call_poll(CL_Thread *thr)
+{
+    if (thr->gc_requested) cl_gc_safepoint();
+    if (thr->interrupt_pending) cl_thread_handle_interrupt(thr);
+}
+
+/* OP_CALL / OP_TAILCALL: TOP is the operand-stack top, the function value
+ * at TOP[-NARGS-1] under the arguments. */
+CL_Obj cl_jit_runtime_a64_call(CL_Thread *thr, CL_Obj *top, uint32_t nargs)
+{
+    a64_call_poll(thr);
+    return a64_dispatch(thr, top[-(int32_t)nargs - 1], top - nargs, nargs);
+}
+
+/* OP_CALL_GLOBAL and the fused heads: the callee is the function of the
+ * symbol in *SYMREF -- a word of bc->constants, read after the poll. */
+CL_Obj cl_jit_runtime_a64_call_global(CL_Thread *thr, CL_Obj *top,
+                                      uint32_t nargs, const CL_Obj *symref)
+{
+    CL_Obj func;
+    a64_call_poll(thr);
+    func = cl_jit_runtime_fload(*symref);   /* UNDEFINED-FUNCTION as the VM */
+    return a64_dispatch(thr, func, top - nargs, nargs);
+}
+
+/* The self tail call's guard: does FUNC run the same bytecode as ENTERED,
+ * the function value this frame was entered with?  Then the walker copies
+ * the arguments over its own and branches back to the body, storing FUNC
+ * as the frame's function (a different closure over the same code brings
+ * its own upvalues).  Never while anything is traced: the call must reach
+ * the trace output. */
+int cl_jit_runtime_a64_is_self(CL_Obj func, CL_Obj entered)
+{
+    uint32_t ft, et;
+    CL_Thread *thr = CT;
+    if (thr->trace_count != 0 || cl_traced_function_count != 0) return 0;
+    if (!CL_HEAP_P(func) || func >= cl_heap.arena_size) return 0;
+    if (!CL_HEAP_P(entered) || entered >= cl_heap.arena_size) return 0;
+    ft = CL_HDR_TYPE(CL_OBJ_TO_PTR(func));
+    et = CL_HDR_TYPE(CL_OBJ_TO_PTR(entered));
+    if ((ft != TYPE_BYTECODE && ft != TYPE_CLOSURE) ||
+        (et != TYPE_BYTECODE && et != TYPE_CLOSURE))
+        return 0;
+    return jit_dispatch_bytecode_of(func, ft) == jit_dispatch_bytecode_of(entered, et);
+}
+
+/* FUNC's bytecode when native code may enter it directly with NARGS
+ * arguments -- it carries native code, the call fits its lambda list,
+ * nothing is traced -- else NULL. */
+CL_Bytecode *cl_jit_runtime_a64_native_callee(CL_Obj func, uint32_t nargs)
+{
+    uint32_t ftype, arity;
+    CL_Bytecode *bc;
+    CL_Thread *thr = CT;
+    if (thr->trace_count != 0 || cl_traced_function_count != 0) return NULL;
+    if (!CL_HEAP_P(func) || func >= cl_heap.arena_size) return NULL;
+    ftype = CL_HDR_TYPE(CL_OBJ_TO_PTR(func));
+    if (ftype != TYPE_BYTECODE && ftype != TYPE_CLOSURE) return NULL;
+    bc = jit_dispatch_bytecode_of(func, ftype);
+    if (bc == NULL || bc->native_code == NULL) return NULL;
+    arity = bc->arity & 0x7FFF;
+    if ((bc->arity & 0x8000) || bc->n_optional != 0 ||
+        !((bc->flags & 1) ? nargs >= arity : nargs == arity))
+        return NULL;
+    return bc;
+}
+
+/* A tail call that is not a self call (OP_TAILCALL with SYMREF NULL, the
+ * callee under the arguments; OP_TAILCALL_GLOBAL, the callee the function
+ * of *SYMREF).  To a native callee it does not call: it moves the NARGS
+ * arguments down to BP (the frame is dead), puts the callee above them,
+ * sets jit_tail_pending and returns -- the native code returns at once and
+ * cl_jit_invoke enters the callee from the same base, so a chain of tail
+ * calls between native functions runs in constant space.  Any other
+ * callee is called, and its value is the native function's. */
+CL_Obj cl_jit_runtime_a64_tail(CL_Thread *thr, CL_Obj *top, uint32_t nargs,
+                               CL_Obj *bp, const CL_Obj *symref)
+{
+    CL_Obj func;
+    CL_Obj *args = top - nargs;
+    uint32_t i;
+    a64_call_poll(thr);
+    func = symref ? cl_jit_runtime_fload(*symref) : top[-(int32_t)nargs - 1];
+    if (cl_jit_runtime_a64_native_callee(func, nargs) == NULL)
+        return a64_dispatch(thr, func, args, nargs);
+    for (i = 0; i < nargs; i++)          /* args lie above bp: ascending */
+        bp[i] = args[i];
+    bp[nargs] = func;
+    thr->vm.sp = (int)(bp - thr->vm.stack) + (int)nargs + 1;
+    thr->jit_tail_pending = nargs + 1;
+    return CL_NIL;
+}
+
+/* OP_CONS: PAIR[0] the car, PAIR[1] the cdr, both still on the VM stack
+ * (the interpreter's cl_cons_rooted, which reads them after allocating). */
+CL_Obj cl_jit_runtime_a64_cons(CL_Obj *pair)
+{
+    return cl_cons_rooted(&pair[0], &pair[1]);
+}
+
+/* OP_LIST: the N elements at BASE[0..N-1], first element lowest, the
+ * interpreter's loop. */
+CL_Obj cl_jit_runtime_a64_list(CL_Obj *base, uint32_t n)
+{
+    CL_Obj list = CL_NIL;
+    int32_t i;
+    CL_GC_PROTECT(list);
+    for (i = (int32_t)n - 1; i >= 0; i--)
+        list = cl_cons_rooted(&base[i], &list);
+    CL_GC_UNPROTECT(1);
+    return list;
+}
+
+/* OP_PUSH_LOCAL: (push *ITEM *SLOT), both words of the VM stack. */
+CL_Obj cl_jit_runtime_a64_push_local(CL_Obj *item, CL_Obj *slot)
+{
+    CL_Obj cell = cl_cons_rooted(item, slot);
+    *slot = cell;
+    return cell;
+}
+#endif /* JIT_A64 */
+
+#endif /* JIT_M68K || JIT_A64 */

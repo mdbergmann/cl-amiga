@@ -137,7 +137,8 @@ JIT_SRC      = $(SRCDIR)/jit/codebuf.c \
 ifdef JIT_A64
 JIT_SRC     += $(SRCDIR)/jit/jit_common.c \
                $(SRCDIR)/jit/jit_a64.c \
-               $(SRCDIR)/jit/codeheap.c
+               $(SRCDIR)/jit/codeheap.c \
+               $(SRCDIR)/jit/runtime.c
 endif
 MAIN_SRC     = $(SRCDIR)/main.c
 
@@ -160,7 +161,7 @@ LIB_TEST_OBJS = $(patsubst $(SRCDIR)/%.c,$(TESTOBJDIR)/%.o,$(LIB_SRCS))
 DESTDIR ?=
 PREFIX ?= /usr/local
 
-.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update guide test-gc-stress test-memleak test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga image install install-layout uninstall
+.PHONY: host test test-fast test-jit-eager test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update guide test-gc-stress test-memleak test-mt-thread-exit-race fasl fasl-amiga clean-fasl-amiga image install install-layout uninstall
 
 host: $(HOST_BIN)
 
@@ -248,7 +249,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_mt_dispatch_cache_race test_mt_thread_exit_gc test_mt_thread_identity \
                 test_mt_intern_stw test_mt_stream_close_race test_mt_interrupt_parked \
                 test_mt_thread_exit_drain test_mt_stop_workers test_mt_thread_death_hook \
-                test_lock_diag test_break_diag test_call_diag test_call_gen test_jit_a64 test_heap_verify test_cpu_selftest test_debugger_backtrace test_backtrace_lines test_backtrace_after_handled_error \
+                test_lock_diag test_break_diag test_call_diag test_call_gen test_jit_a64 test_jit_a64_walk test_heap_verify test_cpu_selftest test_debugger_backtrace test_backtrace_lines test_backtrace_after_handled_error \
                 test_debugger_eof test_inspect_eof \
                 test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
                 test_shutdown_leak \
@@ -329,6 +330,16 @@ test-fast: $(TEST_BINS) host
 # `make test` runs the fast tier only (the everyday gate).
 test: test-fast
 
+# `make test-jit-eager` runs the fast tier with every function compiled at
+# definition (CLAMIGA_JIT_HOT=0): on an arm64 Mac, the whole suite as a
+# differential run of the AArch64 walker against the interpreter.  Without
+# a backend it is plain `make test`.  Expected to fail where a test reads
+# frames back: native frames are not in EXT:BACKTRACE, line attribution or
+# FRAME locals unless %JIT-SET-FRAMES is on (specs/native-backend-a64.md,
+# phase 1 status) -- every other failure is a walker bug.
+test-jit-eager:
+	@CLAMIGA_JIT_HOT=0 $(MAKE) --no-print-directory test-fast
+
 # `make test-gc-stress` builds a dedicated DEBUG_GC_STRESS binary (forces a
 # compacting GC before every allocation) and runs the GC-stress regression
 # suite against it.  Kept out of the fast tier because it needs a separate,
@@ -379,6 +390,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_call_gen.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_jit_a64 (CLAMIGA_GC_STRESS=1, forced compaction: native entry, stubs swept with dead functions) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_jit_a64.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_jit_a64_walk (CLAMIGA_GC_STRESS=1, forced compaction: native frames, constants and helper calls across every collection) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_jit_a64_walk.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_defvar_init_once_fasl (CLAMIGA_GC_STRESS=1, forced compaction: DEFVAR's BOUNDP-guarded codegen) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_defvar_init_once_fasl.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_dev_tcp (CLAMIGA_GC_STRESS=1, forced compaction: the TCP dev port's frames, server, client, REPL leg and the two builtins under it) ---"

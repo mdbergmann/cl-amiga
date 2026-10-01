@@ -1,4 +1,5 @@
-/* runtime.h — C helpers callable from JIT-emitted m68k code.
+/* runtime.h — C helpers callable from JIT-emitted native code (m68k and,
+ * where marked, AArch64; see runtime.c).
  *
  * These form the boundary between native code and the existing C
  * runtime.  Every helper is callable from the bytecode VM too — no
@@ -82,11 +83,13 @@
 #ifndef CL_JIT_RUNTIME_H
 #define CL_JIT_RUNTIME_H
 
-#ifdef JIT_M68K
+#if defined(JIT_M68K) || defined(JIT_A64)
 
 #include "core/types.h"
 
+#ifdef JIT_M68K
 void   cl_jit_runtime_init(void);
+#endif
 
 CL_Obj cl_jit_runtime_add  (CL_Obj a, CL_Obj b);
 CL_Obj cl_jit_runtime_sub  (CL_Obj a, CL_Obj b);
@@ -143,6 +146,7 @@ CL_Obj cl_jit_runtime_progv_bind(CL_Obj symbols_list, CL_Obj values_list);
 CL_Obj cl_jit_runtime_progv_unbind(CL_Obj mark_obj, CL_Obj result);
 
 CL_Obj cl_jit_runtime_fload(CL_Obj sym);
+#ifdef JIT_M68K
 /* A direct-call site's cell (specs/jit-direct-calls.md §2): 12 bytes the
  * walker appends after the function's code, one per OP_CALL / OP_TAILCALL /
  * OP_CALL_GLOBAL / OP_TAILCALL_GLOBAL.  Native code only reads it; the
@@ -166,6 +170,7 @@ CL_Obj cl_jit_runtime_call_site(CL_Obj *operand_top, uint32_t nargs,
                                 CL_JitCallSite *site);
 CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
                                        CL_Obj sym, CL_JitCallSite *site);
+#endif /* JIT_M68K */
 
 /* OP_APPLY backing.  Mirrors the VM's OP_APPLY semantics: walks the
  * arglist into a stack-local CL_Obj[64] (max 64 args, matching the VM),
@@ -307,6 +312,39 @@ void cl_jit_runtime_loop_poll(void);
  * JSR with no cache flush needed. */
 void cl_jit_runtime_mv_reset(void);
 
+#ifdef JIT_A64
+/* The AArch64 walker's own helpers (runtime.c, the JIT_A64 section): its
+ * operand stack is cl_vm.stack, so these take pointers into it.
+ *   stack_overflow - the prologue's frame does not fit: "VM stack overflow".
+ *   call           - OP_CALL/OP_TAILCALL, the callee under the NARGS
+ *                    arguments below TOP.
+ *   call_global    - the _GLOBAL calls, the callee the function of *SYMREF
+ *                    (a word of bc->constants).
+ *   is_self        - the self tail call's guard (same bytecode, nothing traced).
+ *   tail           - any other tail call (constant space between natives).
+ *   cons/list/push_local - the interpreter's cl_cons_rooted forms. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noreturn))
+#endif
+void   cl_jit_runtime_a64_stack_overflow(void);
+struct CL_Thread_s;
+CL_Obj cl_jit_runtime_a64_call(struct CL_Thread_s *thr, CL_Obj *top,
+                               uint32_t nargs);
+CL_Obj cl_jit_runtime_a64_call_global(struct CL_Thread_s *thr, CL_Obj *top,
+                                      uint32_t nargs, const CL_Obj *symref);
+int    cl_jit_runtime_a64_is_self(CL_Obj func, CL_Obj entered);
+/* A non-self tail call: to a native callee, a frame-reusing handoff to
+ * cl_jit_invoke (CL_Thread.jit_tail_pending); to anything else, a call. */
+CL_Obj cl_jit_runtime_a64_tail(struct CL_Thread_s *thr, CL_Obj *top,
+                               uint32_t nargs, CL_Obj *bp, const CL_Obj *symref);
+/* FUNC's bytecode when native code may enter it with NARGS, else NULL. */
+CL_Bytecode *cl_jit_runtime_a64_native_callee(CL_Obj func, uint32_t nargs);
+CL_Obj cl_jit_runtime_a64_cons(CL_Obj *pair);
+CL_Obj cl_jit_runtime_a64_list(CL_Obj *base, uint32_t n);
+CL_Obj cl_jit_runtime_a64_push_local(CL_Obj *item, CL_Obj *slot);
+#endif /* JIT_A64 */
+
+#ifdef JIT_M68K
 /* OP_BLOCK_PUSH / OP_BLOCK_POP / OP_BLOCK_RETURN.  The walker emits
  * `JSR setjmp` inline between alloc and commit so the captured frame
  * belongs to the JIT'd function itself (necessary for longjmp to
@@ -452,6 +490,8 @@ void   cl_jit_runtime_tagbody_go(CL_Obj tagbody_id, CL_Obj tag_index);
  * BLOCK_PUSH emit as a JSR.abs.l immediate. */
 extern uint32_t cl_jit_setjmp_addr;
 
-#endif /* JIT_M68K */
+#endif /* JIT_M68K (NLX and friends) */
+
+#endif /* JIT_M68K || JIT_A64 */
 
 #endif /* CL_JIT_RUNTIME_H */

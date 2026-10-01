@@ -1151,8 +1151,9 @@ function at `speed 1` and `speed 3` and compare the listings (see [the peephole
 post-pass](#the-peephole-post-pass-in-practice) for why a warm FASL cache can
 make that comparison lie).
 
-**Native m68k — `(jitexpand form)`** (AmigaOS only). Prints one line of m68k
-assembly per instruction, with the raw bytes alongside. The macro takes a
+**Native code — `(jitexpand form)`** (AmigaOS on 68020+, and arm64 macOS
+hosts). Prints one line of m68k or AArch64 assembly per instruction, with the
+raw bytes alongside. The macro takes a
 `defun`, a `lambda`, or any expression — an expression is wrapped in a thunk
 that is never called, so free variables need not be bound:
 
@@ -1167,9 +1168,9 @@ function object. A function the JIT declined to translate prints `(no native
 code — function runs through the bytecode interpreter)`, which makes this the
 quickest way to find out whether the JIT took a given definition (see
 [JIT (m68k)](#jit-m68k) for what it covers). This is a targeted disassembler,
-not a general m68k one: it decodes the instruction forms the JIT emits and
-falls back to `.word $xxxx` for anything else, so the raw word is still
-visible. On host builds it compiles to a no-op.
+not a general one: it decodes the instruction forms the JIT emits and
+falls back to `.word` for anything else, so the raw word is still
+visible. On builds without a JIT it compiles to a no-op.
 
 For runnable examples of the bytecode `disassemble` builtin, see
 `tests/test_disassemble_stream.c` and the "Disassemble" sections of
@@ -1431,8 +1432,8 @@ work as on classic AmigaOS — Amiga library calls are dispatched from PPC
 code to the (68k-ABI) library bases through MorphOS's ABox emulation layer.
 PPC is 32-bit and big-endian like m68k, so FASL files compiled on AmigaOS
 and MorphOS are byte-compatible. The one thing the MorphOS build omits is
-the native JIT, which is m68k-only — it runs the portable bytecode VM,
-like the host build.
+the native JIT, which has no PPC backend — it runs the portable bytecode VM,
+like a host build without one.
 
 ### Binary release (AmigaOS + MorphOS)
 
@@ -2167,7 +2168,9 @@ On the AmigaOS build (68020+), CL-Amiga translates bytecode functions to native 
 
 A function is compiled on its 8th call, or on its first when it contains a loop. Code compiled under `(optimize (speed 3))` is compiled at definition. Code that runs once, like most of what runs while a program loads, stays bytecode and costs no native-code memory. Functions restored from a heap image are compiled again as they turn hot. `(clamiga::%jit-set-hot-threshold n)` sets the call count (it returns the previous one), and `--jit-eager` (threshold 0) compiles every function at definition.
 
-The JIT is on by default. Pass `--no-jit` to keep functions bytecode-only (useful for A/B benchmarks or isolating a bug). At runtime, `(clamiga::%jit-set-active nil|t)` toggles the JIT around individual `defun`s; a function defined while it is off stays bytecode. On host builds the JIT is compiled out entirely, and its entry points become inline no-ops.
+The JIT is on by default. Pass `--no-jit` to keep functions bytecode-only (useful for A/B benchmarks or isolating a bug). At runtime, `(clamiga::%jit-set-active nil|t)` toggles the JIT around individual `defun`s; a function defined while it is off stays bytecode. Hosts without a backend (see below) compile the JIT out entirely, and its entry points become inline no-ops.
+
+**arm64 macOS hosts** build a second backend, a template JIT for AArch64 ([specs/native-backend-a64.md](specs/native-backend-a64.md)), with the same compile-when-hot policy and switches. It is early work: functions run natively but every operation still goes through the interpreter's own helpers, so results are the interpreter's; with the opcode dispatch gone, call-heavy code already runs up to about 3× faster (`trunk/bench-jit-call.lisp`). Functions using non-local exits, closures, dynamic binding, multiple-value forms or `&optional`/`&rest`/`&key` parameters stay bytecode. `make host JIT=0` builds without it; `make test-jit-eager` runs the test suite with every function compiled. Its tests are `tests/test_jit_a64_walk.sh`, which also runs the behavioural checks of `tests/amiga/test-jit.lisp`.
 
 To see the machine code for a definition — or to find out whether the JIT translated it at all — use `(jitexpand ...)`; see [Disassembly](#disassembly).
 
@@ -2218,10 +2221,12 @@ src/
     vm.c / compiler.c S-expr → bytecode compiler and stack VM
     mem.c             Arena allocator + mark-and-sweep / compacting GC
     fasl.c            FASL (compiled-file) reader/writer
-  jit/            m68k JIT — bytecode→native translator (AmigaOS only)
-    codegen_m68k.c    Single-pass bytecode walker → m68k machine code
-    asm_m68k.c        m68k instruction encoder
-    codebuf.c         Executable code buffer management
+  jit/            JIT — bytecode→native translators (m68k; AArch64 on arm64 macOS)
+    jit_common.c      When to compile (hot-call policy), switches, counters
+    jit.c             m68k walker: bytecode → m68k machine code
+    jit_a64.c         AArch64 walker: bytecode → AArch64 machine code
+    asm_m68k.c / asm_a64.c  Instruction encoders
+    codebuf.c         Code buffer; codeheap.c executable memory (AArch64)
     runtime.c         JIT runtime helpers (calls, NLX, GC safepoints)
   platform/       OS abstraction (platform.h)
     platform_posix.c / platform_amiga.c          Files, I/O, time, sockets

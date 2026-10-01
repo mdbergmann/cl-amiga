@@ -12,6 +12,14 @@
 ;;;
 ;;; Relies on `*pass-count*` / `*fail-count*` and the `check` helper
 ;;; established by run-tests.lisp.
+;;;
+;;; The behavioural checks also run on an arm64 host against the AArch64
+;;; walker (tests/test_jit_a64_walk.sh).  The checks marked #+m68k are the
+;;; m68k backend's own: its byte goldens and pattern matchers, the
+;;; conservative-scan header index, the direct-call sites -- and the
+;;; "this compiled" checks for shapes the AArch64 walker leaves to the
+;;; interpreter until its phase 3 (NLX frames, dynamic binding, PROGV,
+;;; multiple values, closures, &key; specs/native-backend-a64.md).
 
 ; The byte-emission goldens below document the exact native code the JIT
 ; produces for KNOWN speed-1 bytecode shapes.  run-tests.lisp declaims
@@ -45,7 +53,9 @@
 (check "jit-dump-before-stub" nil (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
 (check "jit-compile-stub-succeeds" t (clamiga::%jit-compile-stub #'jit-stub-test-fn))
 ; NOP = 0x4E71, RTS = 0x4E75 → bytes 78 113 78 117
-(check "jit-dump-after-stub" '(78 113 78 117) (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
+#+m68k (check "jit-dump-after-stub" '(78 113 78 117) (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
+; The AArch64 stub: movz w0, #0 ; ret, little-endian.
+#-m68k (check "jit-dump-after-stub-a64" '(0 0 128 82 192 3 95 214) (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
 
 ; --- Round-trip: trivial `() -> NIL` function actually runs as
 ; native code.  Compiler emits moveq #0,d0 ; rts; OP_CALL dispatches
@@ -54,7 +64,7 @@
 (defun jit-roundtrip-nil () nil)
 ; MOVEQ #0,d0 = 0x7000 → 0x70 0x00 = 112 0
 ; RTS         = 0x4E75 → 0x4E 0x75 = 78 117
-(check "jit-roundtrip-bytes" '(112 0 78 117)
+#+m68k (check "jit-roundtrip-bytes" '(112 0 78 117)
   (clamiga::%jit-dump-bytes #'jit-roundtrip-nil))
 (check "jit-roundtrip-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
@@ -70,7 +80,7 @@
 ; Small positive fixnum 42: tagged = (42<<1)|1 = 85 = 0x55.
 ; Fits signed 8-bit → moveq #85,d0 ; rts → bytes 0x70 0x55 0x4E 0x75.
 (defun jit-rt-fix-small () 42)
-(check "jit-rt-fix-small-bytes" '(112 85 78 117)
+#+m68k (check "jit-rt-fix-small-bytes" '(112 85 78 117)
   (clamiga::%jit-dump-bytes #'jit-rt-fix-small))
 (check "jit-rt-fix-small-returns" 42 (jit-rt-fix-small))
 
@@ -78,7 +88,7 @@
 ; Fits signed 8-bit as 0xF7 → moveq #-9,d0 ; rts → bytes
 ; 0x70 0xF7 0x4E 0x75 (sign-extended back to 0xFFFFFFF7 on execute).
 (defun jit-rt-fix-neg () -5)
-(check "jit-rt-fix-neg-bytes" '(112 247 78 117)
+#+m68k (check "jit-rt-fix-neg-bytes" '(112 247 78 117)
   (clamiga::%jit-dump-bytes #'jit-rt-fix-neg))
 (check "jit-rt-fix-neg-returns" -5 (jit-rt-fix-neg))
 
@@ -86,7 +96,7 @@
 ; signed 8-bit, falls back to move.l #imm32,d0 ; rts:
 ;   0x20 0x3C  0x00 0x00 0x07 0xD1  0x4E 0x75
 (defun jit-rt-fix-big () 1000)
-(check "jit-rt-fix-big-bytes" '(32 60 0 0 7 209 78 117)
+#+m68k (check "jit-rt-fix-big-bytes" '(32 60 0 0 7 209 78 117)
   (clamiga::%jit-dump-bytes #'jit-rt-fix-big))
 (check "jit-rt-fix-big-returns" 1000 (jit-rt-fix-big))
 
@@ -96,7 +106,7 @@
 ; RTS (0x4E75) — and that the function actually returns T.
 (defun jit-rt-t () t)
 (check "jit-rt-t-returns" t (jit-rt-t))
-(check "jit-rt-t-shape" t
+#+m68k (check "jit-rt-t-shape" t
   (let ((bs (clamiga::%jit-dump-bytes #'jit-rt-t)))
     (and (= 8 (length bs))
          (= 32 (nth 0 bs)) (= 60 (nth 1 bs))   ; 0x20 0x3C
@@ -128,7 +138,7 @@
        (= 0 (nth 8 bs))  (= disp (nth 9 bs))      ; big-endian 16-bit disp
        (= 78 (nth 10 bs)) (= 117 (nth 11 bs))))   ; 0x4E 0x75  rts
 (defun jit-id (x) x)
-(check "jit-id-bytes" t
+#+m68k (check "jit-id-bytes" t
   (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-id) 8))
 (check "jit-id-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
@@ -159,9 +169,9 @@
 ; passes them in the right order. ---
 (defun jit-2arg-fst (x y) x)
 (defun jit-2arg-snd (x y) y)
-(check "jit-2arg-fst-bytes" t
+#+m68k (check "jit-2arg-fst-bytes" t
   (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-2arg-fst) 12))
-(check "jit-2arg-snd-bytes" t
+#+m68k (check "jit-2arg-snd-bytes" t
   (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-2arg-snd) 8))
 (check "jit-2arg-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
@@ -186,15 +196,15 @@
 ; the last at 8, and proves all six switch arms load args in the
 ; correct order. ---
 (defun jit-3arg-mid (x y z) y)
-(check "jit-3arg-mid-bytes" t
+#+m68k (check "jit-3arg-mid-bytes" t
   (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-3arg-mid) 12))
 (check "jit-3arg-mid-returns" 'b (jit-3arg-mid 'a 'b 'c))
 
 (defun jit-6arg-1 (a b c d e f) a)
 (defun jit-6arg-6 (a b c d e f) f)
-(check "jit-6arg-1-bytes" t
+#+m68k (check "jit-6arg-1-bytes" t
   (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-6arg-1) 28))
-(check "jit-6arg-6-bytes" t
+#+m68k (check "jit-6arg-6-bytes" t
   (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-6arg-6) 8))
 (check "jit-6arg-1-returns" 'first  (jit-6arg-1 'first 2 3 4 5 'last))
 (check "jit-6arg-6-returns" 'last   (jit-6arg-6 'first 2 3 4 5 'last))
@@ -233,7 +243,7 @@
 ;   78 94           ; unlk a6                 } — OP_RET
 ;   78 117          ; rts                    /
 (defun walker-nil-1arg (x) nil)
-(check "walker-nil-1arg-bytes"
+#+m68k (check "walker-nil-1arg-bytes"
   '(78 86 255 252  47 7  47 6  47 5  122 0  32 5
     46 46 255 248  44 46 255 244  42 46 255 240
     78 94  78 117)
@@ -251,7 +261,7 @@
 ; is a 2-byte `moveq #85,d5` (bytes 122 85) rather than the 6-byte
 ; `move.l #imm32`.  Otherwise the shape mirrors walker-nil-1arg.
 (defun walker-fix-1arg (x) 42)
-(check "walker-fix-1arg-bytes"
+#+m68k (check "walker-fix-1arg-bytes"
   '(78 86 255 252  47 7  47 6  47 5  122 85  32 5
     46 46 255 248  44 46 255 244  42 46 255 240
     78 94  78 117)
@@ -265,7 +275,7 @@
 ; — verify total size (4 bytes longer than walker-nil-1arg's 30) and
 ; behavior.
 (defun walker-t-1arg (x) t)
-(check "walker-t-1arg-size" 34
+#+m68k (check "walker-t-1arg-size" 34
   (length (clamiga::%jit-dump-bytes #'walker-t-1arg)))
 (check "walker-t-1arg-returns-t" t (walker-t-1arg nil))
 
@@ -1139,7 +1149,7 @@
 ; outer cell must still read 100.
 (defun walker-dyn-let-read ()
   (let ((*walker-glo* 999)) *walker-glo*))
-(check "walker-dyn-let-read-counter-bump" t
+#+m68k (check "walker-dyn-let-read-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-dyn-let-read)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1165,7 +1175,7 @@
   (let ((*walker-glo*  111)
         (*walker-glo2* 222))
     (+ *walker-glo* *walker-glo2*)))
-(check "walker-dyn-let-two-counter-bump" t
+#+m68k (check "walker-dyn-let-two-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-dyn-let-two)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1347,7 +1357,7 @@
   (unwind-protect
     (+ 1 2)
     (incf *walker-uwp-cleanup-count*)))
-(check "walker-uwp-normal-counter-bump" t
+#+m68k (check "walker-uwp-normal-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-uwp-normal)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1370,7 +1380,7 @@
   (setq *walker-uwp-cleanup-err* 0)
   (handler-case (walker-uwp-error-inner)
     (error (c) (declare (ignore c)) :caught)))
-(check "walker-uwp-error-counter-bump" t
+#+m68k (check "walker-uwp-error-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-uwp-error)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1394,7 +1404,7 @@
   (setq *walker-uwp-order* nil)
   (handler-case (walker-uwp-nested-inner)
     (error (c) (declare (ignore c)) :caught)))
-(check "walker-uwp-nested-counter-bump" t
+#+m68k (check "walker-uwp-nested-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-uwp-nested)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1414,7 +1424,7 @@
     nil))
 (defun walker-uwp-mv ()
   (multiple-value-list (walker-uwp-mv-inner)))
-(check "walker-uwp-mv-counter-bump" t
+#+m68k (check "walker-uwp-mv-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-uwp-mv)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1433,7 +1443,7 @@
 (defun walker-uwp-mv-nlx ()
   (block done
     (walker-uwp-mv-nlx-cleanup (lambda () (return-from done (values nil t))))))
-(check "walker-uwp-mv-nlx-counter-bump" t
+#+m68k (check "walker-uwp-mv-nlx-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-uwp-mv-nlx)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1585,7 +1595,7 @@
 ; OP_JTRUE-skip pattern the compiler emits for key defaults.
 (defun walker-key-2 (&key (a 10) (b 20))
   (+ a b))
-(check "walker-key-2-counter-bump" t
+#+m68k (check "walker-key-2-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-key-2)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1658,7 +1668,7 @@
 (defun walker-fstore-installer ()
   (defun walker-fstore-installed-fn (x) (* x x))
   'installed)
-(check "walker-fstore-counter-bump" t
+#+m68k (check "walker-fstore-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-fstore-installer)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1807,7 +1817,7 @@
 (defun walker-mv-load-1 (a b)
   (multiple-value-bind (x y) (values a b)
     (+ x y)))
-(check "walker-mv-load-counter-bump" t
+#+m68k (check "walker-mv-load-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-mv-load-1 10 20)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1823,7 +1833,7 @@
 (check "walker-mv-load-missing-is-nil" '(7 nil) (walker-mv-load-missing 7))
 
 (defun walker-nth-value-1 (n) (nth-value n (values 'a 'b 'c)))
-(check "walker-nth-value-counter-bump" t
+#+m68k (check "walker-nth-value-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-nth-value-1 0)
     (> (clamiga::%jit-invoke-count) before)))
@@ -1889,7 +1899,7 @@
   (progv syms vals
     (symbol-value (car syms))))
 
-(check "walker-progv-counter-bump" t
+#+m68k (check "walker-progv-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-progv-1 '(walker-progv-not-special) '(42))
     (> (clamiga::%jit-invoke-count) before)))
@@ -2003,7 +2013,7 @@
 ; tests/test_gc_hdr_index.c covers the same invariant without native
 ; frames.  (-1 would mean no index at all: never on the Amiga, whose
 ; collector is always the classic one.)
-(check "gc block-start index clean after JIT GC stress" 0
+#+m68k (check "gc block-start index clean after JIT GC stress" 0
   (progn
     (let ((filler (make-array 30000 :initial-element 1)))
       (jit-reloc-sum 200)
@@ -2026,8 +2036,8 @@
 (defun walker-hc-normal (x)
   (handler-case (* x 2)
     (error (c) (declare (ignore c)) :err)))
-(check "walker-hc-normal-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-normal))))
-(check "walker-hc-normal-counter-bump" t
+#+m68k (check "walker-hc-normal-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-normal))))
+#+m68k (check "walker-hc-normal-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-hc-normal 21)
     (> (clamiga::%jit-invoke-count) before)))
@@ -2036,7 +2046,7 @@
 (defun walker-hc-error (x)
   (handler-case (error "hc boom ~A" x)
     (error (c) (list :caught (search "hc boom" (princ-to-string c))))))
-(check "walker-hc-error-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-error))))
+#+m68k (check "walker-hc-error-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-error))))
 (check "walker-hc-error-result" '(:caught 0) (walker-hc-error 1))
 
 ; Three clauses: the dispatch must reach the second and third table
@@ -2051,7 +2061,7 @@
     (walker-hc-c1 () :first)
     (walker-hc-c2 (c) (declare (ignore c)) :second)
     (error () :third)))
-(check "walker-hc-dispatch-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-dispatch))))
+#+m68k (check "walker-hc-dispatch-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-dispatch))))
 (check "walker-hc-dispatch" '(:first :second :third :none)
   (list (walker-hc-dispatch 1) (walker-hc-dispatch 2)
         (walker-hc-dispatch 3) (walker-hc-dispatch 4)))
@@ -2062,7 +2072,7 @@
 (defun walker-hc-caller (x)
   (handler-case (walker-hc-callee x)
     (error (c) (declare (ignore c)) :from-callee)))
-(check "walker-hc-caller-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-caller))))
+#+m68k (check "walker-hc-caller-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-caller))))
 (check "walker-hc-across-frames" '(5 :from-callee)
   (list (walker-hc-caller -5) (walker-hc-caller 5)))
 
@@ -2076,7 +2086,7 @@
       (unwind-protect (error "through cleanup")
         (incf *walker-hc-cleanups*))
     (error () (list :caught *walker-hc-cleanups*))))
-(check "walker-hc-uwp-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-uwp))))
+#+m68k (check "walker-hc-uwp-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-uwp))))
 (check "walker-hc-uwp-cleanup-first" '(:caught 1) (walker-hc-uwp))
 
 ; Nested: the inner clause does not match and the outer does, then the
@@ -2086,7 +2096,7 @@
       (handler-case (if (eql which :inner) (error 'walker-hc-c1) (error 'walker-hc-c2))
         (walker-hc-c1 () :inner-caught))
     (walker-hc-c2 () :outer-caught)))
-(check "walker-hc-nested-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-nested))))
+#+m68k (check "walker-hc-nested-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-nested))))
 (check "walker-hc-nested" '(:inner-caught :outer-caught)
   (list (walker-hc-nested :inner) (walker-hc-nested :outer)))
 
@@ -2106,7 +2116,7 @@
     (dotimes (i n hits)
       (handler-case (if (oddp i) (error "odd") i)
         (error () (incf hits))))))
-(check "walker-hc-loop-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-loop))))
+#+m68k (check "walker-hc-loop-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-loop))))
 (check "walker-hc-loop-no-leak" 150 (walker-hc-loop 300))
 
 ;; --- The direct call path (jit_dispatch, src/jit/runtime.c).  A JIT'd
@@ -2133,7 +2143,7 @@
            (jdc-caller 10)
            (- (clamiga::%jit-invoke-count) before))
       (clamiga::%jit-set-direct-calls t))))
-(check "jit-direct-native-callee-invokes-direct" 2
+#+m68k (check "jit-direct-native-callee-invokes-direct" 2
   (progn
     (clamiga::%jit-set-direct-calls t)  ; a fresh generation: the site refills
     (let ((before (clamiga::%jit-invoke-count)))
@@ -2153,7 +2163,7 @@
 ;; arguments from the VM stack, where the direct path copies them).
 (defun jdc-key (a &key (b 10)) (+ a b))
 (defun jdc-key-caller () (list (jdc-key 1) (jdc-key 1 :b 2)))
-(check "jit-direct-key-callee-compiled" t
+#+m68k (check "jit-direct-key-callee-compiled" t
   (not (null (clamiga::%jit-dump-bytes #'jdc-key))))
 (check "jit-direct-key-callee" '(11 3) (jdc-key-caller))
 

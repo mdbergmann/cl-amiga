@@ -13,6 +13,9 @@
 #include "jit/jit_backend.h"
 #include "core/mem.h"        /* cl_call_gen_bump */
 #include "core/peephole.h"   /* cl_bytecode_has_backward_jump */
+#ifdef JIT_A64
+#include "core/thread.h"     /* CL_Thread.jit_invoke_count */
+#endif
 #ifdef DEBUG_JIT_HOT
 #include <stdio.h>
 #include "core/symbol.h"
@@ -45,7 +48,14 @@ void cl_jit_set_shadow_frames(int on)
 }
 int  cl_jit_shadow_frames_enabled(void) { return cl_jitc_shadow_frames; }
 
-uint32_t cl_jit_invoke_count_get(void) { return cl_jitc_invoke_count; }
+uint32_t cl_jit_invoke_count_get(void)
+{
+#ifdef JIT_A64
+    return cl_get_current_thread()->jit_invoke_count;
+#else
+    return cl_jitc_invoke_count;
+#endif
+}
 
 uint32_t cl_jit_native_bytes(void) { return cl_jitc_native_bytes; }
 

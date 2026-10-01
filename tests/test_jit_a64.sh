@@ -38,6 +38,9 @@ mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 cat > "$WORK/stub.lisp" <<'EOF'
+;; The default hot threshold, also under `make test-jit-eager`: a function
+;; redefined below must still carry no native code right after its DEFUN.
+(clamiga::%jit-set-hot-threshold 8)
 (defun stubbed-0 () 42)
 (defun stubbed-2 (a b) (+ a b))
 (format t "BACKEND ~A~%" (if (clamiga::%jit-compile-stub #'stubbed-0) "A64" "NONE"))

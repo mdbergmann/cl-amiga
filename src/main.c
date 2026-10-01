@@ -394,7 +394,7 @@ static void print_usage(void)
         "                   also CLAMIGA_FASL_CACHE=0)\n"
         "  --color          Force color output\n"
         "  --no-color       Disable color output\n"
-        "  --no-jit         Disable the m68k JIT (functions stay bytecode-only)\n"
+        "  --no-jit         Disable the native JIT (functions stay bytecode-only)\n"
         "  --jit-eager      JIT every function at definition instead of once it\n"
         "                   turns hot (the pre-0.12 behaviour)\n"
         "  --boot-log       Print boot phase timings (\"; [boot] ...\")\n"

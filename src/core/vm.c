@@ -3406,7 +3406,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                  * checks above have already enforced nargs == arity for
                  * these shapes (matchers reject optional/&key/&rest),
                  * so cl_jit_invoke can dispatch on nargs unconditionally. */
-#ifdef JIT_M68K
+#ifdef CL_JIT_NATIVE
                 /* Hot compilation (jit.h): count the interpreted call; the
                  * one that reaches the threshold compiles, and takes the
                  * native path right below.  Heap-free, so callee_bc stays
@@ -3428,7 +3428,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_vm_push(nresult);
                     VM_BREAK;
                 }
-#ifdef JIT_M68K
+#ifdef CL_JIT_NATIVE
                 /* A TAIL call into native code: call it, then return its
                  * values from this frame (OP_RET's body, vm_native_tail_ret)
                  * instead of reusing the frame, which native code cannot
@@ -3881,7 +3881,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
         VM_CASE(OP_RET): {
             CL_Obj result;
-#ifdef JIT_M68K
+#ifdef CL_JIT_NATIVE
         vm_native_tail_ret:   /* OP_CALL: a tail call into native code returns here */
 #endif
             result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))

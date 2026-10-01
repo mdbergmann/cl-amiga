@@ -342,6 +342,20 @@ typedef struct CL_Thread_s {
      * (any prior value) when jit_depth == 0 — callers must only read
      * it from inside a JIT'd frame. */
     int32_t jit_current_nargs;
+#ifdef JIT_A64
+    /* cl_jit_invoke entries on this thread (%JIT-INVOKE-COUNT reads the
+     * calling thread's).  Per-thread because it is written on every native
+     * entry: a process-wide counter there is the shared cache line the VM
+     * hot-path rule in CLAUDE.md forbids.  The single-CPU m68k backend keeps
+     * its global (jit_common.c). */
+    uint32_t jit_invoke_count;
+    /* A native non-self tail call to native code (cl_jit_runtime_a64_tail)
+     * leaves its callee's arguments at the frame base, the callee above
+     * them, and this set to nargs + 1; cl_jit_invoke then enters the callee
+     * from the same frame base instead of nesting a C call, so mutual tail
+     * recursion runs in constant space as in the interpreter.  0 = none. */
+    uint32_t jit_tail_pending;
+#endif
 
     /* ---- VM extras ---- */
     int    vm_extra_count;
