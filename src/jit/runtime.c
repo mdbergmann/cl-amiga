@@ -419,77 +419,6 @@ static CL_Bytecode *jit_dispatch_bytecode_of(CL_Obj func, uint32_t ftype)
     return (CL_Bytecode *)CL_OBJ_TO_PTR(func);
 }
 
-static CL_Obj jit_dispatch(CL_Obj func, CL_Obj *operand_top, uint32_t nargs)
-{
-    CL_Thread *thr = cl_get_current_thread();
-    uint32_t i;
-    uint32_t ftype = 0xFFu;
-
-    if (CL_HEAP_P(func) && func < cl_heap.arena_size)
-        ftype = CL_HDR_TYPE(CL_OBJ_TO_PTR(func));
-
-    if (thr->trace_count == 0 &&
-        thr->vm.sp + (int)nargs < (int)thr->vm.stack_size - 16) {
-        if (ftype == TYPE_FUNCTION || ftype == TYPE_FFI_STUB) {
-            int base = thr->vm.sp;
-            CL_Obj result;
-            for (i = 0; i < nargs; i++)
-                thr->vm.stack[base + (int)i] = operand_top[nargs - 1 - i];
-            thr->vm.sp = base + (int)nargs;
-            if (ftype == TYPE_FUNCTION) {
-                result = cl_vm_call_builtin(thr, (CL_Function *)CL_OBJ_TO_PTR(func),
-                                            &thr->vm.stack[base], (int)nargs);
-            } else {
-                result = cl_ffi_stub_call(func, &thr->vm.stack[base], (int)nargs);
-                thr->mv_count = 1;
-                thr->mv_values[0] = result;
-            }
-            thr->vm.sp = base;
-            return result;
-        }
-        if (ftype == TYPE_BYTECODE || ftype == TYPE_CLOSURE) {
-            CL_Bytecode *bc = jit_dispatch_bytecode_of(func, ftype);
-            /* No hot-call count here: an interpreted callee goes on to the
-             * stub frame below, whose OP_CALL counts it (jit.h).  Counting
-             * here too made a native caller's callee hot after half the
-             * threshold. */
-            if (bc != NULL && bc->native_code != NULL) {
-                uint32_t arity = bc->arity & 0x7FFF;
-                int fits = (bc->arity & 0x8000) == 0 && bc->n_optional == 0 &&
-                           ((bc->flags & 1) ? nargs >= arity : nargs == arity);
-                if (fits) {
-                    int base;
-                    CL_Obj result;
-                    if (thr->gc_requested) cl_gc_safepoint();
-                    if (thr->interrupt_pending) cl_thread_handle_interrupt(thr);
-                    /* The safepoint above can run a peer thread's stop-the-
-                     * world (compacting) collection, which relocates the
-                     * CL_Bytecode/CL_Closure bc was resolved from -- bc is
-                     * a raw pointer, not a CL_Obj, so compaction does not
-                     * fix it up in place.  Re-resolve it from func before
-                     * dereferencing it again. */
-                    bc = jit_dispatch_bytecode_of(func, ftype);
-                    cl_check_c_stack("a native call");
-                    base = thr->vm.sp;
-                    for (i = 0; i < nargs; i++)
-                        thr->vm.stack[base + (int)i] = operand_top[nargs - 1 - i];
-                    thr->vm.sp = base + (int)nargs;
-                    result = cl_jit_invoke(func, bc, (int)nargs);
-                    thr->vm.sp = base;
-                    return result;
-                }
-            }
-            /* An interpreted callee (or one whose lambda list the call does
-             * not fit: the arity diagnostic is OP_CALL's): the stub-frame
-             * path, entered with the operand-stack layout as it is. */
-            if (bc != NULL)
-                return cl_vm_call_bytecode(thr, func, operand_top, (int)nargs, 1);
-        }
-    }
-
-    return jit_dispatch_apply(func, operand_top, nargs);
-}
-
 /* --- Direct native-to-native calls (specs/jit-direct-calls.md) ----------
  *
  * Every call site in native code owns a CL_JitCallSite cell.  The emitted
@@ -533,13 +462,14 @@ void cl_jit_direct_call_stats(uint32_t *out)
     for (i = 0; i < CL_JIT_DS_COUNT; i++) out[i] = jit_ds[i];
 }
 
+/* Fill SITE with a native callee jit_dispatch has classified (BC carries
+ * native code and the call fits its lambda list).  G was read before any
+ * input of the fill rule; see above. */
 static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
-                              uint32_t g, CL_Obj func, uint32_t nargs)
+                              uint32_t g, CL_Obj func, CL_Bytecode *bc,
+                              uint32_t nargs)
 {
-    uint32_t ftype, arity;
-    CL_Bytecode *bc;
-
-    jit_ds[CL_JIT_DS_MISSES]++;
+    uint32_t arity;
     if (!jit_direct_calls) return;
     if (cl_jit_shadow_frames_enabled()) {
         jit_ds[CL_JIT_DS_REFUSED_SHADOW]++;     /* the frame is cl_jit_invoke's */
@@ -547,17 +477,6 @@ static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
     }
     if (cl_traced_function_count != 0 || thr->trace_count != 0) {
         jit_ds[CL_JIT_DS_REFUSED_TRACE]++;      /* traced calls take cl_vm_apply */
-        return;
-    }
-    if (!CL_HEAP_P(func) || func >= cl_heap.arena_size) {
-        jit_ds[CL_JIT_DS_REFUSED_NOT_NATIVE]++;
-        return;
-    }
-    ftype = CL_HDR_TYPE(CL_OBJ_TO_PTR(func));
-    bc = (ftype == TYPE_BYTECODE || ftype == TYPE_CLOSURE)
-         ? jit_dispatch_bytecode_of(func, ftype) : NULL;
-    if (bc == NULL || bc->native_code == NULL) {
-        jit_ds[CL_JIT_DS_REFUSED_NOT_NATIVE]++; /* builtin, interpreted, GF, ... */
         return;
     }
     /* The positional native ABI, entered with exactly its arity: anything
@@ -580,6 +499,92 @@ static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
     jit_site_fill_lock = 0;
 }
 
+/* SITE is the call-site cell of a miss (NULL from anywhere else), G the
+ * cl_call_gen the miss read.  The fill attempt sits in the native arm, so
+ * the calls that miss on every call -- into builtins and interpreted
+ * functions -- pay no classification of their own (measured: classifying
+ * up front cost those calls ~0.2 us each on a 68040). */
+static CL_Obj jit_dispatch(CL_Thread *thr, CL_Obj func, CL_Obj *operand_top,
+                           uint32_t nargs, CL_JitCallSite *site, uint32_t g)
+{
+    uint32_t i;
+    uint32_t ftype = 0xFFu;
+
+    if (CL_HEAP_P(func) && func < cl_heap.arena_size)
+        ftype = CL_HDR_TYPE(CL_OBJ_TO_PTR(func));
+
+    if (thr->trace_count == 0 &&
+        thr->vm.sp + (int)nargs < (int)thr->vm.stack_size - 16) {
+        if (ftype == TYPE_FUNCTION || ftype == TYPE_FFI_STUB) {
+            int base = thr->vm.sp;
+            CL_Obj result;
+            if (site != NULL) jit_ds[CL_JIT_DS_REFUSED_NOT_NATIVE]++;
+            for (i = 0; i < nargs; i++)
+                thr->vm.stack[base + (int)i] = operand_top[nargs - 1 - i];
+            thr->vm.sp = base + (int)nargs;
+            if (ftype == TYPE_FUNCTION) {
+                result = cl_vm_call_builtin(thr, (CL_Function *)CL_OBJ_TO_PTR(func),
+                                            &thr->vm.stack[base], (int)nargs);
+            } else {
+                result = cl_ffi_stub_call(func, &thr->vm.stack[base], (int)nargs);
+                thr->mv_count = 1;
+                thr->mv_values[0] = result;
+            }
+            thr->vm.sp = base;
+            return result;
+        }
+        if (ftype == TYPE_BYTECODE || ftype == TYPE_CLOSURE) {
+            CL_Bytecode *bc = jit_dispatch_bytecode_of(func, ftype);
+            /* No hot-call count here: an interpreted callee goes on to the
+             * stub frame below, whose OP_CALL counts it (jit.h).  Counting
+             * here too made a native caller's callee hot after half the
+             * threshold. */
+            if (bc != NULL && bc->native_code != NULL) {
+                uint32_t arity = bc->arity & 0x7FFF;
+                int fits = (bc->arity & 0x8000) == 0 && bc->n_optional == 0 &&
+                           ((bc->flags & 1) ? nargs >= arity : nargs == arity);
+                if (fits) {
+                    int base;
+                    CL_Obj result;
+                    if (site != NULL)
+                        jit_site_try_fill(thr, site, g, func, bc, nargs);
+                    if (thr->gc_requested) cl_gc_safepoint();
+                    if (thr->interrupt_pending) cl_thread_handle_interrupt(thr);
+                    /* The safepoint above can run a peer thread's stop-the-
+                     * world (compacting) collection, which relocates the
+                     * CL_Bytecode/CL_Closure bc was resolved from -- bc is
+                     * a raw pointer, not a CL_Obj, so compaction does not
+                     * fix it up in place.  Re-resolve it from func before
+                     * dereferencing it again. */
+                    bc = jit_dispatch_bytecode_of(func, ftype);
+                    cl_check_c_stack("a native call");
+                    base = thr->vm.sp;
+                    for (i = 0; i < nargs; i++)
+                        thr->vm.stack[base + (int)i] = operand_top[nargs - 1 - i];
+                    thr->vm.sp = base + (int)nargs;
+                    result = cl_jit_invoke(func, bc, (int)nargs);
+                    thr->vm.sp = base;
+                    return result;
+                }
+            }
+            /* An interpreted callee (or one whose lambda list the call does
+             * not fit: the arity diagnostic is OP_CALL's): the stub-frame
+             * path, entered with the operand-stack layout as it is. */
+            if (site != NULL) jit_ds[CL_JIT_DS_REFUSED_NOT_NATIVE]++;
+            if (bc != NULL)
+                return cl_vm_call_bytecode(thr, func, operand_top, (int)nargs, 1);
+        }
+    }
+
+    /* While anything is traced (trace_count counts this thread's traced
+     * symbols) every call takes the trampoline above, so the native arm's
+     * fill never runs: the refusal is TRACE's. */
+    if (site != NULL)
+        jit_ds[thr->trace_count != 0 || cl_traced_function_count != 0
+               ? CL_JIT_DS_REFUSED_TRACE : CL_JIT_DS_REFUSED_NOT_NATIVE]++;
+    return jit_dispatch_apply(func, operand_top, nargs);
+}
+
 /* Miss path of an OP_CALL / OP_TAILCALL site: the callee is the function
  * value under the arguments. */
 CL_Obj cl_jit_runtime_call_site(CL_Obj *operand_top, uint32_t nargs,
@@ -592,9 +597,9 @@ CL_Obj cl_jit_runtime_call_site(CL_Obj *operand_top, uint32_t nargs,
      * cl_call_gen, so this thread's next call misses and lands here. */
     if (thr->gc_requested) cl_gc_safepoint();
     if (thr->interrupt_pending) cl_thread_handle_interrupt(thr);
+    jit_ds[CL_JIT_DS_MISSES]++;
     g = cl_call_gen;
-    jit_site_try_fill(thr, site, g, operand_top[nargs], nargs);
-    return jit_dispatch(operand_top[nargs], operand_top, nargs);
+    return jit_dispatch(thr, operand_top[nargs], operand_top, nargs, site, g);
 }
 
 /* Miss path of an OP_CALL_GLOBAL / OP_TAILCALL_GLOBAL site (and the fused
@@ -608,10 +613,10 @@ CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
     if (nargs > 255) nargs = 255;   /* defensive -- the operand is a u8 */
     if (thr->gc_requested) cl_gc_safepoint();
     if (thr->interrupt_pending) cl_thread_handle_interrupt(thr);
+    jit_ds[CL_JIT_DS_MISSES]++;
     g = cl_call_gen;
     func = cl_jit_runtime_fload(sym);   /* UNDEFINED-FUNCTION as before */
-    jit_site_try_fill(thr, site, g, func, nargs);
-    return jit_dispatch(func, operand_top, nargs);
+    return jit_dispatch(thr, func, operand_top, nargs, site, g);
 }
 
 /* Backing for OP_APPLY.  Flatten `arglist` into a stack-local buffer, resolve
