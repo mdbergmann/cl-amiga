@@ -1615,7 +1615,3 @@ yet; see the spec's §Results.
   interpreted are the largest remaining call cost, and a direct-called
   `&optional` callee needs `nargs` in D1 (spec §Later).
 - `&key` callees through a site (they keep the helper).
-- Save `jit_c_floor` beside the saved JIT depth and restore it on unwind.
-  Today a throw out of a Lisp callback that ran on another task's stack
-  leaves the floor parked, and that thread's sites take the slow path
-  until the outermost native call returns.  It costs speed only.

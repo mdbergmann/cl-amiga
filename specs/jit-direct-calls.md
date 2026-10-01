@@ -239,7 +239,9 @@ this.  `FindTask` per call is what we are removing, so:
   The keyword ABI enters through it as well, with argv = `{args, nargs,
   bc}`, so A3 is valid in every native function, keyword or not.
   `cl_jit_restore_depth` clears the floor with `jit_stack_top` when an
-  unwind leaves native code entirely.  `(clamiga::%jit-c-floor)` returns
+  unwind leaves native code entirely; an unwind that stays inside native
+  code restores the floor from the snapshot every error and NLX frame
+  takes beside `jit_depth`.  `(clamiga::%jit-c-floor)` returns
   `(floor sp)` from inside native code (NIL outside), for the tests.
 
   The precedents are `stack_swap_m68k.s` and `cpu_store_probe_m68k.s`.  A
@@ -328,7 +330,10 @@ outermost entry's stack.  A nested `cl_jit_invoke` whose SP lies outside
 `(jit_c_floor, jit_stack_top]` is a callback on another task's stack (or
 already below the floor), so it parks the floor at the top of the address
 space until it returns: every site misses there, and the miss path's
-`cl_check_c_stack` measures the real stack.
+`cl_check_c_stack` measures the real stack.  A THROW, error or
+MUFFLE-WARNING out of that callback restores the floor from the landing
+frame's snapshot, so the parking ends with the callback
+(`tests/test_nlx_jit_restore.c`).
 
 ### 6. What the direct path skips, and why that is safe
 

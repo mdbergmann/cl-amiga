@@ -1155,6 +1155,7 @@ static CL_NLXFrame *nlx_alloc_common(int type, CL_Obj tag)
     nlx->compiler_mark       = cl_compiler_mark();
     nlx->printer_mark        = cl_printer_state_save();
     nlx->saved_jit_depth     = CT->jit_depth;
+    nlx->saved_jit_c_floor   = CT->jit_c_floor;
     nlx->saved_pending_mark  = cl_saved_pending_top;
     /* The C-level error-frame (CL_CATCH) depth, as the VM records it for
      * every NLX frame (vm.c NLX_PUSH_COMMON).  It used to be captured for
@@ -1220,7 +1221,7 @@ static void nlx_restore_core(CL_NLXFrame *nlx, void *landing_anchor)
     cl_error_frame_top      = nlx->error_mark;
     cl_saved_pending_top    = nlx->saved_pending_mark;
     gc_root_count           = nlx->gc_root_mark;
-    cl_jit_restore_depth(nlx->saved_jit_depth);
+    cl_jit_restore_depth(nlx->saved_jit_depth, nlx->saved_jit_c_floor);
     cl_compiler_unwind_to(nlx->compiler_mark, landing_anchor);
     cl_fasl_reader_unwind_to(landing_anchor);
     cl_fasl_writer_unwind_to(landing_anchor);

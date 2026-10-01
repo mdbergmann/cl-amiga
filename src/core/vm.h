@@ -167,6 +167,9 @@ typedef struct {
                             * jit_depth makes the next JIT entry keep a stale
                             * jit_stack_top — the conservative GC scan window
                             * then excludes live JIT frames (missed roots). */
+    char *saved_jit_c_floor; /* CT->jit_c_floor at frame creation, restored
+                            * with saved_jit_depth (a throw out of a callback
+                            * on a foreign stack leaves the floor parked). */
     CL_PrinterState printer_mark; /* printer flags at frame creation.  Restored
                             * on the longjmp landing so a THROW out of a print
                             * hook / pprint-dispatch fn can't leak pr_depth,

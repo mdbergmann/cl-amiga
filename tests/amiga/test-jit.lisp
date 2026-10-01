@@ -2355,6 +2355,34 @@
   (check "jit-enter-floor-after-unwind" (first r) (first (jef-floor))))
 (check "jit-enter-floor-outside-after-unwind" nil (jef-vm-floor))
 
+;; Every frame that snapshots jit_depth snapshots jit_c_floor beside it and
+;; a landing restores both: a nested entry on a foreign stack parks the
+;; floor, and a THROW / error / MUFFLE-WARNING out of it must hand back the
+;; outer one (tests/test_nlx_jit_restore.c parks it; here the landings of
+;; native code -- src/jit/runtime.c, which the host never builds -- are run
+;; inside one outermost native call and must restore the floor exactly).
+(defun jfu-thrower (n)
+  (if (= n 0) (throw 'jfu :thrown) (car (list (jfu-thrower (- n 1))))))
+(defun jfu-catch ()
+  (let* ((before (first (jef-floor)))
+         (r (catch 'jfu (jfu-thrower 10))))
+    (list r (eql before (first (jef-floor))))))
+(defun jfu-handler-case ()
+  (let* ((before (first (jef-floor)))
+         (r (handler-case (jef-error 10) (error () :caught))))
+    (list r (eql before (first (jef-floor))))))
+(defun jfu-muffle ()
+  (let ((before (first (jef-floor))))
+    (handler-bind ((warning #'muffle-warning)) (warn "jfu"))
+    (list :muffled (eql before (first (jef-floor))))))
+(check "jit-floor-unwind-all-native" t
+  (every (lambda (f) (not (null (clamiga::%jit-dump-bytes f))))
+         (list #'jfu-thrower #'jfu-catch #'jfu-handler-case #'jfu-muffle)))
+(check "jit-floor-restored-after-throw" '(:thrown t) (jfu-catch))
+(check "jit-floor-restored-after-handler-case" '(:caught t) (jfu-handler-case))
+(check "jit-floor-restored-after-muffle-warning" '(:muffled t) (jfu-muffle))
+(check "jit-floor-outside-after-landings" nil (jef-vm-floor))
+
 ;; --- Direct native-to-native call sites (specs/jit-direct-calls.md phase 4).
 ;; Every call in native code goes through a site whose 12-byte cell caches
 ;; (gen, func, entry): while gen equals the call generation (%CALL-GEN) and

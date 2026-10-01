@@ -24,7 +24,7 @@
  * vm.c / jit runtime — so a longjmp out of JIT'd code drops both the
  * per-thread depth and the global "any-thread-active" gate.
  * See specs/native-backend.md §"GC interaction" option A. */
-void cl_jit_restore_depth(int new_depth)
+void cl_jit_restore_depth(int new_depth, char *floor)
 {
     extern volatile int cl_jit_active_threads;
     int cur = CT->jit_depth;
@@ -34,6 +34,8 @@ void cl_jit_restore_depth(int new_depth)
     if (new_depth == 0) {
         CT->jit_stack_top = NULL;
         CT->jit_c_floor   = NULL;
+    } else {
+        CT->jit_c_floor   = floor;
     }
 }
 
@@ -61,6 +63,7 @@ int cl_error_frame_push(void)
      * return path. */
     cl_error_frames[cl_error_frame_top].saved_gc_roots = gc_root_count;
     cl_error_frames[cl_error_frame_top].saved_jit_depth = CT->jit_depth;
+    cl_error_frames[cl_error_frame_top].saved_jit_c_floor = CT->jit_c_floor;
     cl_error_frames[cl_error_frame_top].saved_debugger_depth = cl_debugger_depth;
     cl_error_frames[cl_error_frame_top].saved_in_debugger = cl_in_debugger;
     cl_error_frames[cl_error_frame_top].saved_fasl_readers = cl_fasl_reader_save_count();
@@ -174,7 +177,8 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
          * time: any entries pushed since then live in C stack frames we
          * are unwinding out of and would dangle in gc_roots[]. */
         gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
-        cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth);
+        cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth,
+                             cl_error_frames[cl_error_frame_top - 1].saved_jit_c_floor);
         cl_debugger_depth = cl_error_frames[cl_error_frame_top - 1].saved_debugger_depth;
         cl_in_debugger = cl_error_frames[cl_error_frame_top - 1].saved_in_debugger;
         cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
@@ -222,7 +226,7 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
     cl_handler_top = 0;
     cl_restart_top = 0;
     cl_gc_reset_roots();
-    cl_jit_restore_depth(0);
+    cl_jit_restore_depth(0, NULL);
     cl_debugger_depth = 0;
     cl_in_debugger = 0;
     /* Reset printer state abandoned by an aborted print (see
@@ -388,7 +392,7 @@ static void error_raise(int code, CL_Obj cell_name)
         cl_handler_active_mask = 0;
         cl_restart_top = 0;
         cl_gc_reset_roots();
-        cl_jit_restore_depth(0);
+        cl_jit_restore_depth(0, NULL);
         cl_debugger_depth = 0;
         cl_in_debugger = 0;
         cl_printer_state_reset();
@@ -400,7 +404,8 @@ static void error_raise(int code, CL_Obj cell_name)
              * explicit restore is symmetric with the cl_error_unwind path
              * and keeps any permanent roots installed by the outer frame). */
             gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
-            cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth);
+            cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth,
+                             cl_error_frames[cl_error_frame_top - 1].saved_jit_c_floor);
             cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
         cl_fasl_writer_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_writers);
             cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);

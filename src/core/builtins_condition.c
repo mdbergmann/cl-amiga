@@ -1706,6 +1706,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
         frame->saved_pending_mark = cl_saved_pending_top;
         frame->mv_save_mark = CT->mv_save_top;
         frame->saved_jit_depth = CT->jit_depth;
+        frame->saved_jit_c_floor = CT->jit_c_floor;
         frame->landing = NULL;   /* C-owned frame: cl_nlx_jump uses buf */
         /* Snapshot the handler ACTIVE mask too: cl_signal_condition
          * disables the running handler's band while it executes, and the
@@ -1754,6 +1755,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
             cl_restart_top = f->restart_mark;
             cl_error_frame_top = f->error_mark;
             gc_root_count = f->gc_root_mark;
+            cl_jit_restore_depth(f->saved_jit_depth, f->saved_jit_c_floor);
             cl_compiler_unwind_to(f->compiler_mark, CL_CAPTURE_SP());
             cl_fasl_reader_unwind_to(CL_CAPTURE_SP());
             cl_fasl_writer_unwind_to(CL_CAPTURE_SP());

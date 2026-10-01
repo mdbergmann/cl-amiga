@@ -1947,6 +1947,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         (nlx)->mv_count = 1;                                               \
         (nlx)->saved_pending_mark = cl_saved_pending_top;                  \
         (nlx)->saved_jit_depth = thr->jit_depth;                           \
+        (nlx)->saved_jit_c_floor = thr->jit_c_floor;                       \
         (nlx)->mv_save_mark = thr->mv_save_top;                            \
     } while (0)
 
@@ -2345,7 +2346,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             cl_restart_top = nlx->restart_mark;
             cl_error_frame_top = nlx->error_mark;
             gc_root_count = nlx->gc_root_mark;
-            cl_jit_restore_depth(nlx->saved_jit_depth);
+            cl_jit_restore_depth(nlx->saved_jit_depth, nlx->saved_jit_c_floor);
             cl_compiler_unwind_to(nlx->compiler_mark, CL_CAPTURE_SP());
             cl_fasl_reader_unwind_to(CL_CAPTURE_SP());
             cl_fasl_writer_unwind_to(CL_CAPTURE_SP());

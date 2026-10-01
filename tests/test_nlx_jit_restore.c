@@ -32,6 +32,14 @@
  *     stack), jit_depth stayed stale, FASL readers / compiler chain
  *     stranded.  It now goes through cl_error_frame_longjmp.
  *
+ * (c) jit_c_floor: a nested native entry on a foreign stack (a Lisp
+ *     callback run by another task) parks the floor at the top of the
+ *     address space so every direct call site misses.  A non-local exit
+ *     out of that callback skipped the restore, and the thread's sites
+ *     took the slow path until the outermost native call returned.  Every
+ *     frame that snapshots jit_depth now snapshots the floor beside it.
+ *     The muffle-warning landing restored neither.
+ *
  * jit_depth is simulated from a registered builtin — the host has no
  * m68k JIT, but the bookkeeping (jit_depth / cl_jit_active_threads /
  * NLX+error-frame snapshots) is identical on both platforms.
@@ -63,6 +71,19 @@ static void reset_jit_state(void)
     cl_jit_active_threads = 0;
     CT->jit_depth = 0;
     CT->jit_stack_top = NULL;
+    CT->jit_c_floor = NULL;
+}
+
+/* A floor value and a parked one: the numbers are never dereferenced. */
+#define FAKE_FLOOR  ((char *)(uintptr_t)0x10000)
+#define PARKED      ((char *)~(uintptr_t)0)
+
+/* Pretend the outermost native call is running: depth 1, a real floor. */
+static void enter_outer_native(void)
+{
+    cl_jit_active_threads = 1;
+    CT->jit_depth = 1;
+    CT->jit_c_floor = FAKE_FLOOR;
 }
 
 /* Builtin that pretends we entered JIT'd code: bumps jit_depth exactly
@@ -76,10 +97,23 @@ static CL_Obj fake_jit_enter(CL_Obj *args, int n)
     return CL_T;
 }
 
+/* A nested entry on a foreign stack, as cl_jit_invoke's prologue does it:
+ * one level deeper, floor parked. */
+static CL_Obj fake_jit_park(CL_Obj *args, int n)
+{
+    (void)args; (void)n;
+    CT->jit_depth++;
+    CT->jit_c_floor = PARKED;
+    return CL_T;
+}
+
 static void register_fake_jit_enter(void)
 {
     CL_Obj sym = cl_intern_in("FAKE-JIT-ENTER", 14, cl_package_cl_user);
     CL_Obj fn = cl_make_function(fake_jit_enter, sym, 0, 0);
+    ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->function = fn;
+    sym = cl_intern_in("FAKE-JIT-PARK", 13, cl_package_cl_user);
+    fn = cl_make_function(fake_jit_park, sym, 0, 0);
     ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->function = fn;
 }
 
@@ -194,6 +228,123 @@ TEST(uwrethrow_error_replay_restores_frame_state)
     reset_jit_state();
 }
 
+/* --- (c) unwinds restore jit_c_floor --- */
+
+TEST(throw_out_of_parked_callback_restores_floor)
+{
+    CL_Obj result;
+    int err = 0;
+
+    reset_jit_state();
+    enter_outer_native();
+
+    CL_CATCH(err);
+    if (!err) {
+        result = cl_eval_string(
+            "(catch 'jt (progn (fake-jit-park) (throw 'jt 5)))");
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(result), 5);
+        ASSERT_EQ_INT(CT->jit_depth, 1);
+        ASSERT(CT->jit_c_floor == FAKE_FLOOR);
+        ASSERT_EQ_INT(cl_jit_active_threads, 1);
+    } else {
+        ASSERT(0 && "eval signalled unexpectedly");
+    }
+    CL_UNCATCH();
+    reset_jit_state();
+}
+
+TEST(handler_case_out_of_parked_callback_restores_floor)
+{
+    CL_Obj result;
+    int err = 0;
+
+    reset_jit_state();
+    enter_outer_native();
+
+    CL_CATCH(err);
+    if (!err) {
+        result = cl_eval_string(
+            "(handler-case (progn (fake-jit-park) (error \"boom\"))"
+            "  (error () 6))");
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(result), 6);
+        ASSERT_EQ_INT(CT->jit_depth, 1);
+        ASSERT(CT->jit_c_floor == FAKE_FLOOR);
+    } else {
+        ASSERT(0 && "eval signalled unexpectedly");
+    }
+    CL_UNCATCH();
+    reset_jit_state();
+}
+
+/* A nested C error frame (a builtin's CL_CATCH, LOAD's per-form
+ * recovery): the outermost frame is the REPL's and resets everything. */
+TEST(error_frame_unwind_out_of_parked_callback_restores_floor)
+{
+    int outer = 0, inner = 0;
+
+    reset_jit_state();
+
+    CL_CATCH(outer);
+    if (!outer) {
+        enter_outer_native();
+        CL_CATCH(inner);
+        if (!inner) {
+            cl_eval_string("(progn (fake-jit-park) (error \"boom\"))");
+            ASSERT(0 && "error did not unwind");
+        } else {
+            ASSERT_EQ_INT(CT->jit_depth, 1);
+            ASSERT(CT->jit_c_floor == FAKE_FLOOR);
+        }
+        CL_UNCATCH();
+    } else {
+        ASSERT(0 && "error reached the outer frame");
+    }
+    CL_UNCATCH();
+    reset_jit_state();
+}
+
+TEST(muffle_warning_out_of_parked_callback_restores_floor)
+{
+    CL_Obj result;
+    int err = 0;
+
+    reset_jit_state();
+    enter_outer_native();
+
+    CL_CATCH(err);
+    if (!err) {
+        /* The handler runs as a Lisp closure that parks and then calls
+         * MUFFLE-WARNING: the throw lands in bi_warn's C-owned frame. */
+        result = cl_eval_string(
+            "(progn (handler-bind ((warning (lambda (c) (fake-jit-park)"
+            "                                 (muffle-warning c))))"
+            "         (warn \"w\"))"
+            "       7)");
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(result), 7);
+        /* Pre-fix: depth 2 -- this landing restored no JIT state at all. */
+        ASSERT_EQ_INT(CT->jit_depth, 1);
+        ASSERT(CT->jit_c_floor == FAKE_FLOOR);
+    } else {
+        ASSERT(0 && "eval signalled unexpectedly");
+    }
+    CL_UNCATCH();
+    reset_jit_state();
+}
+
+/* Unwinding all the way out of native code clears the floor whatever the
+ * snapshot held: it is meaningless at depth 0. */
+TEST(unwind_to_depth_zero_clears_floor)
+{
+    cl_jit_active_threads = 1;
+    CT->jit_depth = 3;
+    CT->jit_c_floor = PARKED;
+    cl_jit_restore_depth(0, FAKE_FLOOR);
+    ASSERT_EQ_INT(CT->jit_depth, 0);
+    ASSERT(CT->jit_c_floor == NULL);
+    ASSERT_EQ_INT(cl_jit_active_threads, 0);
+    reset_jit_state();
+}
+
 int main(void)
 {
     test_init();
@@ -203,6 +354,11 @@ int main(void)
     RUN(return_from_past_jit_restores_depth);
     RUN(go_past_jit_restores_depth);
     RUN(uwrethrow_error_replay_restores_frame_state);
+    RUN(throw_out_of_parked_callback_restores_floor);
+    RUN(handler_case_out_of_parked_callback_restores_floor);
+    RUN(error_frame_unwind_out_of_parked_callback_restores_floor);
+    RUN(muffle_warning_out_of_parked_callback_restores_floor);
+    RUN(unwind_to_depth_zero_clears_floor);
     cl_mem_shutdown();
     platform_shutdown();
     REPORT();

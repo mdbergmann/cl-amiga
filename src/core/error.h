@@ -79,6 +79,12 @@ typedef struct {
      * restores `jit_depth` to this value before longjmping back to the
      * catch site.  See specs/native-backend.md §"GC interaction". */
     int saved_jit_depth;
+    /* CT->jit_c_floor at the same moment, restored with jit_depth: an
+     * unwind out of a Lisp callback that ran on a foreign stack (which
+     * parked the floor at the top of the address space) must not leave it
+     * parked for the rest of the outermost native call.  See
+     * specs/jit-direct-calls.md §"A nested entry on a foreign stack". */
+    char *saved_jit_c_floor;
     /* debugger_depth at the time this frame was pushed.  cl_error_unwind
      * restores `debugger_depth` to this value on the unwind path so that
      * the recursive-debugger guard (cl_invoke_debugger) cannot leak a
@@ -235,10 +241,11 @@ CL_NORETURN void cl_error_cell(int code, CL_Obj name, const char *fmt, ...);
  * must have set cl_error_code / cl_error_msg. */
 CL_NORETURN void cl_error_frame_longjmp(int code);
 
-/* Restore CT->jit_depth (and the cl_jit_active_threads gate) to a saved
- * snapshot on a longjmp landing — used by the CL_ErrorFrame and
- * CL_NLXFrame restore paths. */
-void cl_jit_restore_depth(int new_depth);
+/* Restore CT->jit_depth (and the cl_jit_active_threads gate) and
+ * CT->jit_c_floor to a saved snapshot on a longjmp landing — used by the
+ * CL_ErrorFrame and CL_NLXFrame restore paths.  At depth 0 the floor is
+ * cleared whatever FLOOR says. */
+void cl_jit_restore_depth(int new_depth, char *floor);
 
 /* Startup guard: verify CL_JMPBUF_GUARD (types.h) is large enough to absorb
  * this platform's setjmp() write, aborting with a precise message if not.
