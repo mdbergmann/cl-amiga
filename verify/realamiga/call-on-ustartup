@@ -71,7 +71,12 @@ delete >NIL: CLAmiga:build/amiga/clamiga-trunc.img
 ; watchdog's stall detector keeps seeing progress.
 echo "=== restored-boot suite ===" >>build/amiga/test-results.log
 build/amiga/clamiga --no-userinit --no-image --heap 8M --non-interactive --load tests/amiga/image-boot-save.lisp >>build/amiga/test-results.log
+; CLAMIGA_SUITE_QUICK: this pass skips the STRESS-CHECKs (concurrent-GC and
+; method-install race hammers, ~5 min) and the JIT bench -- they test the
+; runtime, not the restored boot, and the fresh-boot pass above ran them.
+setenv CLAMIGA_SUITE_QUICK 1
 build/amiga/clamiga --no-userinit --image build/amiga/boot.img --heap 8M --non-interactive --load tests/amiga/run-tests.lisp -- suite-arg "two words" >>build/amiga/test-results.log
+unsetenv CLAMIGA_SUITE_QUICK
 delete >NIL: CLAmiga:build/amiga/clamiga-test.img
 delete >NIL: CLAmiga:build/amiga/boot.img
 ; The main stack: with `stack 8000` (twice a stock Shell's default) the

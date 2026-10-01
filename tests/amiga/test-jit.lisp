@@ -2190,7 +2190,7 @@
 ;; arguments live on the rooted VM stack for the call and the caller's
 ;; operand stack is scanned conservatively.
 (defun jdc-alloc (n) (let ((acc nil)) (dotimes (i n) (setq acc (list i (car acc)))) acc))
-(check "jit-direct-builtin-across-gc" '(t (299999 299998))
+(stress-check "jit-direct-builtin-across-gc" '(t (299999 299998))
   (let ((g0 (clamiga::%get-gc-count)))
     (let ((r (jdc-alloc 300000)))
       (list (> (clamiga::%get-gc-count) g0) r))))
@@ -2212,7 +2212,7 @@
   (let ((s 0))
     (dotimes (i n) (setq s (jdc-mt-leaf s 1)))
     s))
-(check "jit-direct-native-callee-across-concurrent-gc" t
+(stress-check "jit-direct-native-callee-across-concurrent-gc" t
   (progn
     (unless (clamiga::%jit-dump-bytes #'jdc-mt-leaf)
       (error "jdc-mt-leaf did not JIT-compile"))

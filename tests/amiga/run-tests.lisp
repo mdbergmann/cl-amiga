@@ -8,22 +8,59 @@
 ; the ACTUAL expression — a function would never see those because the
 ; error short-circuits the argument evaluation before the call.  An
 ; uncaught error is reported as FAIL with the condition text.
+;
+; Every check also goes through %CHECK-DONE, which (a) flushes the log, so
+; a run the host watchdog kills ends on the last check that COMPLETED
+; rather than on an arbitrary block-buffer boundary, and (b) times the gap
+; since the previous check -- that gap includes compiling the form, since
+; this file loads from source.  The slowest ones are listed at the end
+; ("=== Slowest checks ==="), with a "; t=" mark every 500 checks.
+(defvar *check-clock* (get-internal-real-time))
+(defvar *check-start* *check-clock*)
+(defvar *slow-checks* nil)
+(defun %check-ms (from to)
+  (round (* 1000 (- to from)) internal-time-units-per-second))
+(defun %check-done (name)
+  (let* ((now (get-internal-real-time))
+         (ms (%check-ms *check-clock* now)))
+    (when (>= ms 1000) (push (cons ms name) *slow-checks*))
+    (setq *check-clock* now)
+    (when (zerop (mod (+ *pass-count* *fail-count*) 500))
+      (format t "; t=~Ds after ~D checks~%"
+              (round (%check-ms *check-start* now) 1000)
+              (+ *pass-count* *fail-count*)))
+    (finish-output)))
 (defmacro check (name expected actual)
   (let ((e (gensym "EXPECTED"))
         (a (gensym "ACTUAL"))
         (c (gensym "COND")))
-    `(handler-case
-         (let ((,e ,expected)
-               (,a ,actual))
-           (if (equal ,e ,a)
-               (progn (setq *pass-count* (+ *pass-count* 1))
-                      (format t "PASS: ~A~%" ,name))
-               (progn (setq *fail-count* (+ *fail-count* 1))
-                      (format t "FAIL: ~A - expected ~S got ~S~%"
-                              ,name ,e ,a))))
-       (error (,c)
-         (setq *fail-count* (+ *fail-count* 1))
-         (format t "FAIL: ~A - signaled error: ~A~%" ,name ,c)))))
+    `(progn
+       (handler-case
+           (let ((,e ,expected)
+                 (,a ,actual))
+             (if (equal ,e ,a)
+                 (progn (setq *pass-count* (+ *pass-count* 1))
+                        (format t "PASS: ~A~%" ,name))
+                 (progn (setq *fail-count* (+ *fail-count* 1))
+                        (format t "FAIL: ~A - expected ~S got ~S~%"
+                                ,name ,e ,a))))
+         (error (,c)
+           (setq *fail-count* (+ *fail-count* 1))
+           (format t "FAIL: ~A - signaled error: ~A~%" ,name ,c)))
+       (%check-done ,name))))
+
+; STRESS-CHECK is CHECK for the multi-second race/GC hammers (concurrent
+; compaction, concurrent method installs, ...).  They test the runtime, not
+; the boot path, so the restored-image pass of call-on-ustartup (which sets
+; CLAMIGA_SUITE_QUICK) skips them -- they ran in the fresh-boot pass of the
+; same binary minutes earlier, and they are half of a pass's wall time.
+(defvar *suite-quick* (not (null (ext:getenv "CLAMIGA_SUITE_QUICK"))))
+(defvar *skip-count* 0)
+(defmacro stress-check (name expected actual)
+  `(if *suite-quick*
+       (progn (setq *skip-count* (+ *skip-count* 1))
+              (format t "SKIP: ~A (stress check, fresh-boot pass only)~%" ,name))
+       (check ,name ,expected ,actual)))
 
 (format t "~%=== CL-Amiga Test Suite ===~%~%")
 
@@ -9004,7 +9041,7 @@ y" 1))
 ; and join-thread would return NIL instead of the real result.  The worker
 ; body allocates nothing (42 is a fixnum), so a non-42 result means the
 ; closure itself was collected.
-(check "worker function GC-protected across apply" 0
+(stress-check "worker function GC-protected across apply" 0
   (let ((bad 0))
     (dotimes (i 150)
       (let ((th (mp:make-thread (lambda () 42))))
@@ -9021,7 +9058,7 @@ y" 1))
 ;     `func` C-local in thread_entry — both showed as a worker applying a
 ;     wrong-typed object, so a corrupt worker returns :corrupt not :ok.
 ; Each worker allocates a fresh closure and fresh list, compacts, and validates.
-(check "concurrent gc-compact multi-worker no corruption" t
+(stress-check "concurrent gc-compact multi-worker no corruption" t
   (let ((threads nil) (ok t))
     (dotimes (w 4)
       (let ((id w))
@@ -9047,7 +9084,7 @@ y" 1))
 ; used to live only in the unregistered worker's t->result — neither marked nor
 ; forwarded — so JOIN returned a stale offset (garbage).  Fixed by publishing it
 ; into the GC-managed wrapper.  A wrong result here means the fix regressed.
-(check "join returns live heap result under concurrent gc" t
+(stress-check "join returns live heap result under concurrent gc" t
   (let ((threads nil) (ok t))
     (dotimes (w 4)
       (let ((id w))
@@ -9087,7 +9124,7 @@ y" 1))
 (defmethod amdisp-status ((p amdisp-comp) (o amdisp-op) (c amdisp-comp)) :plan-method)
 (defparameter *amdisp-o* (make-instance 'amdisp-load-op))
 (defparameter *amdisp-c* (make-instance 'amdisp-sys))
-(check "concurrent add-method does not break peer dispatch" 0
+(stress-check "concurrent add-method does not break peer dispatch" 0
   (let ((dispatchers nil) (redefiners nil) (fails 0))
     ;; Redefiners: repeatedly re-install the null method (each install first
     ;; removes the existing matching method — the window the fix closes).
@@ -9129,7 +9166,7 @@ y" 1))
 ; lost update leaves a permanent, detectable gap.  Guarded by
 ; *gf-methods-lock* in lib/clos.lisp.
 (defgeneric amdisp-writer-gf (x))
-(check "concurrent add-method of distinct methods loses none" 0
+(stress-check "concurrent add-method of distinct methods loses none" 0
   (let ((installers nil) (missing 0) (n-per-writer 300))
     (dotimes (w 2)
       (push (mp:make-thread
@@ -9172,7 +9209,7 @@ y" 1))
   (let ((v (make-array 24)))
     (dotimes (i 24) (setf (aref v i) (make-instance (aref *amcache-classes* i))))
     v))
-(check "concurrent dispatch does not corrupt the dispatch cache" 0
+(stress-check "concurrent dispatch does not corrupt the dispatch cache" 0
   (let ((fails 0))
     (dotimes (round 4)
       ;; Fresh GF each round → empty dispatch cache, refilled concurrently.
@@ -12563,8 +12600,18 @@ y" 1))
                                            'acc))))))
            1))
 (check "compiler buffers: oversized buffers are not kept" t (cb-pool-bounded-p))
+; A fat leaf (a 60-operand +) crosses the limit with 4096 of them; the
+; (setq acc (+ acc 1)) leaf needed 32768 and ~45 s on a 68040.
 (check "compiler buffers: past 262144 bytes a clean error" t
-  (handler-case (progn (compile nil (cb-big-fn 15)) nil)
+  (handler-case
+      (progn (compile nil
+                      (list 'lambda '(x)
+                            (list 'let '((acc x))
+                                  (cb-dag (list 'setq 'acc
+                                                (cons '+ (make-list 60 :initial-element 'acc)))
+                                          12)
+                                  'acc)))
+             nil)
     (error (e) (not (null (search "Bytecode too large"
                                   (princ-to-string e)))))))
 (check "compiler buffers: every block back after the overflow" '(t t 3)
@@ -12746,12 +12793,24 @@ y" 1))
 (format t "Failed: ~A~%" *fail-count*)
 (format t "Total:  ~A~%" (+ *pass-count* *fail-count*))
 (if (= *fail-count* 0) (format t "~%ALL TESTS PASSED~%") (format t "~%SOME TESTS FAILED~%"))
+(format t "~%=== Slowest checks (ms since the previous check; suite ~Ds) ===~%"
+        (round (%check-ms *check-start* (get-internal-real-time)) 1000))
+(let ((n 0))
+  (dolist (s (sort (copy-list *slow-checks*) #'> :key #'car))
+    (when (> (incf n) 40) (return))
+    (format t "~8D  ~A~%" (car s) (cdr s))))
+(when (> *skip-count* 0)
+  (format t "Skipped ~D stress check(s) (CLAMIGA_SUITE_QUICK)~%" *skip-count*))
+(format t "Threads still alive: ~D~%" (length (mp:all-threads)))
 
 ; --- JIT benchmark (m68k Amiga only; no native codegen elsewhere) ---
 ; Runs after the test summary so its timings land in the same log the
 ; harness consumes.  Kept in trunk/ so the benchmark can iterate on
 ; its own cadence without touching the test file.
+; Fresh-boot pass only (see STRESS-CHECK).
 #+m68k
-(handler-case
+(unless *suite-quick*
+ (handler-case
   (load "trunk/bench-jit-loop.lisp")
   (error (e) (format t "ERROR running JIT bench: ~A~%" e)))
+)

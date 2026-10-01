@@ -250,7 +250,10 @@ test-amiga: $(BUILDDIR)/clamiga $(BUILDDIR)/wbrun
 	cp $(BUILDDIR)/wbrun build/amiga/wbrun
 	@rm -f build/amiga/clamiga-test.img build/amiga/boot.img
 	@echo "=== Launching FS-UAE (high-end JIT config) — auto-quits when tests finish ==="
-	verify/realamiga/run-fs-uae.sh verify/realamiga/verify.fs-uae
+	@# The suite flushes its log after every check and no check takes more
+	@# than ~80 s on this config, so 5 min of silence is a hang -- the 10 min
+	@# default (kept for the slower configs) only doubled what a wedge cost.
+	STALL_TIMEOUT=$${STALL_TIMEOUT:-300} verify/realamiga/run-fs-uae.sh verify/realamiga/verify.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
 
 # Run the GUI example programs (examples/amiga/gfx/ and reaction/) unattended
