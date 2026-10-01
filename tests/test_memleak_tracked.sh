@@ -327,6 +327,23 @@ cat > "$WORK/skh.lisp" <<'LISPEOF'
 LISPEOF
 run_case "no_leak_after_string_key_hooks" "$WORK/skh.lisp"
 
+# --- AArch64 JIT: stubs installed, replaced and swept ----------------------
+# The code heap maps its chunks itself, but its chunk bookkeeping is
+# platform_alloc'd and goes back in cl_jit_shutdown; a stub replaced or
+# swept with its function frees its block.  Without the backend
+# %JIT-COMPILE-STUB returns NIL and the scenario is a plain churn.
+cat > "$WORK/jitstub.lisp" <<'LISPEOF'
+(defun jit-leak-a () 1)
+(clamiga::%jit-compile-stub #'jit-leak-a)
+(clamiga::%jit-compile-stub #'jit-leak-a)
+(dotimes (i 50)
+  (clamiga::%jit-compile-stub (compile nil `(lambda () ,i))))
+(defun jit-leak-a () 2)
+(gc)
+(quit)
+LISPEOF
+run_case "no_leak_after_jit_stubs" "$WORK/jitstub.lisp"
+
 # --- heap image save + restore ----------------------------------------------
 # The save builds an off-heap source-file table; the restore attaches every
 # function's bytecode side buffers and interns each source-file name once

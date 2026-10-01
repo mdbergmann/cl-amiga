@@ -21,6 +21,10 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <time.h>
+#if defined(JIT_A64) && defined(__APPLE__)
+#include <pthread.h>              /* pthread_jit_write_protect_np */
+#include <libkern/OSCacheControl.h> /* sys_icache_invalidate */
+#endif
 #include <unistd.h>
 #include <errno.h>
 #include <termios.h>
@@ -2043,9 +2047,45 @@ void platform_shutdown(void)
 void platform_cache_clear(void *addr, uint32_t len)
 {
     (void)addr; (void)len;
-    /* POSIX hosts running clamiga don't execute JIT-emitted m68k code;
-     * the JIT only compiles when -DJIT_M68K is on (cross build). */
+    /* POSIX hosts don't execute JIT-emitted m68k code; the AArch64 JIT
+     * flushes through platform_jit_flush. */
 }
+
+#ifdef JIT_A64
+#if !defined(__APPLE__) || !defined(__aarch64__)
+#error "JIT_A64 is implemented for arm64 macOS only (Linux: spec phase 4)"
+#endif
+void *platform_jit_map(uint32_t bytes)
+{
+    /* MAP_JIT: the one way to get writable+executable memory under the
+     * macOS arm64 code-signing rules.  An unsigned or ad-hoc-signed build
+     * needs no entitlement; a hardened-runtime one would need
+     * com.apple.security.cs.allow-jit. */
+    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE | PROT_EXEC,
+                   MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
+    return (p == MAP_FAILED) ? NULL : p;
+}
+
+void platform_jit_unmap(void *addr, uint32_t bytes)
+{
+    if (addr) munmap(addr, bytes);
+}
+
+void platform_jit_write_begin(void)
+{
+    pthread_jit_write_protect_np(0);
+}
+
+void platform_jit_write_end(void)
+{
+    pthread_jit_write_protect_np(1);
+}
+
+void platform_jit_flush(void *addr, uint32_t len)
+{
+    sys_icache_invalidate(addr, len);
+}
+#endif /* JIT_A64 */
 
 /* =============================================================
  * Generic FFI: foreign memory (POSIX implementation)

@@ -61,6 +61,20 @@ TEST(emit_u32_is_big_endian)
     cb_free(&cb);
 }
 
+TEST(emit_u32_le_is_little_endian)
+{
+    CodeBuf cb;
+    cb_init(&cb, 2);   /* forces a growth inside the write */
+    cb_emit_u8(&cb, 0x11);
+    cb_emit_u32_le(&cb, 0xD65F03C0u);   /* AArch64 RET */
+    ASSERT_EQ_INT(cb_len(&cb), 5);
+    ASSERT_EQ_INT(cb_data(&cb)[1], 0xC0);
+    ASSERT_EQ_INT(cb_data(&cb)[2], 0x03);
+    ASSERT_EQ_INT(cb_data(&cb)[3], 0x5F);
+    ASSERT_EQ_INT(cb_data(&cb)[4], 0xD6);
+    cb_free(&cb);
+}
+
 TEST(emit_bytes_block_copy)
 {
     CodeBuf cb;
@@ -194,6 +208,7 @@ int main(void)
     RUN(emit_u8_appends_one_byte);
     RUN(emit_u16_is_big_endian);
     RUN(emit_u32_is_big_endian);
+    RUN(emit_u32_le_is_little_endian);
     RUN(emit_bytes_block_copy);
     RUN(growth_past_initial_cap_preserves_bytes);
     RUN(growth_in_the_middle_of_a_u32);

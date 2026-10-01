@@ -6,6 +6,7 @@
 #include "package.h"
 #include "stream.h"
 #include "reader.h"   /* cl_srcloc_table (GC invalidate/forward hooks) */
+#include "../jit/jit.h"    /* cl_jit_free_native */
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <stdarg.h>
@@ -4111,7 +4112,7 @@ static uint32_t bytecode_release_offheap(CL_Bytecode *bc)
 
     if (bc->native_code) {
         freed += bc->native_len;
-        platform_free(bc->native_code);
+        cl_jit_free_native(bc->native_code);   /* backend's own allocator */
         bc->native_code = NULL;
     }
     bc->native_len = 0;

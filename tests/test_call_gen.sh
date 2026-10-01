@@ -86,7 +86,8 @@ cat > "$WORK/gen.lisp" <<EOF
   (setf stop t)
   (ignore-errors (mp:join-thread th)))
 (let ((st (clamiga::%jit-direct-call-stats)))
-  ;; No JIT on host: every counter 0, the sites never enabled.
+  ;; No direct-call sites on the host (none without a JIT, none yet in the
+  ;; AArch64 one): every counter 0, the sites never enabled.
   (format t "STATS-KEYS ~S~%" (loop for (k v) on st by #'cddr collect k))
   (format t "STATS-ZERO ~A~%"
           (if (every #'zerop (list (getf st :fills) (getf st :misses)
@@ -127,9 +128,9 @@ check_contains "MP:INTERRUPT-THREAD bumps" "INTERRUPT MOVED" "$out"
 check_contains "MP:DESTROY-THREAD bumps" "DESTROY MOVED" "$out"
 check_contains "%JIT-DIRECT-CALL-STATS is a plist of every counter" \
     "STATS-KEYS (:FILLS :MISSES :REFUSED-TRACE :REFUSED-SHADOW :REFUSED-ABI :REFUSED-NOT-NATIVE :GEN :ENABLED)" "$out"
-check_contains "no JIT on host: every counter is 0" "STATS-ZERO YES" "$out"
+check_contains "no direct-call sites on host: every counter is 0" "STATS-ZERO YES" "$out"
 check_contains ":GEN is a call generation, not ahead of the current one" "STATS-GEN YES" "$out"
-check_contains "no JIT on host: %JIT-SET-DIRECT-CALLS stays NIL" "DIRECT (NIL NIL)" "$out"
+check_contains "no direct-call sites on host: %JIT-SET-DIRECT-CALLS stays NIL" "DIRECT (NIL NIL)" "$out"
 
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

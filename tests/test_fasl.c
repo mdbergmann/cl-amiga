@@ -1,4 +1,5 @@
 #include "test.h"
+#include "jit/jit.h"   /* CL_JIT_NATIVE */
 #include "core/types.h"
 #include "core/mem.h"
 #include "core/error.h"
@@ -1957,7 +1958,14 @@ TEST(serialize_bytecode_speed3_jit_hint)
         bc2 = (CL_Bytecode *)CL_OBJ_TO_PTR(result);
         ASSERT_EQ_INT(bc2->flags, flags);
         ASSERT_EQ_INT(bc2->flags & 0x80, 0);
+        /* Only the (speed 3) hint travels.  The count bits are the hot
+         * policy's: a JIT build (cl_jit_note_definition, which the FASL
+         * reader calls) rewrites them on load, so they are not checked. */
+        ASSERT_EQ_INT(bc2->jit_hot & CL_BC_JIT_SPEED, hinted ? CL_BC_JIT_SPEED : 0);
+#ifndef CL_JIT_NATIVE
+        /* Without a JIT nothing touches them: the count (5) stayed behind. */
         ASSERT_EQ_INT(bc2->jit_hot, hinted ? CL_BC_JIT_SPEED : 0);
+#endif
     }
     CL_GC_UNPROTECT(1);
 }

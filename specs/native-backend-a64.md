@@ -228,14 +228,15 @@ safepoint, interrupt and Ctrl-C checks.  The `jit-loop-poll-*` checks in
 
 ## Executable memory
 
-A new platform interface, implemented in `platform_posix.c` for arm64 and
-absent elsewhere:
+A platform interface (`platform.h`, under `JIT_A64`), implemented in
+`platform_posix.c` and used only by the code heap:
 
 ```c
-void *platform_jit_reserve(uint32_t bytes);       /* code region         */
-void  platform_jit_write_begin(void);             /* this thread may write */
-void  platform_jit_write_end(void *p, uint32_t n);/* back to exec + flush  */
-void  platform_jit_release_all(void);             /* shutdown              */
+void *platform_jit_map(uint32_t bytes);          /* a MAP_JIT chunk, or NULL  */
+void  platform_jit_unmap(void *addr, uint32_t bytes);
+void  platform_jit_write_begin(void);            /* this thread may write     */
+void  platform_jit_write_end(void);              /* back to execute           */
+void  platform_jit_flush(void *addr, uint32_t len); /* I-cache maintenance    */
 ```
 
 - **macOS**: one `mmap(MAP_PRIVATE|MAP_ANON|MAP_JIT, PROT_READ|PROT_WRITE|
@@ -251,15 +252,21 @@ void  platform_jit_release_all(void);             /* shutdown              */
   executable view, because flipping `mprotect` on a page another thread
   is executing from is not safe.  Then `__builtin___clear_cache`.
 
-**Code allocator** (`src/jit/codeheap.c`):
+**Code allocator** (`src/jit/codeheap.{c,h}`):
 - Apple pages are 16 KB, so one mapping per function would waste most of
   the memory.  Functions are carved from 1 MB chunks with a first-fit
-  free list (16-byte granules, under a mutex, since threads compile
-  concurrently).
-- The two places that `platform_free` native code today (bytecode sweep
-  in `mem.c:4084`, recompile in `jit.c`) call `jit_code_free` instead.
-- Chunks are released in shutdown after the `cl_thread_count > 0` check,
-  and `tests/test_memleak_tracked.sh` gets a JIT scenario.
+  free list (16-byte granules, a block header inside the chunk, under a
+  mutex, since threads compile concurrently).  A block larger than a
+  chunk gets a chunk of its own.  Free blocks are not coalesced yet.
+- `cl_codeheap_install(code, len)` copies finished code in and flushes;
+  `cl_codeheap_free` refuses pointers it did not hand out and double frees.
+- The bytecode sweep frees native code through `cl_jit_free_native`
+  (each backend's own allocator: `platform_free` on m68k, the code heap
+  here).
+- `cl_jit_shutdown`, called in `main()` after `cl_mem_shutdown` (which
+  released every function's code), unmaps the chunks;
+  `tests/test_memleak_tracked.sh` has the `no_leak_after_jit_stubs`
+  scenario.
 
 ## Code layout in the tree
 
@@ -291,10 +298,10 @@ so it also needs `make -f Makefile.cross test-amiga`.
 ### Phase 0: split and plumbing
 - Move the CPU-independent parts of `jit.c` into `jit_common.c`: the
   hot-call policy (`cl_jit_note_definition`, `cl_jit_note_call`, the
-  threshold), the on/off switches, the stats, and `cl_jit_invoke`'s
-  bookkeeping.  The m68k walker stays in `jit.c`, which keeps the change
-  to the m68k binary small; `test-amiga` decides.  Moving the walker into
-  a file of its own can come later, if it ever helps.
+  threshold), the on/off switches and the counters.  The m68k walker
+  stays in `jit.c`, which keeps the change to the m68k binary small;
+  `test-amiga` decides.  Moving the walker into a file of its own can
+  come later, if it ever helps.
 - Add `JIT_A64`, `asm_a64.c` with the encoders phase 1 needs, the code
   heap and the platform calls.
 - Make `cl_jit_emit_stub` (`%JIT-COMPILE-STUB`) emit and run a `ret`
@@ -307,6 +314,37 @@ so it also needs `make -f Makefile.cross test-amiga`.
   - Label fixups, forward and backward, including the out-of-range
     error.
   - On arm64 only, assemble tiny functions and call them.
+
+**Status (2026-10-01): done** on branch `feat/a64-jit`.
+- `jit_backend.h` is the seam: `jit_common.c` owns the policy and the
+  counters, and each backend supplies `cl_jit_backend_init/_compile/
+  _shutdown`, `cl_jit_invoke`, the stub, the disassembler and
+  `cl_jit_free_native`.  `cl_jit_invoke` stays per backend: the m68k one
+  sets up the conservative-scan window and the C-stack floor, which
+  AArch64 does not need.
+- `jit_a64.c` declines every function.  `%JIT-COMPILE-STUB` installs
+  `mov w0, #0; ret`, OP_CALL enters it, and a redefinition, a restub or
+  the sweep frees it.  `%JIT-SET-DIRECT-CALLS` reads NIL (no call sites).
+  No boot banner on the host.
+- `asm_a64.c` is compiled on every host, so `tests/test_asm_a64.c` (89
+  encodings pinned to clang, the `A64_BAD` contract, `a64_mov_imm`, label
+  fixups and their failures) runs on x86-64 too.  `make host JIT=0`
+  builds an arm64 Mac without the backend.
+- Tests: `test_asm_a64.c`, `test_codeheap.c` (execution, reuse,
+  splitting, refused frees, an oversize chunk, four threads churning,
+  shutdown), `test_jit_a64.sh` (also in `make test-gc-stress`), and the
+  `no_leak_after_jit_stubs` memleak scenario.
+
+For phase 1:
+- `cl_jitc_invoke_count` is a process-wide counter written on every native
+  entry.  That is harmless for stubs, but under threads it is the
+  shared-cache-line cost the hot-path rule in `CLAUDE.md` forbids; make
+  it per-thread (or count only in debug builds) before native code runs
+  hot.
+- `vm.c` still gates the hot-call counting and the native tail call on
+  `JIT_M68K`.  Phase 1 switches them to `CL_JIT_NATIVE`, and since that
+  touches `cl_vm_run`, the `vm.*` rows of bench-opt must be compared
+  against `docs/benchmarks.md`.
 
 ### Phase 1: the walker that cannot be wrong
 - Native operand stack, locals, constants from the pool, jumps with the

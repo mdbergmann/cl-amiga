@@ -94,6 +94,15 @@ void cb_emit_u32(CodeBuf *cb, uint32_t v)
     cb->buf[cb->pos++] = (uint8_t)(v & 0xFF);
 }
 
+void cb_emit_u32_le(CodeBuf *cb, uint32_t v)
+{
+    if (!cb_reserve(cb, 4)) return;
+    cb->buf[cb->pos++] = (uint8_t)(v & 0xFF);
+    cb->buf[cb->pos++] = (uint8_t)(v >> 8);
+    cb->buf[cb->pos++] = (uint8_t)(v >> 16);
+    cb->buf[cb->pos++] = (uint8_t)(v >> 24);
+}
+
 void cb_emit_bytes(CodeBuf *cb, const uint8_t *p, uint32_t n)
 {
     if (!cb_reserve(cb, n)) return;

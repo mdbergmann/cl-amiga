@@ -1264,6 +1264,9 @@ shutdown:
 
     cl_mem_shutdown();
     SHUTDOWN_TRACE("mem done");
+    /* After the arena walk, which released every function's native code. */
+    cl_jit_shutdown();
+    SHUTDOWN_TRACE("jit done");
     /* Last, because the arena walk in cl_mem_shutdown is what clears the
      * bytecode pointers into this pool (see compiler.c). */
     cl_compiler_release_source_pool();

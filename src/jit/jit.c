@@ -51,12 +51,8 @@
 #include "jit/asm_m68k.h"
 #include "jit/codegen_m68k.h"
 #include "jit/runtime.h"
+#include "jit/jit_backend.h"
 #include "core/opcodes.h"
-#include "core/peephole.h"   /* cl_bytecode_has_backward_jump */
-#ifdef DEBUG_JIT_HOT
-#include <stdio.h>
-#include "core/symbol.h"
-#endif
 #include "core/stream.h"
 #include "core/thread.h"   /* cl_vm.stack[sp - nargs ... sp - 1] are the args */
 #include "core/types.h"
@@ -64,35 +60,10 @@
 
 extern int cl_quiet_boot;
 
-static int jit_active = 0;
-
-/* Opt-in: when set, cl_jit_invoke pushes a shadow CL_Frame per call so
- * EXT:BACKTRACE / EXT:FRAME-LOCALS and the error-time backtrace can see
- * JIT'd functions.  Off by default — the push costs a few % on call-heavy
- * code, and only matters when something actually reads a backtrace (an
- * error, the SLDB debugger, an explicit (ext:backtrace)).  A debug session
- * (Sly/SLDB) or a test that needs JIT frame introspection turns it on. */
-static int jit_shadow_frames = 0;
-
-void cl_jit_set_shadow_frames(int on)
-{
-    jit_shadow_frames = on ? 1 : 0;
-    cl_call_gen_bump("shadow frames");   /* the site fill rule changed */
-}
-int  cl_jit_shadow_frames_enabled(void) { return jit_shadow_frames; }
-
-/* Bumped on every cl_jit_invoke entry.  Lets Lisp-side tests prove
- * the native dispatch path was actually taken (since a correctly
- * compiled native fn returns the same value the bytecode would). */
-static uint32_t jit_invoke_count = 0;
-
-uint32_t cl_jit_invoke_count_get(void) { return jit_invoke_count; }
-
-void cl_jit_init(void)
+void cl_jit_backend_init(void)
 {
     cl_jit_runtime_init();
     cl_jit_codegen_init();
-    jit_active = 1;
     {
         /* CLAMIGA_JIT_DIRECT=0: no native-to-native direct calls (A/B runs,
          * bisection); %JIT-SET-DIRECT-CALLS toggles it at run time. */
@@ -3977,12 +3948,6 @@ cleanup:
     return result;
 }
 
-/* Native code installed since boot, in bytes -- cumulative (code freed with
- * a dead function is not subtracted), for measuring what a load compiles. */
-static uint32_t jit_native_bytes = 0;
-
-uint32_t cl_jit_native_bytes(void) { return jit_native_bytes; }
-
 /* REPLACE: drop native code the bytecode already carries and install the
  * new one (cl_jit_compile: re-JIT after a repeated FASL load, the stub
  * builtin's callers).  Without it (the hot path) existing code is never
@@ -3992,7 +3957,7 @@ uint32_t cl_jit_native_bytes(void) { return jit_native_bytes; }
  * rare pair of compiles that both install (preempted between the check
  * and the stores) writes identical code and reloc tables -- the loser's
  * buffer leaks, nothing is freed under a running caller. */
-static void jit_compile_impl(CL_Bytecode *bc, int replace)
+void cl_jit_backend_compile(CL_Bytecode *bc, int replace)
 {
     CodeBuf cb;
     JitRelocs relocs;
@@ -4001,7 +3966,7 @@ static void jit_compile_impl(CL_Bytecode *bc, int replace)
     CL_Obj value;
     uint8_t slot;
 
-    if (bc == NULL || !jit_active) return;
+    if (bc == NULL || !cl_jitc_active) return;
     if (!replace) {
         if (bc->native_code) return;
     } else {
@@ -4112,119 +4077,13 @@ static void jit_compile_impl(CL_Bytecode *bc, int replace)
 
     bc->native_code = code;
     bc->native_len  = len;
-    jit_native_bytes += len;
+    cl_jitc_native_bytes += len;
 
     /* Flush I-cache so the freshly written bytes aren't served stale.
      * REQUIRED on every 68020+ — the 020/030 also have a 256-byte
      * I-cache; only the 68000/010 lack one.  Do NOT gate this on
      * 040/060. */
     platform_cache_clear(code, len);
-}
-
-void cl_jit_compile(CL_Bytecode *bc)
-{
-    jit_compile_impl(bc, 1);
-}
-
-/* --- Hot compilation ----------------------------------------------------
- *
- * Compiling every function at definition cost about 35% of load time and
- * over a megabyte of native code for the editor on a 68040, most of it for
- * code that runs once or never; and a heap image, whose native code is
- * dropped on restore, used to run as bytecode for the rest of the session.
- * Now a function is compiled when it turns hot (jit.h). */
-
-static int      jit_hot_threshold = CL_JIT_HOT_DEFAULT;
-static uint32_t jit_hot_compiles = 0;
-/* --no-jit (cl_jit_disable_for_session), as opposed to a %JIT-SET-ACTIVE
- * NIL window: a call settles its callee, so a function restored from an
- * image pays the slow arm once, not on every call of the session. */
-static int      jit_session_off = 0;
-
-void cl_jit_set_hot_threshold(int calls)
-{
-    if (calls < 0) calls = 0;
-    if (calls > CL_JIT_HOT_MAX) calls = CL_JIT_HOT_MAX;
-    jit_hot_threshold = calls;
-}
-
-int cl_jit_hot_threshold(void) { return jit_hot_threshold; }
-
-uint32_t cl_jit_hot_compile_count(void) { return jit_hot_compiles; }
-
-void cl_jit_note_definition(CL_Bytecode *bc)
-{
-    if (bc == NULL) return;
-    if (!jit_active) {
-        /* Defined with the JIT off (--no-jit, or %JIT-SET-ACTIVE NIL
-         * around a DEFUN for an A/B benchmark): it stays bytecode. */
-        bc->jit_hot |= CL_BC_JIT_SETTLED;
-        return;
-    }
-    if (jit_hot_threshold == 0 || (bc->jit_hot & CL_BC_JIT_SPEED)) {
-        bc->jit_hot |= CL_BC_JIT_SETTLED;
-        cl_jit_compile(bc);
-        return;
-    }
-    bc->jit_hot &= CL_BC_JIT_SPEED;   /* start counting */
-}
-
-void cl_jit_note_call(CL_Bytecode *bc)
-{
-    uint32_t n;
-
-    if (!jit_active) {
-        /* Nothing counts while the JIT is off.  Only the definition-time
-         * state pins a function to bytecode: a benchmark that times its
-         * bytecode variant inside a %JIT-SET-ACTIVE NIL window must not
-         * pin the callees its JIT variant runs afterwards. */
-        if (jit_session_off) bc->jit_hot |= CL_BC_JIT_SETTLED;
-        return;
-    }
-    n = bc->jit_hot & CL_BC_JIT_COUNT_MASK;
-    /* A loop pays for its compile inside its first call, so it does not
-     * wait for the threshold; nor does a (speed 3) function, which lands
-     * here only after an image restore dropped its native code. */
-    if (n == 0 && ((bc->jit_hot & CL_BC_JIT_SPEED) ||
-                   cl_bytecode_has_backward_jump(bc->code, bc->code_len,
-                                                 bc->constants, bc->n_constants)))
-        n = CL_JIT_HOT_MAX;
-    else
-        n++;
-    if (n < (uint32_t)jit_hot_threshold) {
-        /* This store is a plain overwrite, not the settle arm's OR, so it
-         * can revert CL_BC_JIT_SETTLED (== CL_BC_JIT_COUNT_MASK) back to a
-         * small count if another thread settled bc using a fresher read
-         * while this n went stale.  Re-check right before writing so a
-         * settle already landed is never undone -- once declined, a
-         * function must stay declined instead of becoming eligible to
-         * re-enter jit_compile_impl. */
-        if (CL_BC_JIT_COUNTING_P(bc))
-            bc->jit_hot = (uint8_t)((bc->jit_hot & CL_BC_JIT_SPEED) | n);
-        return;
-    }
-    /* Settle first: whatever the JIT decides, it decides once. */
-    bc->jit_hot |= CL_BC_JIT_SETTLED;
-    jit_hot_compiles++;
-    jit_compile_impl(bc, 0);
-#ifdef DEBUG_JIT_HOT
-    {
-        char line[160];
-        snprintf(line, sizeof(line), "; [jit-hot] %s: %s (%lu bytes)\n",
-                 CL_SYMBOL_P(bc->name) ? cl_symbol_name(bc->name) : "<anon>",
-                 bc->native_code ? "compiled" : "declined",
-                 (unsigned long)bc->native_len);
-        platform_write_string(line);
-    }
-#endif
-}
-
-void cl_jit_compile_if_counting(CL_Bytecode *bc)
-{
-    if (bc == NULL || !jit_active || bc->native_code || !CL_BC_JIT_COUNTING_P(bc))
-        return;
-    bc->jit_hot |= CL_BC_JIT_SETTLED;
-    jit_compile_impl(bc, 0);
 }
 
 /* --- Disassembler -----------------------------------------------------
@@ -4619,7 +4478,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     int   pushed_frame = 0;
 
     if (bc == NULL || bc->native_code == NULL) return CL_NIL;
-    jit_invoke_count++;
+    cl_jitc_invoke_count++;
     is_kw = (bc->flags & 1) != 0;
 
     /* Mark this thread as inside JIT'd code so the GC knows to scan
@@ -4675,7 +4534,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
      * source line.  On a non-local exit (longjmp) the error/NLX unwind
      * resets cl_vm.fp wholesale to a pre-call snapshot, so skipping the pop
      * at `done` cannot leak the frame. */
-    if (jit_shadow_frames && cl_vm.fp < cl_vm.frame_size) {
+    if (cl_jitc_shadow_frames && cl_vm.fp < cl_vm.frame_size) {
         CL_Frame *sf = &cl_vm.frames[cl_vm.fp++];
         sf->bytecode  = func_obj;
         sf->code      = bc->code;
@@ -4725,19 +4584,16 @@ done:
     return result;
 }
 
-int cl_jit_enabled(void) { return jit_active; }
-
-void cl_jit_set_active(int active)
+/* Every m68k code buffer is platform_alloc'd and goes back with its
+ * function (cl_jit_free_native); nothing else is mapped. */
+void cl_jit_backend_shutdown(void)
 {
-    jit_active = active ? 1 : 0;
-    if (active) jit_session_off = 0;
-    cl_call_gen_bump("jit active");
 }
 
-void cl_jit_disable_for_session(void)
+/* m68k native code is platform_alloc'd (cb_finish). */
+void cl_jit_free_native(void *code)
 {
-    jit_active = 0;
-    jit_session_off = 1;
+    platform_free(code);
 }
 
 int cl_jit_emit_stub(CL_Bytecode *bc)
@@ -4762,7 +4618,7 @@ int cl_jit_emit_stub(CL_Bytecode *bc)
     platform_cache_clear(code, len);
     {
         /* Swap in the stub, then bump, then free: a call site may cache
-         * the old entry (see jit_compile_impl). */
+         * the old entry (see cl_jit_backend_compile). */
         void *old_code = bc->native_code;
         bc->native_code = code;
         bc->native_len  = len;

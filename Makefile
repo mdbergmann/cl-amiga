@@ -1,6 +1,7 @@
 # CL-Amiga Makefile
 
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 # Targets: host (Linux), amiga-m68k, amiga-ppc
 
 CC_HOST     = gcc
@@ -42,7 +43,15 @@ PTHREAD_FLAGS = -pthread
 endif
 endif
 
-CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto $(PLATFORM_DEF) -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
+# The AArch64 template JIT (specs/native-backend-a64.md): arm64 macOS hosts
+# build it by default; `make host JIT=0` builds the interpreter only.
+JIT ?= 1
+ifeq ($(UNAME_S)-$(UNAME_M)-$(JIT),Darwin-arm64-1)
+JIT_A64 := 1
+JIT_DEF := -DJIT_A64
+endif
+
+CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto $(PLATFORM_DEF) $(JIT_DEF) -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
 HOST_LIBS   = -lm $(PTHREAD_FLAGS) $(FFI_LIBS) $(PLATFORM_LIBS)
 
 # Test builds deliberately drop -flto and use -O1 instead of -O3.  The shipped
@@ -53,7 +62,7 @@ HOST_LIBS   = -lm $(PTHREAD_FLAGS) $(FFI_LIBS) $(PLATFORM_LIBS)
 # fast enough for the suite (gc-stress, which needs the optimized binary, builds
 # its own -O3 clamiga separately and is unaffected).  Test objects live in their
 # own tree so they never clash with the -O3 -flto objects linked into clamiga.
-CFLAGS_TEST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O1 $(PLATFORM_DEF) -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
+CFLAGS_TEST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O1 $(PLATFORM_DEF) $(JIT_DEF) -DCL_WIDE_STRINGS $(PTHREAD_FLAGS) $(FFI_CFLAGS) $(DEBUG_FLAGS)
 
 SRCDIR   = src
 BUILDDIR = build/host
@@ -120,9 +129,16 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c
 # Portable JIT pieces (no m68k codegen — those live only in
-# Makefile.cross).  Compiled into the host build so unit tests can
-# exercise code-buffer mechanics.
-JIT_SRC      = $(SRCDIR)/jit/codebuf.c
+# Makefile.cross).  Compiled into every host build so unit tests can
+# exercise the code buffer and the AArch64 encoders anywhere; the AArch64
+# backend itself joins them on arm64 macOS (JIT_A64 above).
+JIT_SRC      = $(SRCDIR)/jit/codebuf.c \
+               $(SRCDIR)/jit/asm_a64.c
+ifdef JIT_A64
+JIT_SRC     += $(SRCDIR)/jit/jit_common.c \
+               $(SRCDIR)/jit/jit_a64.c \
+               $(SRCDIR)/jit/codeheap.c
+endif
 MAIN_SRC     = $(SRCDIR)/main.c
 
 HOST_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
@@ -232,7 +248,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_mt_dispatch_cache_race test_mt_thread_exit_gc test_mt_thread_identity \
                 test_mt_intern_stw test_mt_stream_close_race test_mt_interrupt_parked \
                 test_mt_thread_exit_drain test_mt_stop_workers test_mt_thread_death_hook \
-                test_lock_diag test_break_diag test_call_diag test_call_gen test_heap_verify test_cpu_selftest test_debugger_backtrace test_backtrace_lines test_backtrace_after_handled_error \
+                test_lock_diag test_break_diag test_call_diag test_call_gen test_jit_a64 test_heap_verify test_cpu_selftest test_debugger_backtrace test_backtrace_lines test_backtrace_after_handled_error \
                 test_debugger_eof test_inspect_eof \
                 test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
                 test_shutdown_leak \
@@ -361,6 +377,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_call_diag.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_call_gen (CLAMIGA_GC_STRESS=1, forced compaction: every collection must bump the call generation) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_call_gen.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_jit_a64 (CLAMIGA_GC_STRESS=1, forced compaction: native entry, stubs swept with dead functions) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_jit_a64.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_defvar_init_once_fasl (CLAMIGA_GC_STRESS=1, forced compaction: DEFVAR's BOUNDP-guarded codegen) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_defvar_init_once_fasl.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_dev_tcp (CLAMIGA_GC_STRESS=1, forced compaction: the TCP dev port's frames, server, client, REPL leg and the two builtins under it) ---"

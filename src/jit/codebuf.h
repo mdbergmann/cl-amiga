@@ -33,6 +33,7 @@ void     cb_free(CodeBuf *cb);
 void     cb_emit_u8 (CodeBuf *cb, uint8_t  v);
 void     cb_emit_u16(CodeBuf *cb, uint16_t v);   /* big-endian (m68k) */
 void     cb_emit_u32(CodeBuf *cb, uint32_t v);   /* big-endian (m68k) */
+void     cb_emit_u32_le(CodeBuf *cb, uint32_t v); /* little-endian (AArch64) */
 void     cb_emit_bytes(CodeBuf *cb, const uint8_t *p, uint32_t n);
 
 uint32_t cb_len(const CodeBuf *cb);

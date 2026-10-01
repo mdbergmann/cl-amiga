@@ -1,14 +1,18 @@
-/* jit.h — public API of the m68k native-code backend.
+/* jit.h — public API of the native-code backends.
  *
  * This is the integration surface used by the rest of the runtime. Two
  * functions are called from the bytecode compiler / boot, and the rest
  * is implementation detail.
  *
- * On non-m68k builds (no JIT_M68K) every entry point becomes an inline
- * no-op so call sites stay identical and Lisp code is unaware of the
- * JIT's presence.
+ * Two backends implement it: the m68k template JIT (JIT_M68K, the Amiga
+ * cross build; specs/native-backend.md) and the AArch64 one (JIT_A64,
+ * arm64 hosts; specs/native-backend-a64.md).  Either defines
+ * CL_JIT_NATIVE.  The CPU-independent half -- the hot-call policy, the
+ * on/off switches, the counters -- lives in jit_common.c; each backend
+ * supplies compile, invoke, the stub and the disassembler (jit_backend.h).
  *
- * See specs/native-backend.md for the full design.
+ * Without a backend every entry point becomes an inline no-op so call
+ * sites stay identical and Lisp code is unaware of the JIT's presence.
  */
 
 #ifndef CL_JIT_H
@@ -17,7 +21,7 @@
 #include "core/types.h"
 
 /* Hot-call threshold bounds (jit.h; specs/lazy-jit.md).  Kept outside the
- * JIT_M68K guard below: %JIT-SET-HOT-THRESHOLD validates against
+ * CL_JIT_NATIVE guard below: %JIT-SET-HOT-THRESHOLD validates against
  * CL_JIT_HOT_MAX on every build, including host, where cl_jit_set_hot_threshold
  * is the no-op stub. */
 #define CL_JIT_HOT_DEFAULT  8
@@ -31,14 +35,23 @@ enum {
     CL_JIT_DS_REFUSED_NOT_NATIVE, CL_JIT_DS_COUNT
 };
 
-#ifdef JIT_M68K
+#if defined(JIT_M68K) || defined(JIT_A64)
+#define CL_JIT_NATIVE 1
+#endif
 
+#ifdef CL_JIT_NATIVE
+
+#ifdef JIT_M68K
 /* The highest positional arity native code is entered with (cl_jit_invoke,
  * the pass-through matcher, the walker's gate, the call-site fill rule). */
 #define CL_JIT_PASSTHROUGH_MAX_ARITY 6
+#endif
 
 /* One-time init at boot, after cl_compiler_init. */
 void   cl_jit_init(void);
+/* Process exit, after cl_mem_shutdown has released every function's native
+ * code: hand back what the backend maps itself (the AArch64 code heap). */
+void   cl_jit_shutdown(void);
 
 /* The direct-call kill switch (%JIT-SET-DIRECT-CALLS, CLAMIGA_JIT_DIRECT=0):
  * while off, no call site fills, so every call takes the helper path.
@@ -48,7 +61,7 @@ int    cl_jit_direct_calls_enabled(void);
 /* Copy the CL_JIT_DS_* counters into OUT[CL_JIT_DS_COUNT]. */
 void   cl_jit_direct_call_stats(uint32_t *out);
 
-/* Optionally translate this bytecode to native m68k. May leave
+/* Optionally translate this bytecode to native code. May leave
  * bc->native_code == NULL if the function is ineligible or the JIT is
  * disabled — callers must always be ready to fall back to the bytecode
  * interpreter. */
@@ -90,6 +103,7 @@ uint32_t cl_jit_native_bytes(void);
  * Not wired into vm.c in the skeleton. */
 CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs);
 
+#ifdef JIT_M68K
 /* src/jit/jit_enter_m68k.s: call native `entry` with A3 = `thread`,
  * argv[0..nargs-1] pushed in that order (argv[0] highest, i.e. the
  * operand-stack order of a native call site), then `func`.  Only
@@ -97,6 +111,12 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs);
 struct CL_Thread_s;
 CL_Obj cl_jit_enter(void *entry, struct CL_Thread_s *thread, CL_Obj func,
                     const CL_Obj *argv, int32_t nargs);
+#endif
+
+/* Release the native code of a dead or recompiled function (mem.c's
+ * sweep).  m68k code is platform_alloc'd; AArch64 code lives in the
+ * executable code heap (codeheap.c). */
+void   cl_jit_free_native(void *code);
 
 /* Runtime introspection: is the JIT compiled in and active? */
 int    cl_jit_enabled(void);
@@ -135,15 +155,16 @@ int    cl_jit_emit_stub(CL_Bytecode *bc);
  * being interpreted (which would happen to return the same value). */
 uint32_t cl_jit_invoke_count_get(void);
 
-/* Pretty-print the m68k bytes in `code` (length `len`) as one line of
+/* Pretty-print the native bytes in `code` (length `len`) as one line of
  * assembly per instruction to platform_write_string.  Only decodes the
  * forms the JIT can emit; anything else falls through to ".word $xxxx".
  * Exposed to Lisp as `clamiga::%JIT-DISASSEMBLE`. */
 void cl_jit_disassemble(const uint8_t *code, uint32_t len);
 
-#else  /* !JIT_M68K — host / non-m68k targets get no-op stubs */
+#else  /* no CL_JIT_NATIVE — targets without a backend get no-op stubs */
 
 static inline void   cl_jit_init(void)                       { }
+static inline void   cl_jit_shutdown(void)                   { }
 static inline void   cl_jit_set_direct_calls(int on)          { (void)on; }
 static inline int    cl_jit_direct_calls_enabled(void)       { return 0; }
 static inline void   cl_jit_direct_call_stats(uint32_t *out)
@@ -165,7 +186,9 @@ static inline int    cl_jit_shadow_frames_enabled(void)      { return 0; }
 static inline int    cl_jit_emit_stub(CL_Bytecode *bc)       { (void)bc; return 0; }
 static inline uint32_t cl_jit_invoke_count_get(void)         { return 0; }
 static inline void   cl_jit_disassemble(const uint8_t *c, uint32_t n) { (void)c; (void)n; }
+/* Without a backend no bytecode ever carries native code. */
+static inline void   cl_jit_free_native(void *code)          { (void)code; }
 
-#endif /* JIT_M68K */
+#endif /* CL_JIT_NATIVE */
 
 #endif /* CL_JIT_H */

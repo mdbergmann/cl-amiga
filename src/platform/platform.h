@@ -741,4 +741,18 @@ uint32_t platform_wait_signals(uint32_t mask);
  * lines.  No-op on 68020/030 and on POSIX. */
 void     platform_cache_clear(void *addr, uint32_t len);
 
+#ifdef JIT_A64
+/* Executable memory for the AArch64 JIT (specs/native-backend-a64.md),
+ * used only through src/jit/codeheap.c.  On macOS the mapping is MAP_JIT:
+ * a thread writes it between platform_jit_write_begin and _end (a
+ * per-thread switch, so other threads keep executing it meanwhile), and
+ * platform_jit_flush makes the written instructions visible to fetch --
+ * on AArch64 the instruction and data caches are not coherent. */
+void    *platform_jit_map(uint32_t bytes);           /* NULL on failure */
+void     platform_jit_unmap(void *addr, uint32_t bytes);
+void     platform_jit_write_begin(void);
+void     platform_jit_write_end(void);
+void     platform_jit_flush(void *addr, uint32_t len);
+#endif
+
 #endif /* CL_PLATFORM_H */
