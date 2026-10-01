@@ -946,7 +946,7 @@ static void install_definition(CL_Obj target, int kind, CL_Obj value, CL_Obj stu
     case CL_BT_LIBCALL:
     case CL_BT_FIELD:
         ((CL_FfiStub *)CL_OBJ_TO_PTR(stub))->name = target;
-        t->function = stub;
+        cl_symbol_set_function(target, stub);
         break;
     default:
         break;
@@ -1066,7 +1066,7 @@ CL_Obj cl_bindtab_materialize(CL_Obj package, const char *query, uint32_t qlen,
     /* The fresh symbol is complete BEFORE it becomes visible. */
     if (kind >= 0) install_definition(sym, kind, value, stub);
     if (has_setter)
-        ((CL_Symbol *)CL_OBJ_TO_PTR(ssym))->function = sstub;
+        cl_symbol_set_function(ssym, sstub);
 
     /* 3. Link under the write lock, re-checking for a peer's win. */
     pkg_wrlock();
@@ -1094,7 +1094,7 @@ CL_Obj cl_bindtab_materialize(CL_Obj package, const char *query, uint32_t qlen,
                 sresult = sexisting;
                 if (force || ((CL_Symbol *)CL_OBJ_TO_PTR(sexisting))->function == CL_UNBOUND) {
                     ((CL_FfiStub *)CL_OBJ_TO_PTR(sstub))->name = sexisting;
-                    ((CL_Symbol *)CL_OBJ_TO_PTR(sexisting))->function = sstub;
+                    cl_symbol_set_function(sexisting, sstub);
                 }
             }
         }

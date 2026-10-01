@@ -1264,7 +1264,7 @@ static CL_Obj bi_ffi_define_cstruct_accessors(CL_Obj *args, int nargs)
             /* Embedded struct: reader only, returns ptr + offset. */
             stub = make_field_stub_checked(who, acc, CL_STUB_FIELD_PTR, 0,
                                            offset, 0, 0);
-            ((CL_Symbol *)CL_OBJ_TO_PTR(acc))->function = stub;
+            cl_symbol_set_function(acc, stub);
         } else {
             int is_array = CL_CONS_P(type) && cl_car(type) == kw_array;
             CL_Obj elt_kw = is_array ? cl_car(cl_cdr(type)) : type;
@@ -1291,7 +1291,7 @@ static CL_Obj bi_ffi_define_cstruct_accessors(CL_Obj *args, int nargs)
             stub = make_field_stub_checked(who, acc,
                                            is_array ? CL_STUB_PEEK_IDX : CL_STUB_PEEK,
                                            ctype, offset, elt_size, count);
-            ((CL_Symbol *)CL_OBJ_TO_PTR(acc))->function = stub;
+            cl_symbol_set_function(acc, stub);
 
             /* Writer: %SET-<accessor>, in the accessor's package (ACC is
              * rooted, so deriving the name after the reader stub's
@@ -1300,7 +1300,7 @@ static CL_Obj bi_ffi_define_cstruct_accessors(CL_Obj *args, int nargs)
             stub = make_field_stub_checked(who, setter,
                                            is_array ? CL_STUB_POKE_IDX : CL_STUB_POKE,
                                            ctype, offset, elt_size, count);
-            ((CL_Symbol *)CL_OBJ_TO_PTR(setter))->function = stub;
+            cl_symbol_set_function(setter, stub);
             cl_register_setf_updater(acc, setter);
         }
         list = cl_cdr(list);

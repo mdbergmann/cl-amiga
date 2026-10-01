@@ -131,12 +131,10 @@ static CL_Obj bi_set_symbol_value(CL_Obj *args, int n)
 
 static CL_Obj bi_set_symbol_function(CL_Obj *args, int n)
 {
-    CL_Symbol *s;
     CL_UNUSED(n);
     if (!CL_SYMBOL_OR_NIL_P(args[0]))
         cl_signal_type_error(args[0], "SYMBOL", "%SET-SYMBOL-FUNCTION");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    s->function = args[1];
+    cl_symbol_set_function(args[0], args[1]);
     return args[1];
 }
 
@@ -267,21 +265,17 @@ static CL_Obj bi_fboundp(CL_Obj *args, int n)
 
 static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
 {
-    CL_Symbol *s;
     CL_UNUSED(n);
     if (CL_CONS_P(args[0])) {
         /* (fmakunbound '(setf name)) */
         CL_Obj setf_sym = lookup_setf_fn_sym(args[0]);
-        if (!CL_NULL_P(setf_sym)) {
-            s = (CL_Symbol *)CL_OBJ_TO_PTR(setf_sym);
-            s->function = CL_UNBOUND;
-        }
+        if (!CL_NULL_P(setf_sym))
+            cl_symbol_set_function(setf_sym, CL_UNBOUND);
         return args[0];
     }
     if (!CL_SYMBOL_OR_NIL_P(args[0]))
         cl_signal_type_error(args[0], "SYMBOL", "FMAKUNBOUND");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    s->function = CL_UNBOUND;
+    cl_symbol_set_function(args[0], CL_UNBOUND);
     return args[0];
 }
 

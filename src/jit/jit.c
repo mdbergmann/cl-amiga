@@ -73,7 +73,11 @@ static int jit_active = 0;
  * (Sly/SLDB) or a test that needs JIT frame introspection turns it on. */
 static int jit_shadow_frames = 0;
 
-void cl_jit_set_shadow_frames(int on) { jit_shadow_frames = on ? 1 : 0; }
+void cl_jit_set_shadow_frames(int on)
+{
+    jit_shadow_frames = on ? 1 : 0;
+    cl_call_gen_bump("shadow frames");   /* the site fill rule changed */
+}
 int  cl_jit_shadow_frames_enabled(void) { return jit_shadow_frames; }
 
 /* Bumped on every cl_jit_invoke entry.  Lets Lisp-side tests prove
@@ -3847,8 +3851,12 @@ static void jit_compile_impl(CL_Bytecode *bc, int replace)
         if (bc->native_code) return;
     } else {
         /* Drop any stale native code + relocs from a prior compile of this
-         * bytecode (re-JIT after redefinition / repeated FASL load). */
-        if (bc->native_code) { platform_free(bc->native_code); }
+         * bytecode (re-JIT after redefinition / repeated FASL load).  A
+         * call site may cache the freed entry: invalidate them all. */
+        if (bc->native_code) {
+            platform_free(bc->native_code);
+            cl_call_gen_bump("native code replaced");
+        }
         if (bc->native_relocs) { platform_free(bc->native_relocs); }
         bc->native_code   = NULL;
         bc->native_len    = 0;
@@ -4477,6 +4485,7 @@ void cl_jit_set_active(int active)
 {
     jit_active = active ? 1 : 0;
     if (active) jit_session_off = 0;
+    cl_call_gen_bump("jit active");
 }
 
 void cl_jit_disable_for_session(void)
@@ -4499,7 +4508,10 @@ int cl_jit_emit_stub(CL_Bytecode *bc)
     code = cb_finish(&cb, &len);
     if (code == NULL) return 0;
 
-    if (bc->native_code) platform_free(bc->native_code);
+    if (bc->native_code) {
+        platform_free(bc->native_code);
+        cl_call_gen_bump("native code replaced");
+    }
     /* The stub bakes no heap immediates — drop any reloc table the prior
      * native code carried so the compactor doesn't patch the stub. */
     if (bc->native_relocs) platform_free(bc->native_relocs);

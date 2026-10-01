@@ -833,7 +833,7 @@ static CL_Obj bi_amiga_defcfun(CL_Obj *args, int nargs)
     (void)nargs;
     stub = make_libcall_stub_checked("DEFCFUN", args);
     name = args[0];   /* args are VM-stack slots: forwarded across the alloc */
-    ((CL_Symbol *)CL_OBJ_TO_PTR(name))->function = stub;
+    cl_symbol_set_function(name, stub);
     return name;
 }
 

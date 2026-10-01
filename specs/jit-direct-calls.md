@@ -1,6 +1,6 @@
 # Direct native-to-native calls (m68k JIT)
 
-Status: **in progress** (2026-10-01): phases 1 and 2 done.  Follows the open lever in
+Status: **in progress** (2026-10-01): phases 1, 2 and 3 done.  Follows the open lever in
 `specs/native-backend.md` §"Status (2026-09-16, direct call dispatch from
 JIT'd code)": *direct JSR to a native callee from the call site (no helper
 at all)*.  The idea is borrowed from Evergreen CL's T1 baseline JIT
@@ -90,16 +90,25 @@ wrong bumps it:
 | TRACE / UNTRACE, `cl_trace_count` reset | `builtins.c:1268`, `:1298`, `:1346` | traced calls must go through the trampoline |
 | Shadow frames toggled, direct calls toggled, JIT toggled | `cl_jit_set_shadow_frames`, `%jit-set-direct-calls`, `cl_jit_set_active` | the fill rules below change |
 
-**The funnel.**  Add `cl_symbol_set_function(CL_Obj sym, CL_Obj fn)` (and
-`cl_symbol_fmakunbound`).  Every one of today's raw writes is rewritten to
-go through it:
+**The funnel.**  Add `cl_symbol_set_function(CL_Obj sym, CL_Obj fn)`
+(FMAKUNBOUND passes `CL_UNBOUND`).  Every one of today's raw writes is
+rewritten to go through it:
 `builtins.c:164`, `builtins_amiga.c:836`, `builtins_ffi.c:1267/1294/1303`,
 `bindtab.c:949/1069/1097`, `vm.c:2854`, `mem.c:2075/2248`,
 `builtins_package.c:978`, `builtins_mutation.c:139/277/284`,
 `jit/runtime.c:244`.
 
-`mem.c:2075`/`:2248` are symbol construction, where a fresh symbol cannot be
-cached yet; they may stay raw with a comment.
+`mem.c:2075` is symbol construction and `builtins_package.c:978` fills a
+fresh COPY-SYMBOL, where nothing can be cached yet; `mem.c:2248` is a
+restart's slot, not a symbol's.  They stay raw, each marked with a
+`symfn-raw:` comment the lint accepts.
+
+As built (phase 3): the collection bump sits in `gc_stop_world_timed`,
+which every collector (sweep, compaction, gengc minor) enters, right after
+the world is stopped.  The image restore needs no bump: it runs before any
+native code exists, so no site can hold anything.  Freeing native code in
+the sweep is covered by that collection's bump; the JIT's own
+replace paths (`jit_compile_impl`, `cl_jit_emit_stub`) bump themselves.
 
 A shell lint in the style of `tests/test_gc_arg_order.sh`,
 `tests/test_symfn_funnel.sh`, fails `make test` on any new raw

@@ -293,6 +293,26 @@ void cl_tlab_retire(struct CL_Thread_s *t);
 /* Manually trigger GC */
 void cl_gc(void);
 
+/* --- Call generation (specs/jit-direct-calls.md §1) ---
+ * One global word guarding every cached (callee, entry) pair a JIT call
+ * site holds: a site is valid only while its recorded generation equals
+ * cl_call_gen.  Everything that could make such a pair wrong bumps it —
+ * every function-cell write (through cl_symbol_set_function, never a raw
+ * function-slot store; tests/test_symfn_funnel.sh enforces it), every garbage
+ * collection, native code replaced, a stop-the-world or interrupt request,
+ * TRACE/UNTRACE and the JIT mode toggles.  Never 0: 0 marks an empty site.
+ * Bumps are rare; nothing on a per-call path writes the word. */
+extern volatile uint32_t cl_call_gen;
+
+/* Advance cl_call_gen (atomically, skipping 0 on wrap).  WHY names the
+ * event; DEBUG_JIT builds log it, so a bump storm is visible. */
+void cl_call_gen_bump(const char *why);
+
+/* Set SYM's function cell to FN (CL_UNBOUND = fmakunbound) and bump the
+ * call generation.  The one place a live symbol's function cell is
+ * written.  Non-allocating. */
+void cl_symbol_set_function(CL_Obj sym, CL_Obj fn);
+
 /* Cheap reclamation pass for bounded external-handle tables (locks,
  * condvars, threads): when a table fills, most dead handle-owners are
  * RECENT objects, so under the generational collector a minor cycle

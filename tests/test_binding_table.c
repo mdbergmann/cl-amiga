@@ -450,10 +450,14 @@ TEST(reload_overwrites_present_definitions)
     define_fixture("BTT-H");
     ASSERT_STR_EQ(eval_print("btt-h:+one+"), "1");
     ASSERT_STR_EQ(eval_print("(getf (ffi::%ffi-stub-info #'btt-h:foo) :lvo)"), "-36");
+    /* The reload rewrites the present FOO's function cell, so a JIT call
+     * site caching the old stub must be invalidated (cl_call_gen moves). */
+    ASSERT_STR_EQ(eval_print("(progn (defparameter *btt-gen* (clamiga::%call-gen)) t)"), "T");
     eval_print("(clamiga::%register-binding-table \"BTT-H\""
                " (clamiga::%make-binding-table '((:const \"+ONE+\" 111) (:fn \"FOO\" -300 (:a0) :pointer)))"
                " '*btt-base* nil)");
     ASSERT_STR_EQ(eval_print("(list btt-h:+one+ (getf (ffi::%ffi-stub-info #'btt-h:foo) :lvo))"), "(111 -300)");
+    ASSERT_STR_EQ(eval_print("(/= *btt-gen* (clamiga::%call-gen))"), "T");
     /* names of the old table that the new one lacks keep their old definition */
     ASSERT_STR_EQ(eval_print("(and (fboundp 'btt-h:open) (getf (clamiga::%binding-table-info \"BTT-H\") :entries))"), "2");
 }

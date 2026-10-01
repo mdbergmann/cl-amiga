@@ -975,7 +975,8 @@ static CL_Obj bi_copy_symbol(CL_Obj *args, int nargs)
             orig = (CL_Symbol *)CL_OBJ_TO_PTR(sym_obj);
             ns = (CL_Symbol *)CL_OBJ_TO_PTR(new_sym);
             ns->value = orig->value;
-            ns->function = orig->function;
+            /* A fresh uninterned copy: nothing can cache it yet. */
+            ns->function = orig->function;   /* symfn-raw: fresh symbol */
             ns->plist = orig->plist;
         }
     }

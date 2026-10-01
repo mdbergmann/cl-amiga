@@ -1888,6 +1888,8 @@ static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
     platform_memory_barrier();
     target->interrupt_pending = 1;
     platform_memory_barrier();
+    /* After the flag: JIT call sites miss and poll it (jit-direct-calls §5). */
+    cl_call_gen_bump("interrupt");
     wake_interrupted_waiter(target);
     platform_mutex_unlock(cl_thread_list_lock);
 
@@ -1937,6 +1939,8 @@ static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
     platform_memory_barrier();
     target->interrupt_pending = 1;
     platform_memory_barrier();
+    /* After the flag: JIT call sites miss and poll it (jit-direct-calls §5). */
+    cl_call_gen_bump("interrupt");
     wake_interrupted_waiter(target);
     platform_mutex_unlock(cl_thread_list_lock);
 
@@ -1959,6 +1963,7 @@ uint32_t cl_thread_stop_workers(uint32_t timeout_ms)
         platform_memory_barrier();
         t->interrupt_pending = 1;
         platform_memory_barrier();
+        cl_call_gen_bump("interrupt");
         wake_interrupted_waiter(t);
         asked++;
     }

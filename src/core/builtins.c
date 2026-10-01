@@ -157,11 +157,9 @@ void cl_register_builtin(const char *name, CL_CFunc func,
      * dense, but wrong by contract and fatal if ever run post-boot). */
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), package);
     CL_Obj fn;
-    CL_Symbol *s;
     CL_GC_PROTECT(sym);
     fn = cl_make_function(func, sym, min, max);
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = fn;
+    cl_symbol_set_function(sym, fn);
     CL_GC_UNPROTECT(1);
     /* Do NOT set s->value here.  Per CLHS, function and value cells are
      * disjoint: (boundp 'car) must return NIL even though CAR is fbound.
@@ -1267,6 +1265,8 @@ static CL_Obj bi_trace_function(CL_Obj *args, int n)
             s->flags |= CL_SYM_TRACED;
             cl_trace_count++;
             newly = 1;
+            /* Traced calls must take the trampoline, not a filled site. */
+            cl_call_gen_bump("trace");
         }
         cl_tables_rwunlock();
         /* Cons outside the write lock (STW-vs-rwlock deadlock — see
@@ -1296,6 +1296,7 @@ static CL_Obj bi_untrace_function(CL_Obj *args, int n)
         }
         s->flags &= ~CL_SYM_TRACED;
         cl_trace_count--;
+        cl_call_gen_bump("untrace");
         {
             CL_Obj prev = CL_NIL, curr = trace_list;
             while (!CL_NULL_P(curr)) {
@@ -1345,6 +1346,7 @@ static CL_Obj bi_untrace_all(CL_Obj *args, int n)
     cl_tables_rwunlock();
     cl_trace_count = 0;
     cl_trace_depth = 0;
+    cl_call_gen_bump("untrace all");
     return CL_NIL;
 }
 
@@ -1430,6 +1432,15 @@ static CL_Obj bi_jit_invoke_count(CL_Obj *args, int n)
      * at 0 on host (no JIT compiled in), so tests written for Amiga
      * verification gate themselves with this counter. */
     return CL_MAKE_FIXNUM((int32_t)cl_jit_invoke_count_get());
+}
+
+/* (%CALL-GEN) -- the current call generation (cl_call_gen, mem.h): the
+ * word every JIT call site checks.  For tests: each invalidating event
+ * (a function-cell write, a collection, TRACE, ...) must change it. */
+static CL_Obj bi_call_gen(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return cl_bignum_from_uint32(cl_call_gen);
 }
 
 /* (%JIT-C-FLOOR) -- (FLOOR SP) while called from inside native code: the
@@ -2314,6 +2325,7 @@ void cl_builtins_init(void)
     cl_register_builtin("%JIT-COMPILE-STUB",  bi_jit_compile_stub,  1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-INVOKE-COUNT",  bi_jit_invoke_count,  0, 0, cl_package_clamiga);
     cl_register_builtin("%JIT-C-FLOOR",       bi_jit_c_floor,       0, 0, cl_package_clamiga);
+    cl_register_builtin("%CALL-GEN",          bi_call_gen,          0, 0, cl_package_clamiga);
     cl_register_builtin("%JIT-DISASSEMBLE",   bi_jit_disassemble,   1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-SET-ACTIVE",    bi_jit_set_active,    1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-ACTIVE-P",      bi_jit_active_p,      0, 0, cl_package_clamiga);

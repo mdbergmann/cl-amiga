@@ -234,14 +234,13 @@ CL_Obj cl_jit_runtime_gstore(CL_Obj sym, CL_Obj val)
 
 /* Backing for OP_FSTORE: write `val` into the symbol's function cell.
  * Mirrors the VM's OP_FSTORE byte-for-byte — peek semantics on the
- * caller side, plain field write here.  Non-allocating, so always
+ * caller side, the function-cell setter (it bumps cl_call_gen) here.  Non-allocating, so always
  * GC-safe; the JIT side reuses the OP_GSTORE peek pattern (flush
  * cache so TOS lives at (a7), push it as the C arg, leave it in
  * place after the JSR drops only the C args). */
 CL_Obj cl_jit_runtime_fstore(CL_Obj sym, CL_Obj val)
 {
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = val;
+    cl_symbol_set_function(sym, val);
     return val;
 }
 

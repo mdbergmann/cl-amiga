@@ -372,6 +372,9 @@ void cl_gc_stop_the_world(void)
             t->gc_requested = 1;
     }
     platform_mutex_unlock(cl_thread_list_lock);
+    /* After the flags: a peer looping on direct JIT calls misses its next
+     * call site and polls gc_requested (specs/jit-direct-calls.md §5). */
+    cl_call_gen_bump("stw request");
 
     /* Wait until all other threads have reached a safepoint or are inside
      * a safe region (blocking syscall not touching the heap). */
@@ -398,8 +401,10 @@ void cl_gc_stop_the_world(void)
              * any live, unrequested peer during each rescan (idempotent,
              * under the list lock); it then parks at its next safepoint
              * before all_stopped can become true. */
-            if (t != self && t->gc_live && !t->gc_requested)
+            if (t != self && t->gc_live && !t->gc_requested) {
                 t->gc_requested = 1;
+                cl_call_gen_bump("stw request");
+            }
             if (t != self && t->gc_live && t->gc_requested
                 && !t->gc_stopped && !t->in_safe_region) {
                 all_stopped = 0;

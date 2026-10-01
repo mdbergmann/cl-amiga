@@ -2849,9 +2849,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_FSTORE): {
             uint16_t idx = read_u16(code, &ip);
-            CL_Obj sym = constants[idx];
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            s->function = cl_vm.stack[cl_vm.sp - 1];
+            cl_symbol_set_function(constants[idx], cl_vm.stack[cl_vm.sp - 1]);
             VM_BREAK;
         }
 

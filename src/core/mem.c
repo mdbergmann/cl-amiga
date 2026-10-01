@@ -2072,12 +2072,40 @@ CL_Obj cl_make_symbol(CL_Obj name)
     if (!sym) return CL_NIL;
     sym->name = name;
     sym->value = CL_UNBOUND;
-    sym->function = CL_UNBOUND;
+    sym->function = CL_UNBOUND;   /* symfn-raw: fresh, nothing caches it yet */
     sym->plist = CL_NIL;
     sym->package = CL_NIL;
     sym->hash = 0;
     sym->flags = 0;
     return CL_PTR_TO_OBJ(sym);
+}
+
+/* See mem.h.  Starts at 1: 0 is the "never filled" site generation. */
+volatile uint32_t cl_call_gen = 1;
+
+void cl_call_gen_bump(const char *why)
+{
+    if (platform_atomic_inc(&cl_call_gen) == 0)
+        platform_atomic_inc(&cl_call_gen);
+#ifdef DEBUG_JIT
+    {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "JIT: call-gen -> %lu (%s)\n",
+                 (unsigned long)cl_call_gen, why);
+        platform_write_string(buf);
+    }
+#else
+    (void)why;
+#endif
+}
+
+void cl_symbol_set_function(CL_Obj sym, CL_Obj fn)
+{
+    /* Cell first, bump second: a miss-path fill that read the generation
+     * before the bump records the old one and misses again (specs/
+     * jit-direct-calls.md §5). */
+    ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->function = fn;   /* symfn-raw: the funnel */
+    cl_call_gen_bump("function cell");
 }
 
 CL_Obj cl_make_function(CL_CFunc func, CL_Obj name, int min_args, int max_args)
@@ -2245,7 +2273,7 @@ CL_Obj cl_make_restart(CL_Obj name, CL_Obj function, CL_Obj report,
 
     if (!r) return CL_NIL;
     r->name = name;
-    r->function = function;
+    r->function = function;   /* symfn-raw: a restart, not a symbol */
     r->report = report;
     r->interactive = interactive;
     r->test = test;
@@ -6450,10 +6478,18 @@ static void cl_gc_stopped(uint64_t t0)
 static uint64_t gc_stop_world_timed(int multithread)
 {
     uint64_t t0, t1;
-    if (!multithread)
+    /* Every collection enters here, and every one invalidates all JIT call
+     * sites: a site's cached callee is neither a root nor relocated, so the
+     * bump is what keeps compaction (stale offsets) and sweep-then-reuse
+     * (ABA) from ever reaching a hit.  Bumped with the world stopped, so no
+     * peer can fill a site from pre-collection offsets after it. */
+    if (!multithread) {
+        cl_call_gen_bump("gc");
         return platform_time_us();
+    }
     t0 = platform_time_us();
     cl_gc_stop_the_world();
+    cl_call_gen_bump("gc");
     t1 = platform_time_us();
     gc_time_stw_us += t1 - t0;
     gc_stw_stops++;

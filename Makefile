@@ -232,7 +232,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_mt_dispatch_cache_race test_mt_thread_exit_gc test_mt_thread_identity \
                 test_mt_intern_stw test_mt_stream_close_race test_mt_interrupt_parked \
                 test_mt_thread_exit_drain test_mt_stop_workers test_mt_thread_death_hook \
-                test_lock_diag test_break_diag test_call_diag test_heap_verify test_cpu_selftest test_debugger_backtrace test_backtrace_lines \
+                test_lock_diag test_break_diag test_call_diag test_call_gen test_heap_verify test_cpu_selftest test_debugger_backtrace test_backtrace_lines \
                 test_debugger_eof test_inspect_eof \
                 test_io_diag test_ql_socket_timeouts test_stream_outbuf_leak \
                 test_shutdown_leak \
@@ -259,10 +259,11 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
 # (user-visible strings must be ASCII: the Amiga console is not UTF-8),
 # one pins the byte layout of the release's Workbench icons (icons/), one
 # keeps allocating calls out of argument lists next to heap values, one
-# pins the release script's host-only editor exemptions to clamacs.lisp.
+# pins the release script's host-only editor exemptions to clamacs.lisp,
+# one keeps function-cell writes inside the call-generation setter.
 SHELL_TESTS_NOARG = test_cross_wide_knob test_test_extra test_aminet_upload \
                     test_ascii_messages test_icons test_gc_arg_order \
-                    test_release_clamacs_modules
+                    test_release_clamacs_modules test_symfn_funnel
 
 test-fast: $(TEST_BINS) host
 	@echo "=== Running tests (fast tier: skips sento/host-cold-test) ==="
@@ -358,6 +359,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_heap_verify.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_call_diag (CLAMIGA_GC_STRESS=1, forced compaction: the diagnostics' error messages) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_call_diag.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_call_gen (CLAMIGA_GC_STRESS=1, forced compaction: every collection must bump the call generation) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_call_gen.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_defvar_init_once_fasl (CLAMIGA_GC_STRESS=1, forced compaction: DEFVAR's BOUNDP-guarded codegen) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_defvar_init_once_fasl.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_dev_tcp (CLAMIGA_GC_STRESS=1, forced compaction: the TCP dev port's frames, server, client, REPL leg and the two builtins under it) ---"
