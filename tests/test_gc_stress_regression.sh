@@ -6218,6 +6218,22 @@ check_contains "stop workers: every worker left the registry" "SW-LEFT:0" "$out"
 check_contains "stop workers: cleanup results survive compaction" "SW-OUT:((0 0) (1 1) (2 2))" "$out"
 check_absent   "stop workers: no bad mark" "BADMARK\|FATAL" "$out"
 
+# --- Case: ~F / ~$ / ~R with five parameters -------------------------------
+# The fixed-format directives format through C buffers and princ a
+# non-number argument; every allocation around them compacts here.
+cat > "$WORK/fmtfixed.lisp" <<'EOF'
+(format t "FF:~A~%"
+        (with-output-to-string (s)
+          (dolist (x (list 3.3 -3.3 1/3 'ab (make-list 2)))
+            (format s "[~8,2,,,'*F|~,3,10:$|~8F]" x x x))
+          (format s "~10,8,'0,'.,2:R" 255)))
+EOF
+out=$(run_stress "$WORK/fmtfixed.lisp")
+# The expected line is full of regex metacharacters: match it literally.
+ff_line=$(echo "$out" | grep -F 'FF:')
+check_contains "fixed format: ~F/~$/~R survive compaction" "FF-OK" \
+    "$( [ "$ff_line" = 'FF:[****3.30|    003.30|     3.3][***-3.30|-   003.30|    -3.3][****0.33|    000.33|.3333333][      AB|        AB|      AB][(NIL NIL)| (NIL NIL)|(NIL NIL)]00002.55' ] && echo FF-OK || echo "$ff_line")"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

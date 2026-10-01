@@ -24,7 +24,8 @@
  * Data Structures
  * ================================================================ */
 
-#define FMT_MAX_PARAMS 4
+/* ~E takes the most: w,d,e,k,overflowchar,padchar,exptchar */
+#define FMT_MAX_PARAMS 7
 #define FMT_PARAM_UNSET (-1)
 
 typedef struct {
@@ -345,7 +346,7 @@ static const char *fmt_find_close(const char *p, char open, char close,
 /* Helper: get param with default */
 static int32_t fmt_param(FmtDirective *d, int idx, int32_t defval)
 {
-    if (idx < d->n_params && d->param_given[idx])
+    if (idx < d->n_params && idx < FMT_MAX_PARAMS && d->param_given[idx])
         return d->params[idx];
     return defval;
 }
@@ -751,12 +752,12 @@ static void fmt_radix(FmtCtx *ctx, FmtDirective *d)
         FmtDirective shifted = *d;
         int i;
         int32_t radix = d->params[0];
-        for (i = 0; i < 3; i++) {
+        for (i = 0; i < FMT_MAX_PARAMS - 1; i++) {
             shifted.params[i] = d->params[i + 1];
             shifted.param_given[i] = d->param_given[i + 1];
         }
-        shifted.params[3] = 3;
-        shifted.param_given[3] = 0;
+        shifted.params[FMT_MAX_PARAMS - 1] = 0;
+        shifted.param_given[FMT_MAX_PARAMS - 1] = 0;
         shifted.n_params = d->n_params > 1 ? d->n_params - 1 : 0;
         fmt_padded_integer(ctx, &shifted, radix);
     } else {
@@ -1641,6 +1642,205 @@ static void fmt_justify(FmtCtx *ctx, FmtDirective *d)
 }
 
 /* ================================================================
+ * ~F and ~$ — fixed-format floating point (CLHS 22.3.3.1, 22.3.3.4)
+ * ================================================================ */
+
+static int fmt_param_given(FmtDirective *d, int idx)
+{
+    return idx < d->n_params && idx < FMT_MAX_PARAMS && d->param_given[idx];
+}
+
+static int fmt_is_real(CL_Obj arg)
+{
+    return CL_FIXNUM_P(arg) ||
+           (CL_HEAP_P(arg) &&
+            (CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_SINGLE_FLOAT ||
+             CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_DOUBLE_FLOAT ||
+             CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_RATIO ||
+             CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_BIGNUM));
+}
+
+static void fmt_write_n(FmtCtx *ctx, int ch, int32_t n)
+{
+    while (n-- > 0)
+        cl_stream_write_char(ctx->stream, ch);
+}
+
+/* Print `buf` (digits) right-justified in a field of `w` columns:
+   padding, then the sign character (0 for none), then the digits.
+   With `sign_first` the sign goes before the padding (~:$). */
+static void fmt_write_field(FmtCtx *ctx, int sign, const char *buf, int len,
+                            int32_t w, int padchar, int sign_first)
+{
+    int32_t pad = w - (len + (sign ? 1 : 0));
+    int i;
+    if (sign && sign_first)
+        cl_stream_write_char(ctx->stream, sign);
+    fmt_write_n(ctx, padchar, pad);
+    if (sign && !sign_first)
+        cl_stream_write_char(ctx->stream, sign);
+    for (i = 0; i < len; i++)
+        cl_stream_write_char(ctx->stream, buf[i]);
+}
+
+/* A non-real argument to ~F / ~$ is printed as by ~wD: an object that
+   isn't an integer comes out as by ~A, right-justified in w columns. */
+static void fmt_fixed_non_number(FmtCtx *ctx, CL_Obj arg, int32_t w)
+{
+    char buf[400];
+    int len = cl_princ_to_string(arg, buf, sizeof(buf));
+    if (len < 0) len = 0;
+    if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
+    fmt_write_field(ctx, 0, buf, len, w, ' ', 0);
+}
+
+/* snprintf "%.*f" into buf; returns the length, clamped to the buffer. */
+static int fmt_fixed_digits(char *buf, int bufsz, double val, int32_t d)
+{
+    int len;
+    if (d > 300) d = 300;
+    len = snprintf(buf, bufsz, "%.*f", (int)d, val);
+    if (len < 0) len = 0;
+    if (len > bufsz - 1) len = bufsz - 1;
+    return len;
+}
+
+/* Remove a leading '-' from buf (the sign is emitted separately, so that
+   padding goes in front of it); returns the new length. -0.0 keeps its
+   sign this way. */
+static int fmt_strip_minus(char *buf, int len, int *neg)
+{
+    *neg = (len > 0 && buf[0] == '-');
+    if (*neg) {
+        memmove(buf, buf + 1, (size_t)len);  /* includes the NUL */
+        len--;
+    }
+    return len;
+}
+
+/* Guarantee a decimal point: "%.0f" gives "3", CLHS wants "3.". */
+static int fmt_ensure_point(char *buf, int len, int bufsz)
+{
+    if (!memchr(buf, '.', (size_t)len) && len < bufsz - 1) {
+        buf[len++] = '.';
+        buf[len] = '\0';
+    }
+    return len;
+}
+
+/* ~w,d,k,overflowchar,padcharF */
+static void fmt_fixed(FmtCtx *ctx, FmtDirective *d)
+{
+    CL_Obj arg = fmt_next_arg(ctx);
+    int w_given = fmt_param_given(d, 0);
+    int32_t w = fmt_param(d, 0, 0);
+    int d_given = fmt_param_given(d, 1);
+    int32_t digs = fmt_param(d, 1, 0);
+    int32_t k = fmt_param(d, 2, 0);
+    int padchar = (int)fmt_param(d, 4, (int32_t)' ');
+    char buf[400];
+    int len, neg, sign, signlen;
+    double val;
+    int as_double;
+
+    if (!fmt_is_real(arg)) {
+        fmt_fixed_non_number(ctx, arg, w);
+        return;
+    }
+    val = cl_to_double(arg);
+    as_double = !(CL_HEAP_P(arg) &&
+                  CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_SINGLE_FLOAT);
+    if (k != 0) {
+        /* Scale factor: the number printed is arg * 10^k. */
+        int32_t i;
+        for (i = 0; i < k && i < 400; i++) val *= 10.0;
+        for (i = 0; i > k && i > -400; i--) val /= 10.0;
+    }
+
+    if (d_given) {
+        len = fmt_fixed_digits(buf, sizeof(buf), val, digs);
+    } else {
+        /* No d: free-format shortest round-trip digits, fixed-point only
+           ("87.0", never "87" and never an exponent). */
+        len = cl_float_fixed_shortest(buf, (int)sizeof(buf), val, as_double);
+        if (len < 0) len = 0;
+        if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
+        buf[len] = '\0';
+        if (w_given) {
+            /* w without d: as many fraction digits as fit in w. */
+            int n0 = (buf[0] == '-');
+            int room = (int)w - ((n0 || d->atsign) ? 1 : 0);
+            if (len - n0 > room) {
+                const char *dot = strchr(buf, '.');
+                int intlen = dot ? (int)(dot - buf) - n0 : len - n0;
+                int32_t dd = room - intlen - 1;
+                if (intlen == 1 && buf[n0] == '0')
+                    dd++;  /* the leading zero will be dropped */
+                if (dd < 0) dd = 0;
+                if (dd == 0 && intlen == 1 && buf[n0] == '0')
+                    dd = 1;  /* ".3", not "0." */
+                len = fmt_fixed_digits(buf, sizeof(buf), val, dd);
+            }
+        }
+    }
+    len = fmt_strip_minus(buf, len, &neg);
+    len = fmt_ensure_point(buf, len, (int)sizeof(buf));
+    sign = neg ? '-' : (d->atsign ? '+' : 0);
+    signlen = sign ? 1 : 0;
+
+    /* The leading zero of a pure fraction is optional: drop it when it
+       doesn't fit in w. */
+    if (w_given && signlen + len > w && len > 1 && buf[0] == '0' && buf[1] == '.') {
+        memmove(buf, buf + 1, (size_t)len);
+        len--;
+    }
+    if (w_given && signlen + len > w && fmt_param_given(d, 3)) {
+        fmt_write_n(ctx, (int)fmt_param(d, 3, '*'), w);
+        return;
+    }
+    fmt_write_field(ctx, sign, buf, len, w, padchar, 0);
+}
+
+/* ~d,n,w,padchar$ */
+static void fmt_dollar(FmtCtx *ctx, FmtDirective *d)
+{
+    CL_Obj arg = fmt_next_arg(ctx);
+    int32_t digs = fmt_param(d, 0, 2);
+    int32_t n = fmt_param(d, 1, 1);
+    int32_t w = fmt_param(d, 2, 0);
+    int padchar = (int)fmt_param(d, 3, (int32_t)' ');
+    char buf[400];
+    int len, neg, sign, intlen;
+    const char *dot;
+
+    if (!fmt_is_real(arg)) {
+        fmt_fixed_non_number(ctx, arg, w);
+        return;
+    }
+    len = fmt_fixed_digits(buf, sizeof(buf), cl_to_double(arg), digs);
+    len = fmt_strip_minus(buf, len, &neg);
+    len = fmt_ensure_point(buf, len, (int)sizeof(buf));
+    sign = neg ? '-' : (d->atsign ? '+' : 0);
+
+    /* At least n digits before the point: leading zeros, or with n = 0
+       no "0" at all in front of a pure fraction. */
+    dot = strchr(buf, '.');
+    intlen = dot ? (int)(dot - buf) : len;
+    if (n == 0 && intlen == 1 && buf[0] == '0') {
+        memmove(buf, buf + 1, (size_t)len);
+        len--;
+    } else if (n > intlen) {
+        int32_t z = n - intlen;
+        if (z > (int32_t)sizeof(buf) - 1 - len)
+            z = (int32_t)sizeof(buf) - 1 - len;
+        memmove(buf + z, buf, (size_t)len + 1);
+        memset(buf, '0', (size_t)z);
+        len += (int)z;
+    }
+    fmt_write_field(ctx, sign, buf, len, w, padchar, d->colon);
+}
+
+/* ================================================================
  * Dispatch table
  * ================================================================ */
 
@@ -1736,59 +1936,11 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d)
         break;
     }
     case 'F':
-    case '$': {
-        /* ~F: fixed-format float — ~w,d,k,ovf,padcharF
-           ~$: monetary — ~d,n,w,padchar$ (d=2 dec digits, n=1 min int digits)
-           CLHS 22.3.3.1: non-number arg falls back to ~A behavior using
-           the same width parameter. */
-        CL_Obj arg = fmt_next_arg(ctx);
-        int32_t mincol = (d->directive == '$') ? fmt_param(d, 2, 0)
-                                               : fmt_param(d, 0, 0);
-        int32_t digs = (d->directive == '$') ? fmt_param(d, 0, 2)
-                                             : fmt_param(d, 1, -1);
-        char buf[400];
-        int len;
-        int is_num = CL_FIXNUM_P(arg) ||
-                     (CL_HEAP_P(arg) &&
-                      (CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_SINGLE_FLOAT ||
-                       CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_DOUBLE_FLOAT ||
-                       CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_RATIO ||
-                       CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_BIGNUM));
-        if (is_num) {
-            double val = cl_to_double(arg);
-            if (digs < 0) {
-                /* No d parameter: CLHS 22.3.3.1 free-format — shortest
-                   faithful (round-tripping) digits, fixed-point only, the
-                   decimal point always present ("87.0", never "87" and
-                   never an exponent, which JS-generation callers and the
-                   spec both reject). */
-                int as_double = !(CL_HEAP_P(arg) &&
-                                  CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_SINGLE_FLOAT);
-                len = cl_float_fixed_shortest(buf, (int)sizeof(buf), val, as_double);
-            } else
-                len = snprintf(buf, sizeof(buf), "%.*f", (int)digs, val);
-            if (len < 0) len = 0;
-            if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
-        } else {
-            len = cl_princ_to_string(arg, buf, sizeof(buf));
-        }
-        if (d->atsign && mincol > len) {
-            int i;
-            for (i = 0; i < (int)(mincol - len); i++)
-                cl_stream_write_char(ctx->stream, ' ');
-        }
-        {
-            int i;
-            for (i = 0; i < len; i++)
-                cl_stream_write_char(ctx->stream, buf[i]);
-        }
-        if (!d->atsign && mincol > len) {
-            int i;
-            for (i = 0; i < (int)(mincol - len); i++)
-                cl_stream_write_char(ctx->stream, ' ');
-        }
+        fmt_fixed(ctx, d);
         break;
-    }
+    case '$':
+        fmt_dollar(ctx, d);
+        break;
     case 'E': {
         /* ~E: exponential format — simplified */
         CL_Obj arg = fmt_next_arg(ctx);

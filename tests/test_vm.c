@@ -8577,12 +8577,12 @@ TEST(eval_format_iteration_non_list_arg)
 
 TEST(eval_format_fixed_non_number_arg)
 {
-    /* CLHS 22.3.3.1: ~F on a non-number arg falls back to ~A behavior
-       using the same width (mincol) parameter.  Without this fallback,
+    /* CLHS 22.3.3.1: ~F on a non-number arg prints it as by ~wD — right-
+       justified in w columns, like the numbers.  Without this fallback,
        trivial-benchmark's print-table chokes on the symbol header row. */
-    ASSERT_STR_EQ(eval_print("(format nil \"[~vf]\" 8 'total)"),  "\"[TOTAL   ]\"");
-    ASSERT_STR_EQ(eval_print("(format nil \"[~v,2f]\" 8 1.5)"),   "\"[1.50    ]\"");
-    ASSERT_STR_EQ(eval_print("(format nil \"[~v,2f]\" 8 :total)"),"\"[TOTAL   ]\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"[~vf]\" 8 'total)"),  "\"[   TOTAL]\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"[~v,2f]\" 8 1.5)"),   "\"[    1.50]\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"[~v,2f]\" 8 :total)"),"\"[   TOTAL]\"");
 }
 
 TEST(eval_format_escape)

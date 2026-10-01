@@ -414,6 +414,98 @@ TEST(fixed_float_d_parameter_unchanged)
     ASSERT_STR_EQ(eval_print("(format nil \"~,2f\" 87.0)"), "\"87.00\"");
 }
 
+/* ================================================================
+ * ~w,d,k,overflowchar,padcharF and ~d,n,w,padchar$ — CLHS 22.3.3.1/.4
+ *
+ * The field is right-justified (padding on the LEFT); @ prints a + sign
+ * on non-negative numbers.  The old code padded on the right, read @ as
+ * "pad on the left", and ignored k, overflowchar and padchar (a fifth
+ * parameter was read past the end of the parameter array).
+ * ================================================================ */
+
+TEST(fixed_float_width_pads_left)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~8,1F|\" 3.3)"), "\"     3.3|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~8F|\" 3.3)"), "\"     3.3|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~8,2F|\" -3.3)"), "\"   -3.30|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~8,2F|\" 1/3)"), "\"    0.33|\"");
+}
+
+TEST(fixed_float_atsign_is_plus_sign)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~8,1@F|\" 3.3)"), "\"    +3.3|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~@F|\" 3.3)"), "\"+3.3|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~@F|\" -3.3)"), "\"-3.3|\"");
+}
+
+TEST(fixed_float_width_without_d)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~6F|\" 3.14159)"), "\"3.1416|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~4F|\" -0.12345)"), "\"-.12|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~2F|\" 123.45)"), "\"123.|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~2,,,,F|\" 3.3)"), "\"3.|\"");
+}
+
+TEST(fixed_float_leading_zero_optional)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~4,2F|\" 0.5)"), "\"0.50|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~3,2F|\" 0.5)"), "\".50|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~2,1F|\" 0.5)"), "\".5|\"");
+}
+
+TEST(fixed_float_d_zero_keeps_point)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~,0F|\" 3.3)"), "\"3.|\"");
+}
+
+TEST(fixed_float_scale_factor)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~,2,2F|\" 3.14159)"), "\"314.16|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~,1,-1F|\" 31.0)"), "\"3.1|\"");
+}
+
+TEST(fixed_float_overflow_and_padchar)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~3,1,,'xF|\" 123.3)"), "\"xxx|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~3,1F|\" 123.3)"), "\"123.3|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~8,1,,,'*F|\" 3.3)"), "\"*****3.3|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~8,1,,'x,'*F|\" 3.3)"), "\"*****3.3|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~V,,,,'*F|\" 8 3.3)"), "\"*****3.3|\"");
+}
+
+TEST(fixed_float_negative_zero)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~F|\" -0.0)"), "\"-0.0|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~,1F|\" -0.0)"), "\"-0.0|\"");
+}
+
+TEST(dollar_defaults)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~$|\" 3.14159)"), "\"3.14|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~$|\" -3.14159)"), "\"-3.14|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~$|\" 3)"), "\"3.00|\"");
+}
+
+TEST(dollar_min_int_digits_width_pad)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~,3,8,'x$|\" -3.1)"), "\"x-003.10|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~,3,8,'x:$|\" -3.1)"), "\"-x003.10|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~,0$|\" 0.5)"), "\".50|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~0$|\" 3.3)"), "\"3.|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~@$|\" 3)"), "\"+3.00|\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~,,8$|\" 3.1)"), "\"    3.10|\"");
+}
+
+TEST(dollar_non_number)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"[~,,6$]\" 'ab)"), "\"[    AB]\"");
+}
+
+TEST(radix_fifth_param_comma_interval)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~10,8,'0,'.,2:R|\" 255)"), "\"00002.55|\"");
+}
+
 /* --- tier-4 batch 7a: 64-arg format caps removed (FS5) --- */
 
 TEST(recursive_format_over_64_args)
@@ -551,6 +643,18 @@ int main(void)
     RUN(fixed_float_fractional_unchanged);
     RUN(fixed_float_rational_coerced);
     RUN(fixed_float_d_parameter_unchanged);
+    RUN(fixed_float_width_pads_left);
+    RUN(fixed_float_atsign_is_plus_sign);
+    RUN(fixed_float_width_without_d);
+    RUN(fixed_float_leading_zero_optional);
+    RUN(fixed_float_d_zero_keeps_point);
+    RUN(fixed_float_scale_factor);
+    RUN(fixed_float_overflow_and_padchar);
+    RUN(fixed_float_negative_zero);
+    RUN(dollar_defaults);
+    RUN(dollar_min_int_digits_width_pad);
+    RUN(dollar_non_number);
+    RUN(radix_fifth_param_comma_interval);
 
     RUN(recursive_format_over_64_args);
     RUN(formatter_inner_over_64_args);
