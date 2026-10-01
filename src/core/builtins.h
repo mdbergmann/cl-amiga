@@ -148,6 +148,9 @@ int  cl_callback_debugger_allowed(void);
  * GC-rooted (callers copy them onto the VM stack).  builtins_ffi.c. */
 CL_Obj cl_ffi_stub_call(CL_Obj stub, CL_Obj *args, int nargs);
 
+/* Number of symbols TRACE currently has flagged, all threads (builtins.c). */
+extern volatile uint32_t cl_traced_function_count;
+
 /* FFI keyword/code tables and integer boxing shared with bindtab.c
  * (builtins_ffi.c).  *_from_keyword return -1 for an unknown keyword. */
 int cl_ffi_ctype_from_keyword(CL_Obj kw);        /* :U8 .. :DOUBLE -> CL_STUB_CT_* */

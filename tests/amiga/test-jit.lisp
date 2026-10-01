@@ -2116,16 +2116,29 @@
 ;; (with its stub interpreter frame).  Each check pins one arm; the numbers
 ;; behind the change are in trunk/bench-jit-call.lisp.
 
-;; A native callee: the caller's own entry plus one cl_jit_invoke per call.
+;; A native callee.  With the direct-call sites off (the kill switch, see
+;; the jit-site-* block below): the caller's own entry plus one
+;; cl_jit_invoke per call.  With them on, only the call that fills the
+;; caller's site goes through cl_jit_invoke; the rest JSR straight in.
 (defun jdc-leaf (a b) (+ a b))
 (defun jdc-caller (n) (let ((s 0)) (dotimes (i n) (setq s (jdc-leaf s 1))) s))
 (check "jit-direct-native-callee-compiled" '(t t)
   (list (not (null (clamiga::%jit-dump-bytes #'jdc-leaf)))
         (not (null (clamiga::%jit-dump-bytes #'jdc-caller)))))
 (check "jit-direct-native-callee-invokes" 11
-  (let ((before (clamiga::%jit-invoke-count)))
-    (jdc-caller 10)
-    (- (clamiga::%jit-invoke-count) before)))
+  (progn
+    (clamiga::%jit-set-direct-calls nil)
+    (unwind-protect
+         (let ((before (clamiga::%jit-invoke-count)))
+           (jdc-caller 10)
+           (- (clamiga::%jit-invoke-count) before))
+      (clamiga::%jit-set-direct-calls t))))
+(check "jit-direct-native-callee-invokes-direct" 2
+  (progn
+    (clamiga::%jit-set-direct-calls t)  ; a fresh generation: the site refills
+    (let ((before (clamiga::%jit-invoke-count)))
+      (jdc-caller 10)
+      (- (clamiga::%jit-invoke-count) before))))
 (check "jit-direct-native-callee-value" 1000 (jdc-caller 1000))
 
 ;; A native callee's multiple values survive the direct entry, as do a
@@ -2341,6 +2354,200 @@
     (handler-case (jef-error 20) (error () :caught)))
   (check "jit-enter-floor-after-unwind" (first r) (first (jef-floor))))
 (check "jit-enter-floor-outside-after-unwind" nil (jef-vm-floor))
+
+;; --- Direct native-to-native call sites (specs/jit-direct-calls.md phase 4).
+;; Every call in native code goes through a site whose 12-byte cell caches
+;; (gen, func, entry): while gen equals the call generation (%CALL-GEN) and
+;; the C stack is above CL_Thread.jit_c_floor, the call JSRs straight into
+;; the callee's native code; anything else is a miss, which dispatches as
+;; before and fills the cell for a positional native callee of the call's
+;; arity.  %JIT-DIRECT-CALL-STATS counts the miss path only -- a hit runs no
+;; C -- so "N more calls cost no more misses" is how a hit shows.  Every
+;; bump of the call generation (a definition, a collection, TRACE, ...)
+;; empties every site at once; these checks pin that no stale cell is ever
+;; used, through every way the cached pair can go wrong.
+(defun jds-stat (key) (getf (clamiga::%jit-direct-call-stats) key))
+(defun jds-leaf (a b) (+ a b))
+(defun jds-loop (n) (let ((s 0)) (dotimes (i n s) (setq s (jds-leaf s 1)))))
+(defun jds-misses-for (n)
+  (let ((m0 (jds-stat :misses)))
+    (jds-loop n)
+    (- (jds-stat :misses) m0)))
+;; Misses that 1000 calls cost beyond what 10 cost: 0 when the sites hit.
+;; Best of three, so that a collection landing inside one measurement (it
+;; empties the sites: one refill) does not fail the check.
+(defun jds-extra-misses ()
+  (jds-misses-for 10)
+  (let ((best nil))
+    (dotimes (k 3 best)
+      (let ((d (- (jds-misses-for 1000) (jds-misses-for 10))))
+        (when (or (null best) (< (abs d) (abs best))) (setq best d))))))
+(defun jds-fills-for (n)
+  (clamiga::%jit-set-direct-calls t)   ; a new generation: every site is empty
+  (let ((f0 (jds-stat :fills)))
+    (jds-loop n)
+    (- (jds-stat :fills) f0)))
+
+(check "jit-site-all-native" t
+  (every (lambda (f) (not (null (clamiga::%jit-dump-bytes f))))
+         (list #'jds-stat #'jds-leaf #'jds-loop #'jds-misses-for
+               #'jds-extra-misses #'jds-fills-for)))
+(check "jit-site-enabled-by-default" t
+  (getf (clamiga::%jit-direct-call-stats) :enabled))
+(check "jit-site-hit-value" 1000 (jds-loop 1000))
+(check "jit-site-hits-cost-no-misses" 0 (jds-extra-misses))
+;; One fill per site per generation, however many calls go through it.
+(check "jit-site-fills-once-per-generation" t
+  (let ((a (jds-fills-for 10)) (b (jds-fills-for 1000)))
+    (and (= a b) (> a 0))))
+;; The kill switch: nothing fills, every call misses, values unchanged.
+(check "jit-site-kill-switch" '(nil 1000 990 0)
+  (progn
+    (clamiga::%jit-set-direct-calls nil)
+    (unwind-protect
+         (let ((f0 (jds-stat :fills)))
+           (list (getf (clamiga::%jit-direct-call-stats) :enabled)
+                 (jds-loop 1000)
+                 (- (jds-misses-for 1000) (jds-misses-for 10))
+                 (- (jds-stat :fills) f0)))
+      (clamiga::%jit-set-direct-calls t))))
+(check "jit-site-kill-switch-bumps" t
+  (let ((g (clamiga::%call-gen)))
+    (clamiga::%jit-set-direct-calls t)
+    (/= g (clamiga::%call-gen))))
+
+;; Redefinition through every public path between two calls of the same
+;; native caller: the second call runs the new definition.
+(defun jds-r () 1)
+(defun jds-r-caller () (jds-r))
+(check "jit-site-redef-filled" '(1 1) (list (jds-r-caller) (jds-r-caller)))
+(defun jds-r () 2)
+(check "jit-site-redef-defun" '(2 2) (list (jds-r-caller) (jds-r-caller)))
+(setf (fdefinition 'jds-r) (lambda () 3))
+(check "jit-site-redef-setf-fdefinition" '(3 3) (list (jds-r-caller) (jds-r-caller)))
+(setf (symbol-function 'jds-r) (let ((k (list 4))) (lambda () (car k))))
+(check "jit-site-redef-closure" '(4 4) (list (jds-r-caller) (jds-r-caller)))
+(fmakunbound 'jds-r)
+(check "jit-site-redef-fmakunbound" "Undefined function: JDS-R"
+  (handler-case (progn (jds-r-caller) :returned)
+    (undefined-function (e) (format nil "~A" e))))
+(defun jds-r () 5)
+(check "jit-site-redef-after-fmakunbound" '(5 5) (list (jds-r-caller) (jds-r-caller)))
+
+;; A redefinition with another arity at a filled site: the call no longer
+;; fits, so it misses and keeps OP_CALL's diagnostic.
+(defun jds-ar (a) a)
+(defun jds-ar-caller () (jds-ar 1))
+(check "jit-site-arity-filled" '(1 1) (list (jds-ar-caller) (jds-ar-caller)))
+(defun jds-ar (a b) (+ a b))
+(check "jit-site-arity-mismatch" t
+  (handler-case (progn (jds-ar-caller) nil)
+    (error (e) (not (null (search "Too few arguments to JDS-AR" (format nil "~A" e)))))))
+
+;; FUNCALL (OP_CALL) of two closures over the same code at one site: the
+;; site's func is compared too, so the other closure is a miss and runs
+;; with its own upvalues.
+(defun jds-adder (k) (lambda (x) (+ x k)))
+(defun jds-fc (f x) (funcall f x))
+(defun jds-alternate (n)
+  (let ((a (jds-adder 1)) (b (jds-adder 100)) (s 0))
+    (dotimes (i n s) (setq s (jds-fc (if (evenp i) a b) s)))))
+(check "jit-site-funcall-alternating" 50500 (jds-alternate 1000))
+(check "jit-site-funcall-other-function" '(7 (3 . 4) 30)
+  (list (jds-fc (jds-adder 6) 1) (funcall #'jds-fc (lambda (x) (cons 3 x)) 4)
+        (jds-fc (jds-adder 10) 20)))
+
+;; Multiple values through a filled site, and no values at all.
+(defun jds-mv (a) (values a (+ a 1) (+ a 2)))
+(defun jds-mv-caller (a) (multiple-value-list (jds-mv a)))
+(defun jds-none () (values))
+(defun jds-none-caller () (multiple-value-list (jds-none)))
+(check "jit-site-mv" '((1 2 3) (5 6 7)) (list (jds-mv-caller 1) (jds-mv-caller 5)))
+(check "jit-site-mv-none" '(nil nil) (list (jds-none-caller) (jds-none-caller)))
+
+;; Collections between calls through one site: each one empties the site
+;; (the cached func is no GC root and is not relocated), so it refills
+;; once per collection, not once per call, and every value is right.
+(defun jds-gc-loop (n)
+  (let ((s 0)) (dotimes (i n s) (make-string 2000) (setq s (jds-leaf s 1)))))
+(stress-check "jit-site-across-gc" '(20000 t t)
+  (let ((g0 (clamiga::%get-gc-count)) (f0 (jds-stat :fills)))
+    (let ((r (jds-gc-loop 20000)))
+      (let ((gcs (- (clamiga::%get-gc-count) g0))
+            (fills (- (jds-stat :fills) f0)))
+        (list r (> gcs 0) (<= fills (+ (* 3 gcs) 6)))))))
+
+;; ABA: a closure called through a site, dropped, collected; a new closure
+;; of the same shape through the same site must run, not the old one.
+(defun jds-call0 (f) (funcall f))
+(defun jds-aba (v) (jds-call0 (let ((c (list v))) (lambda () (car c)))))
+(check "jit-site-aba" '(1 1 2 3)
+  (list (jds-aba 1) (jds-aba 1)
+        (progn (ext:gc-compact) (jds-aba 2))
+        (progn (ext:gc-compact) (jds-aba 3))))
+
+;; TRACE after the site has filled: the traced call takes the trampoline
+;; (and is reported); after UNTRACE the site fills again.
+(defun jds-tr-leaf (x) (* x 3))
+(defun jds-tr-caller (x) (jds-tr-leaf x))
+(check "jit-site-trace-filled" '(3 3) (list (jds-tr-caller 1) (jds-tr-caller 1)))
+(trace jds-tr-leaf)
+(let* ((r0 (jds-stat :refused-trace))
+       (s (make-string-output-stream))
+       (v (let ((*trace-output* s)) (jds-tr-caller 2)))
+       (captured (get-output-stream-string s)))
+  (check "jit-site-trace-reports" '(6 t t)
+    (list v (not (null (search "JDS-TR-LEAF" captured)))
+          (> (jds-stat :refused-trace) r0))))
+(untrace jds-tr-leaf)
+(check "jit-site-untrace-refills" '(12 t)
+  (let ((f0 (jds-stat :fills)))
+    (list (jds-tr-caller 4) (> (jds-stat :fills) f0))))
+
+;; Shadow frames: while on, no site fills and the callee is in EXT:BACKTRACE.
+(defun jds-bt-leaf () (ext:backtrace))
+(defun jds-bt-caller () (let ((r (jds-bt-leaf))) r))
+(jds-bt-caller) (jds-bt-caller)   ; the site is filled
+(clamiga::%jit-set-frames t)
+(let ((bt (jds-bt-caller)))
+  (check "jit-site-shadow-frames-backtrace" '("JDS-BT-LEAF" "JDS-BT-CALLER")
+    (list (symbol-name (second (first bt))) (symbol-name (second (second bt))))))
+(check "jit-site-shadow-frames-refused" t
+  (let ((r0 (jds-stat :refused-shadow)))
+    (jds-loop 3)
+    (> (jds-stat :refused-shadow) r0)))
+(clamiga::%jit-set-frames nil)
+
+;; Runaway recursion through filled sites still meets the C-stack guard:
+;; below CL_Thread.jit_c_floor every site misses, and the miss path
+;; signals.  (jit-direct-deep-recursion-guarded above runs the same shape.)
+(defun jds-deep (n) (if (= n 0) 0 (+ 1 (jds-deep (- n 1)))))
+(check "jit-site-deep-recursion" '(200 :caught 200)
+  (list (jds-deep 200)
+        (handler-case (progn (jds-deep 400000) :finished) (error () :caught))
+        (jds-deep 200)))
+
+;; MP:INTERRUPT-THREAD reaches a thread that loops on direct calls: a hit
+;; never polls, so the interrupt has to bump the generation to make the
+;; next call miss.  Five seconds without delivery is a failure, and the
+;; loop is then stopped from here, so a regression cannot hang the suite.
+(defvar *jds-stop* nil)
+(defun jds-spin ()
+  (let ((s 0)) (loop until *jds-stop* do (setq s (jds-leaf s 1))) s))
+(check "jit-site-interrupt-delivered" :interrupted
+  (progn
+    (setq *jds-stop* nil)
+    (let ((th (mp:make-thread #'jds-spin :name "jds-spin")))
+      (sleep 0.2)
+      (mp:interrupt-thread th (lambda () (setq *jds-stop* :interrupted)))
+      (loop repeat 50 until *jds-stop* do (sleep 0.1))
+      (let ((r *jds-stop*))
+        (unless r (setq *jds-stop* :forced))
+        (mp:join-thread th)
+        r))))
+;; (A peer's stop-the-world collection while threads loop on direct calls:
+;; jit-direct-native-callee-across-concurrent-gc above.)
+
 
 ; --- String-scan fast path (opcodes.h 0xC0-0xC4, specs/performance.md 4.4).
 ; Five opcodes, each with a walker template: AREF (helper call with the

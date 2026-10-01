@@ -85,6 +85,21 @@ cat > "$WORK/gen.lisp" <<EOF
   (moves "DESTROY" (mp:destroy-thread th))
   (setf stop t)
   (ignore-errors (mp:join-thread th)))
+(let ((st (clamiga::%jit-direct-call-stats)))
+  ;; No JIT on host: every counter 0, the sites never enabled.
+  (format t "STATS-KEYS ~S~%" (loop for (k v) on st by #'cddr collect k))
+  (format t "STATS-ZERO ~A~%"
+          (if (every #'zerop (list (getf st :fills) (getf st :misses)
+                                   (getf st :refused-trace) (getf st :refused-shadow)
+                                   (getf st :refused-abi) (getf st :refused-not-native)))
+              "YES" "NO"))
+  ;; Not EQL: under GC stress the plist's own conses collect, and every
+  ;; collection bumps the generation past the one it recorded.
+  (format t "STATS-GEN ~A~%"
+          (let ((g (getf st :gen)))
+            (if (and (integerp g) (plusp g) (<= g (clamiga::%call-gen))) "YES" "NO"))))
+(format t "DIRECT ~S~%" (list (clamiga::%jit-set-direct-calls t)
+                              (clamiga::%jit-set-direct-calls nil)))
 (format t "GEN-DONE~%")
 EOF
 
@@ -110,6 +125,11 @@ check_contains "every collection bumps, not only the first" "GC-EACH YES" "$out"
 check_contains "calling a function does not bump" "CALLS STILL" "$out"
 check_contains "MP:INTERRUPT-THREAD bumps" "INTERRUPT MOVED" "$out"
 check_contains "MP:DESTROY-THREAD bumps" "DESTROY MOVED" "$out"
+check_contains "%JIT-DIRECT-CALL-STATS is a plist of every counter" \
+    "STATS-KEYS (:FILLS :MISSES :REFUSED-TRACE :REFUSED-SHADOW :REFUSED-ABI :REFUSED-NOT-NATIVE :GEN :ENABLED)" "$out"
+check_contains "no JIT on host: every counter is 0" "STATS-ZERO YES" "$out"
+check_contains ":GEN is a call generation, not ahead of the current one" "STATS-GEN YES" "$out"
+check_contains "no JIT on host: %JIT-SET-DIRECT-CALLS stays NIL" "DIRECT (NIL NIL)" "$out"
 
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

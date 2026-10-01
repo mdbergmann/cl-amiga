@@ -8934,10 +8934,15 @@ y" 1))
 ; Regression pair: depth 500 exceeds the default 256-frame budget, where the
 ; worker dies SILENTLY (frame overflow is unrecoverable — running the Lisp
 ; handler needs frames — so join returns NIL, no condition, no Guru)...
+; The &optional keeps R interpreted: native code calling native code through
+; a filled direct-call site (specs/jit-direct-calls.md) books no VM frame at
+; all, so a JIT'd R would simply finish.
 (check "default worker dies silently past 256 frames" nil
   (mp:join-thread (mp:make-thread
                     (lambda ()
-                      (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))
+                      (labels ((r (n &optional x)
+                                 (declare (ignore x))
+                                 (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))
                         (r 500))))))
 
 ; ...and growing that budget lets the same work complete.  Under the JIT

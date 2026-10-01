@@ -43,8 +43,8 @@
  *     CL_Obj), returns its function value or signals undefined-
  *     function with the VM's diagnostic.  Non-allocating, so the JIT
  *     side of the call is GC-safe.
- *   - cl_jit_runtime_call — backing for OP_CALL.  Takes (operand_top,
- *     nargs): the caller has placed [func, arg0..argN-1] on the m68k
+ *   - cl_jit_runtime_call_site — the miss path of OP_CALL's call site
+ *     (below).  Takes (operand_top, nargs, site): the caller has placed [func, arg0..argN-1] on the m68k
  *     operand stack with argN-1 at the lowest address; operand_top
  *     points at argN-1.  A builtin, an FFI stub or a native callee is
  *     dispatched directly from the operand stack (jit_dispatch: the
@@ -143,15 +143,29 @@ CL_Obj cl_jit_runtime_progv_bind(CL_Obj symbols_list, CL_Obj values_list);
 CL_Obj cl_jit_runtime_progv_unbind(CL_Obj mark_obj, CL_Obj result);
 
 CL_Obj cl_jit_runtime_fload(CL_Obj sym);
-/* OP_CALL backing.  Builtins, FFI stubs and native callees are dispatched
- * directly (arguments copied onto the rooted VM stack, then the C function
- * or cl_jit_invoke); anything else goes through cl_vm_apply.  See
- * jit_dispatch in runtime.c. */
-CL_Obj cl_jit_runtime_call (CL_Obj *operand_top, uint32_t nargs);
-/* OP_CALL_GLOBAL: like cl_jit_runtime_call, but the callee is resolved from
- * SYM (no function slot under the arguments). */
-CL_Obj cl_jit_runtime_call_global(CL_Obj *operand_top, uint32_t nargs,
-                                  CL_Obj sym);
+/* A direct-call site's cell (specs/jit-direct-calls.md §2): 12 bytes the
+ * walker appends after the function's code, one per OP_CALL / OP_TAILCALL /
+ * OP_CALL_GLOBAL / OP_TAILCALL_GLOBAL.  Native code only reads it; the
+ * _site helpers below fill it on a miss.  Valid only while gen equals
+ * cl_call_gen, so `func` needs neither GC rooting nor relocation.  The
+ * offsets are baked into the emitted hit path: gen 0, func 4, entry 8. */
+typedef struct {
+    volatile uint32_t gen;     /* cl_call_gen at fill time; 0 = never filled */
+    volatile CL_Obj   func;    /* the callee (bytecode or closure)          */
+    void * volatile   entry;   /* its bc->native_code                       */
+} CL_JitCallSite;
+
+/* The miss path of a call site.  Builtins, FFI stubs and native callees are
+ * dispatched directly (arguments copied onto the rooted VM stack, then the
+ * C function or cl_jit_invoke); anything else goes through cl_vm_apply (see
+ * jit_dispatch in runtime.c) -- after a safepoint poll and an attempt to
+ * fill SITE, so the next call through it goes native-to-native.  The
+ * _global form resolves the callee from SYM (no function slot under the
+ * arguments). */
+CL_Obj cl_jit_runtime_call_site(CL_Obj *operand_top, uint32_t nargs,
+                                CL_JitCallSite *site);
+CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
+                                       CL_Obj sym, CL_JitCallSite *site);
 
 /* OP_APPLY backing.  Mirrors the VM's OP_APPLY semantics: walks the
  * arglist into a stack-local CL_Obj[64] (max 64 args, matching the VM),

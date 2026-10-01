@@ -43,6 +43,7 @@
 
 #ifdef JIT_M68K
 
+#include <stddef.h>   /* offsetof (JIT_C_FLOOR_DISP) */
 #include <string.h>
 
 #include "jit/jit.h"
@@ -92,6 +93,14 @@ void cl_jit_init(void)
     cl_jit_runtime_init();
     cl_jit_codegen_init();
     jit_active = 1;
+    {
+        /* CLAMIGA_JIT_DIRECT=0: no native-to-native direct calls (A/B runs,
+         * bisection); %JIT-SET-DIRECT-CALLS toggles it at run time. */
+        char envbuf[8];
+        const char *v = platform_getenv("CLAMIGA_JIT_DIRECT", envbuf, sizeof(envbuf));
+        if (v != NULL && v[0] == '0')
+            cl_jit_set_direct_calls(0);
+    }
 
     if (!cl_quiet_boot) {
         cl_write_cstring_to_stdout("; [jit] m68k native backend enabled\n");
@@ -258,8 +267,9 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
  * cl_jit_invoke accepts (cl_jit_enter itself takes any count; lifting
  * the cap is specs/jit-direct-calls.md §"Later").
  *
- * Returns 1 and stores the source slot j in *slot_out on match. */
-#define CL_JIT_PASSTHROUGH_MAX_ARITY 6
+ * Returns 1 and stores the source slot j in *slot_out on match.
+ * (CL_JIT_PASSTHROUGH_MAX_ARITY lives in jit.h: the call-site fill rule
+ * in runtime.c applies it too.) */
 
 static int matches_passthrough(const CL_Bytecode *bc, uint8_t *slot_out)
 {
@@ -1322,22 +1332,160 @@ static void emit_chareq_compute(CodeBuf *cb, int cache_head, int cache_depth,
                       (int16_t)(done_off - bra2_pc));
 }
 
+/* --- Direct-call sites (specs/jit-direct-calls.md §2, §3) ----------------
+ *
+ * Every call the walker emits goes through a call site: an inline guard
+ * that JSRs straight into the callee's native code when the site's cell
+ * (CL_JitCallSite, runtime.h) is valid, else the _site miss helper, which
+ * dispatches as before and fills the cell.  The cells are appended after
+ * the function's code, 4-byte aligned; each site reaches its cell with
+ * LEA (d16,PC),A1, whose displacement is patched once the walk is done.
+ * The cells are data, read by native code and written only by C, and not
+ * in native_relocs: the gen check makes relocating `func` unnecessary. */
+typedef struct {
+    uint32_t *lea_offs;   /* offset of each site's LEA (d16,PC) disp word */
+    uint32_t  count;
+    uint32_t  cap;
+    int       oom;
+} JitSites;
+
+static void jit_sites_record(JitSites *s, uint32_t off)
+{
+    if (s->oom) return;
+    if (s->count == s->cap) {
+        uint32_t new_cap = (s->cap == 0) ? 8 : (s->cap * 2);
+        uint32_t *grown = (uint32_t *)platform_alloc(
+            (unsigned long)new_cap * sizeof(uint32_t));
+        if (grown == NULL) { s->oom = 1; return; }
+        if (s->lea_offs) {
+            uint32_t i;
+            for (i = 0; i < s->count; i++) grown[i] = s->lea_offs[i];
+            platform_free(s->lea_offs);
+        }
+        s->lea_offs = grown;
+        s->cap = new_cap;
+    }
+    s->lea_offs[s->count++] = off;
+}
+
+/* The hit path compares A7 against CL_Thread.jit_c_floor through A3. */
+#define JIT_C_FLOOR_DISP ((int16_t)offsetof(CL_Thread, jit_c_floor))
+typedef char jit_c_floor_disp_fits_d16[
+    (offsetof(CL_Thread, jit_c_floor) < 32768) ? 1 : -1];
+
+/* Emit one call through a direct-call site.  The cache is flushed and the
+ * NARGS arguments are on the operand stack ((a7) = the last); for OP_CALL /
+ * OP_TAILCALL (GLOBAL == 0) the function value sits under them, for the
+ * _GLOBAL forms SYM names the callee.  Leaves the result in D0 and the
+ * arguments (and function slot) dropped:
+ *
+ *         lea     cell(pc),a1
+ *         move.l  (a1)+,d0            ; gen     -- all three words are read
+ *         move.l  (a1)+,d1            ; func       before gen is compared,
+ *         movea.l (a1),a0             ; entry      see runtime.c
+ *         cmp.l   cl_call_gen,d0
+ *         bne.w   .miss
+ *       [ cmp.l   4n(a7),d1           ; OP_CALL: the same function value?
+ *         bne.w   .miss ]
+ *         cmpa.l  jit_c_floor(a3),a7  ; C stack below the floor: the helper
+ *         bls.w   .miss               ; path signals "C stack exhausted"
+ *         move.l  d1,-(a7)            ; func -> the callee's 8(a6)
+ *         jsr     (a0)
+ *         lea     4+drop(a7),a7
+ *         bra.w   .done
+ * .miss:  move.l  a7,a0               ; operand_top
+ *         pea     -8(a1)              ; the cell (a1 = cell+8 here)
+ *       [ move.l  #sym,-(a7) ]
+ *         move.l  #nargs,-(a7)
+ *         move.l  a0,-(a7)
+ *         jsr     cl_jit_runtime_call[_global]_site
+ *         lea     12|16+drop(a7),a7
+ * .done: */
+static void emit_call_site(CodeBuf *cb, JitRelocs *relocs, JitSites *sites,
+                           CL_Obj sym, int global, uint8_t nargs)
+{
+    uint32_t helper = global
+        ? (uint32_t)(uintptr_t)&cl_jit_runtime_call_global_site
+        : (uint32_t)(uintptr_t)&cl_jit_runtime_call_site;
+    int16_t drop = (int16_t)(4 * ((int32_t)nargs + (global ? 0 : 1)));
+    int32_t miss_pc[3];
+    int n_miss = 0, k;
+    int32_t bra_done_pc, miss_off, done_off;
+
+    jit_sites_record(sites, cb_len(cb) + 2);
+    m68k_emit_lea_pc_disp_to_an(cb, 0, REG_A1);
+    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A1, REG_D0);
+    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A1, REG_D1);
+    m68k_emit_movea_l_ind_an_to_am(cb, REG_A1, REG_A0);
+    m68k_emit_cmp_l_abs_dn(cb, (uint32_t)(uintptr_t)&cl_call_gen, REG_D0);
+    miss_pc[n_miss++] = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bne_w(cb, 0);
+    if (!global) {
+        m68k_emit_cmp_l_disp_an_dn(cb, (int16_t)(4 * (int32_t)nargs),
+                                   REG_A7, REG_D1);
+        miss_pc[n_miss++] = (int32_t)cb_len(cb) + 2;
+        m68k_emit_bne_w(cb, 0);
+    }
+    m68k_emit_cmpa_l_disp_an_am(cb, JIT_C_FLOOR_DISP, REG_A3, REG_A7);
+    miss_pc[n_miss++] = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bls_w(cb, 0);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+    m68k_emit_jsr_ind_an(cb, REG_A0);
+    m68k_emit_lea_disp_an_to_am(cb, (int16_t)(4 + drop), REG_A7, REG_A7);
+    bra_done_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bra_w(cb, 0);
+
+    miss_off = (int32_t)cb_len(cb);
+    m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
+    m68k_emit_pea_disp_an(cb, -8, REG_A1);
+    if (global)
+        emit_obj_imm_predec(cb, relocs, sym);
+    m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
+    m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
+    m68k_emit_jsr_abs_l(cb, helper);
+    m68k_emit_lea_disp_an_to_am(cb, (int16_t)((global ? 16 : 12) + drop),
+                                REG_A7, REG_A7);
+    done_off = (int32_t)cb_len(cb);
+
+    for (k = 0; k < n_miss; k++)
+        m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)miss_pc[k],
+                          (int16_t)(miss_off - miss_pc[k]));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_done_pc,
+                      (int16_t)(done_off - bra_done_pc));
+}
+
+/* Append the cells of every site the walk recorded and point each site's
+ * LEA at its own.  Returns 0 if a displacement does not fit. */
+static int emit_call_site_cells(CodeBuf *cb, const JitSites *sites)
+{
+    uint32_t i;
+    if (sites->count == 0) return 1;
+    if (cb_len(cb) & 3) m68k_emit_nop(cb);     /* never reached: after an RTS */
+    for (i = 0; i < sites->count; i++) {
+        int32_t disp = (int32_t)cb_len(cb) - (int32_t)sites->lea_offs[i];
+        if (disp > 32767) return 0;
+        m68k_patch_disp16(cb_data(cb), cb_len(cb), sites->lea_offs[i],
+                          (int16_t)disp);
+        cb_emit_u32(cb, 0);     /* gen 0: never filled */
+        cb_emit_u32(cb, 0);
+        cb_emit_u32(cb, 0);
+    }
+    return 1;
+}
+
 /* OP_CALL_GLOBAL's template — u16 sym_idx, u8 nargs at *IP — the fused
- * `FLOAD sym; CALL n`.  Same shape as OP_CALL's template with one more
- * helper argument (the symbol, baked as a relocated immediate) and no
- * function slot on the operand stack: only the N args are dropped
- * afterwards.  C-ABI order on the m68k stack is (operand_top, nargs, sym),
- * so sym is pushed first.  Shared by OP_CALL_GLOBAL and the two fused
- * heads (OP_LOAD_CALL_GLOBAL, OP_GLOAD_CALL_GLOBAL) that push one more
- * argument first.  Returns 0 on a malformed operand. */
+ * `FLOAD sym; CALL n`: a direct-call site (emit_call_site) with the symbol
+ * baked as a relocated immediate for the miss helper and no function slot
+ * on the operand stack.  Shared by OP_CALL_GLOBAL and the two fused heads
+ * (OP_LOAD_CALL_GLOBAL, OP_GLOAD_CALL_GLOBAL) that push one more argument
+ * first.  Returns 0 on a malformed operand. */
 static int emit_call_global(const CL_Bytecode *bc, uint32_t *ip, CodeBuf *cb,
-                            JitRelocs *relocs, int *cache_head, int *cache_depth)
+                            JitRelocs *relocs, JitSites *sites,
+                            int *cache_head, int *cache_depth)
 {
     uint16_t sym_idx;
     uint8_t nargs;
     CL_Obj sym;
-    uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call_global;
-    int16_t drop_bytes;
     if (*ip + 2 >= bc->code_len) return 0;
     sym_idx = ((uint16_t)bc->code[*ip] << 8) | bc->code[*ip + 1];
     *ip += 2;
@@ -1345,17 +1493,9 @@ static int emit_call_global(const CL_Bytecode *bc, uint32_t *ip, CodeBuf *cb,
     if (sym_idx >= bc->n_constants || bc->constants == NULL) return 0;
     sym = bc->constants[sym_idx];
     if (!CL_SYMBOL_P(sym)) return 0;
-    drop_bytes = (int16_t)(4 * (int32_t)nargs);
 
     cache_flush(cb, cache_head, cache_depth);
-    m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
-    emit_obj_imm_predec(cb, relocs, sym);
-    m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
-    m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
-    m68k_emit_jsr_abs_l(cb, helper);
-    m68k_emit_lea_disp_an_to_am(cb, 12, REG_A7, REG_A7);
-    if (drop_bytes)
-        m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
+    emit_call_site(cb, relocs, sites, sym, 1, nargs);
     cache_push_dn(cb, cache_head, cache_depth, REG_D0);
     return 1;
 }
@@ -1375,6 +1515,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     BranchPatch *patches = NULL;
     uint32_t n_patches = 0;
     uint32_t cap_patches = 0;
+    JitSites sites = { NULL, 0, 0, 0 };
     int cache_head = 7;
     int cache_depth = 0;
     int result = 0;
@@ -2206,19 +2347,11 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * works unchanged; the helper's D0 result then gets
              * pushed back through the cache for downstream ops. */
             uint8_t nargs;
-            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call;
-            int16_t drop_bytes;
             if (ip >= bc->code_len) goto fail;
             nargs = bc->code[ip++];
-            drop_bytes = (int16_t)(4 * ((int32_t)nargs + 1));
 
             cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
-            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
+            emit_call_site(cb, relocs, &sites, CL_NIL, 0, nargs);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
@@ -2242,7 +2375,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              *   2. Fallback / non-self.  If the guard misses, or the
              *      shape doesn't qualify (arity mismatch, anonymous
              *      lambda), fall through to the generic helper path:
-             *      JSR cl_jit_runtime_call, drop args, restore cache
+             *      a call site (emit_call_site), restore cache
              *      regs, UNLK + RTS.  This is identical to OP_CALL's
              *      sequence except we RTS with D0 directly instead of
              *      pushing the result onto our own operand stack only
@@ -2254,7 +2387,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * 'foo) #'bar)` runs after foo has been JIT-compiled,
              * subsequent `(foo …)` calls go through OP_FLOAD which
              * returns bar.  Our guard then compares bar != self_bc,
-             * misses, and we route through cl_jit_runtime_call as the
+             * misses, and we route through the call site as the
              * VM would — semantics preserved.  Compaction moving the
              * bytecode also lands on the fallback (immediate stale ≠
              * new CL_Obj), which is correct.
@@ -2265,13 +2398,10 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * walker compile (the function runs interpreted).  Loop
              * bodies fit well under that limit in practice. */
             uint8_t nargs;
-            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call;
-            int16_t drop_bytes;
             int self_tco;
             int32_t guard_branch_pc = 0;
             if (ip >= bc->code_len) goto fail;
             nargs = bc->code[ip++];
-            drop_bytes = (int16_t)(4 * ((int32_t)nargs + 1));
 
             cache_flush(cb, &cache_head, &cache_depth);
 
@@ -2280,7 +2410,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * than positional args, so the args don't sit in the
              * slots above A6 and the copy-into-frame trick below would
              * read garbage.  Recursive &key calls fall back to the
-             * cl_jit_runtime_call path (still tail-position correct,
+             * call-site path (still tail-position correct,
              * just at the cost of one extra m68k frame per call). */
             self_tco = !is_kw && (nargs == arity) && CL_SYMBOL_P(bc->name);
 
@@ -2353,13 +2483,8 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                                   (int16_t)((int32_t)cb_len(cb) - guard_branch_pc));
             }
 
-            /* Fallback / non-self path. */
-            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
-            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
+            /* Fallback / non-self path: a call site, then return. */
+            emit_call_site(cb, relocs, &sites, CL_NIL, 0, nargs);
 
             /* Result already in D0; restore callee-saved cache regs
              * from their A6-relative slots and return to our caller.
@@ -2383,7 +2508,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (slot >= n_locals) goto fail;
             cache_push_disp_an(cb, &cache_head, &cache_depth,
                                slot_disp(slot, slot_anchor, is_kw), REG_A6);
-            if (!emit_call_global(bc, &ip, cb, relocs, &cache_head, &cache_depth))
+            if (!emit_call_global(bc, &ip, cb, relocs, &sites, &cache_head, &cache_depth))
                 goto fail;
             break;
         }
@@ -2405,13 +2530,13 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
-            if (!emit_call_global(bc, &ip, cb, relocs, &cache_head, &cache_depth))
+            if (!emit_call_global(bc, &ip, cb, relocs, &sites, &cache_head, &cache_depth))
                 goto fail;
             break;
         }
 
         case OP_CALL_GLOBAL:
-            if (!emit_call_global(bc, &ip, cb, relocs, &cache_head, &cache_depth))
+            if (!emit_call_global(bc, &ip, cb, relocs, &sites, &cache_head, &cache_depth))
                 goto fail;
             break;
 
@@ -2422,15 +2547,13 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * other name can never be a self call — and confirmed at run
              * time by cl_jit_runtime_is_self_tco on the resolved binding, so
              * a redefinition still takes the generic path), else the
-             * cl_jit_runtime_call_global fallback + UNLK/RTS.  The only
+             * call-site fallback + UNLK/RTS.  The only
              * layout difference from OP_TAILCALL: no func slot under the
              * args, so the copy loop's sources are unchanged and the drop is
              * 4*N, not 4*(N+1). */
             uint16_t sym_idx;
             uint8_t nargs;
             CL_Obj sym;
-            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call_global;
-            int16_t drop_bytes;
             int self_tco;
             int32_t guard_branch_pc = 0;
             if (ip + 2 >= bc->code_len) goto fail;
@@ -2440,7 +2563,6 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (sym_idx >= bc->n_constants || bc->constants == NULL) goto fail;
             sym = bc->constants[sym_idx];
             if (!CL_SYMBOL_P(sym)) goto fail;
-            drop_bytes = (int16_t)(4 * (int32_t)nargs);
 
             cache_flush(cb, &cache_head, &cache_depth);
 
@@ -2490,14 +2612,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             }
 
             /* Fallback / non-self path: as OP_CALL_GLOBAL, then return. */
-            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
-            emit_obj_imm_predec(cb, relocs, sym);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
-            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_lea_disp_an_to_am(cb, 12, REG_A7, REG_A7);
-            if (drop_bytes)
-                m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
+            emit_call_site(cb, relocs, &sites, sym, 1, nargs);
 
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d7_disp, REG_A6, REG_D7);
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d6_disp, REG_A6, REG_D6);
@@ -3810,6 +3925,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
         m68k_patch_disp16(cb_data(cb), cb_len(cb),
                           p->patch_off, (int16_t)disp32);
     }
+    if (sites.oom || !emit_call_site_cells(cb, &sites)) goto fail;
     result = 1;
     goto cleanup;
 
@@ -3819,6 +3935,7 @@ cleanup:
     if (bc_to_native) platform_free(bc_to_native);
     if (is_target)    platform_free(is_target);
     if (patches)      platform_free(patches);
+    if (sites.lea_offs) platform_free(sites.lea_offs);
     return result;
 }
 
@@ -3852,16 +3969,19 @@ static void jit_compile_impl(CL_Bytecode *bc, int replace)
     } else {
         /* Drop any stale native code + relocs from a prior compile of this
          * bytecode (re-JIT after redefinition / repeated FASL load).  A
-         * call site may cache the freed entry: invalidate them all. */
-        if (bc->native_code) {
-            platform_free(bc->native_code);
-            cl_call_gen_bump("native code replaced");
-        }
+         * call site may cache the old entry: invalidate them all.  Unhook
+         * BEFORE the bump, so a site fill that reads the new generation
+         * can no longer see the old pointer (runtime.c, the fill rule). */
+        void *old_code = bc->native_code;
         if (bc->native_relocs) { platform_free(bc->native_relocs); }
         bc->native_code   = NULL;
         bc->native_len    = 0;
         bc->native_relocs = NULL;
         bc->native_reloc_count = 0;
+        if (old_code) {
+            cl_call_gen_bump("native code replaced");
+            platform_free(old_code);
+        }
     }
 
     cb_init(&cb, 8);
@@ -4121,6 +4241,17 @@ static int disasm_ea(int mode, int reg, const uint8_t *code, uint32_t len,
             snprintf(buf, (size_t)bufsize, "#$%08lx", (unsigned long)v);
             return 0;
         }
+        if (reg == 1) {                             /* (xxx).L */
+            uint32_t v;
+            if (*pos + 4 > len) return -1;
+            v = ((uint32_t)code[*pos]     << 24)
+              | ((uint32_t)code[*pos + 1] << 16)
+              | ((uint32_t)code[*pos + 2] << 8)
+              |  (uint32_t)code[*pos + 3];
+            *pos += 4;
+            snprintf(buf, (size_t)bufsize, "$%08lx", (unsigned long)v);
+            return 0;
+        }
         return -1;
     default:
         return -1;
@@ -4208,10 +4339,28 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
             snprintf(mnemonic, (size_t)msize, "lea %d(a%d),a%d",
                      (int)d, src_reg, am_dst);
             matched = 1;
+        } else if (src_mode == 7 && src_reg == 2) {  /* LEA (d16,PC),Am */
+            int16_t d;
+            if (pos + 2 > len) return 0;
+            d = (int16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
+            snprintf(mnemonic, (size_t)msize, "lea %ld(pc),a%d",
+                     (long)pos + (long)d, am_dst);
+            pos += 2;
+            matched = 1;
         }
     } else if ((op & 0xFFF8) == 0x4A80) {           /* TST.L Dn */
         int dn = op & 7;
         snprintf(mnemonic, (size_t)msize, "tst.l d%d", dn);
+        matched = 1;
+    } else if ((op & 0xFFF8) == 0x4E90) {           /* JSR (An) */
+        snprintf(mnemonic, (size_t)msize, "jsr (a%d)", op & 7);
+        matched = 1;
+    } else if ((op & 0xFFF8) == 0x4868) {           /* PEA (d16,An) */
+        int16_t d;
+        if (pos + 2 > len) return 0;
+        d = (int16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
+        pos += 2;
+        snprintf(mnemonic, (size_t)msize, "pea %d(a%d)", (int)d, op & 7);
         matched = 1;
     } else if (op == 0x4EB9) {                      /* JSR (xxx).L */
         uint32_t addr;
@@ -4262,11 +4411,19 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
         snprintf(mnemonic, (size_t)msize, "sub.l d%d,d%d", dn, dm);
         matched = 1;
     } else if ((op & 0xF000) == 0xB000
-            && ((op >> 6) & 7) == 2
-            && ((op >> 3) & 7) == 0) {              /* CMP.L Dn,Dm */
-        int dm = (op >> 9) & 7;
-        int dn = op & 7;
-        snprintf(mnemonic, (size_t)msize, "cmp.l d%d,d%d", dn, dm);
+            && (((op >> 6) & 7) == 2 || ((op >> 6) & 7) == 7)) {
+        /* CMP.L <ea>,Dn (opmode 010) / CMPA.L <ea>,An (opmode 111) */
+        int rn = (op >> 9) & 7;
+        char src[40];
+        if (disasm_ea((op >> 3) & 7, op & 7, code, len, &pos, 1,
+                      src, sizeof src) < 0) {
+            snprintf(mnemonic, (size_t)msize, ".word $%04x", op);
+            pos = offset + 2;
+        } else if (((op >> 6) & 7) == 2) {
+            snprintf(mnemonic, (size_t)msize, "cmp.l %s,d%d", src, rn);
+        } else {
+            snprintf(mnemonic, (size_t)msize, "cmpa.l %s,a%d", src, rn);
+        }
         matched = 1;
     } else if ((op & 0xF1C0) == 0x5080) {           /* ADDQ.L #imm,Dn */
         int data = (op >> 9) & 7;
@@ -4304,12 +4461,20 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
     return pos - offset;
 }
 
+/* Read a big-endian longword (call-site cells, for the disassembly). */
+static uint32_t disasm_u32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+}
+
 void cl_jit_disassemble(const uint8_t *code, uint32_t len)
 {
     uint32_t off = 0;
+    uint32_t cells = len;   /* where the call-site cells begin (= the end) */
     char mnem[80];
     char line[160];
-    while (off < len) {
+    while (off < len && off < cells) {
         uint32_t n = disasm_one(code, len, off, mnem, sizeof mnem);
         char hex[40];
         char *hp = hex;
@@ -4330,7 +4495,24 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
         snprintf(line, sizeof line, "  %04lu: %-18s %s\n",
                  (unsigned long)off, hex, mnem);
         cl_write_cstring_to_stdout(line);
+        /* A call site's LEA (d16,PC) points into the cell area after the
+         * code: the lowest such target ends the instruction stream. */
+        if ((((uint16_t)code[off] << 8 | code[off + 1]) & 0xF1FF) == 0x41FA &&
+            off + 4 <= len) {
+            int16_t d = (int16_t)(((uint16_t)code[off + 2] << 8) | code[off + 3]);
+            uint32_t target = off + 2 + (uint32_t)(int32_t)d;
+            if ((int32_t)d > 0 && target < cells) cells = target;
+        }
         off += n;
+    }
+    for (off = cells; off + 12 <= len; off += 12) {
+        snprintf(line, sizeof line,
+                 "  site #%lu: gen=%lu func=$%08lx entry=$%08lx\n",
+                 (unsigned long)((off - cells) / 12),
+                 (unsigned long)disasm_u32(code + off),
+                 (unsigned long)disasm_u32(code + off + 4),
+                 (unsigned long)disasm_u32(code + off + 8));
+        cl_write_cstring_to_stdout(line);
     }
 }
 
@@ -4383,6 +4565,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     CL_Thread *t;
     int     prev_depth;
     void   *prev_top;
+    char   *prev_floor;
     int32_t prev_nargs;
     int   is_kw;
     int   pushed_frame = 0;
@@ -4405,6 +4588,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     prev_depth = t->jit_depth;
     prev_top   = t->jit_stack_top;
     prev_nargs = t->jit_current_nargs;
+    prev_floor = t->jit_c_floor;
     if (prev_depth == 0) {
         extern volatile int cl_jit_active_threads;
         long headroom;
@@ -4417,6 +4601,18 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         headroom = platform_stack_headroom();
         t->jit_c_floor = (headroom >= 0)
             ? (char *)t->jit_stack_top - headroom + 16384 : NULL;
+    } else {
+        /* A nested entry normally runs on the outermost one's stack, between
+         * the floor and jit_stack_top.  Outside that window it is either a
+         * Lisp callback on another task's stack (a hook run by input.device),
+         * where a floor measured on a different stack means nothing, or this
+         * stack is already below the floor.  Either way every call site must
+         * miss -- the helper path measures the real stack -- so park the
+         * floor at the top of the address space until this entry returns. */
+        char *sp = (char *)CL_CAPTURE_SP();
+        if (sp > (char *)t->jit_stack_top ||
+            (t->jit_c_floor != NULL && sp <= t->jit_c_floor))
+            t->jit_c_floor = (char *)~(uintptr_t)0;
     }
     t->jit_depth = prev_depth + 1;
     t->jit_current_nargs = (int32_t)nargs;
@@ -4475,6 +4671,8 @@ done:
     if (prev_depth == 0) {
         extern volatile int cl_jit_active_threads;
         cl_jit_active_threads--;
+    } else {
+        t->jit_c_floor = prev_floor;
     }
     return result;
 }
@@ -4508,18 +4706,23 @@ int cl_jit_emit_stub(CL_Bytecode *bc)
     code = cb_finish(&cb, &len);
     if (code == NULL) return 0;
 
-    if (bc->native_code) {
-        platform_free(bc->native_code);
-        cl_call_gen_bump("native code replaced");
-    }
     /* The stub bakes no heap immediates — drop any reloc table the prior
      * native code carried so the compactor doesn't patch the stub. */
     if (bc->native_relocs) platform_free(bc->native_relocs);
     bc->native_relocs = NULL;
     bc->native_reloc_count = 0;
-    bc->native_code = code;
-    bc->native_len  = len;
     platform_cache_clear(code, len);
+    {
+        /* Swap in the stub, then bump, then free: a call site may cache
+         * the old entry (see jit_compile_impl). */
+        void *old_code = bc->native_code;
+        bc->native_code = code;
+        bc->native_len  = len;
+        if (old_code) {
+            cl_call_gen_bump("native code replaced");
+            platform_free(old_code);
+        }
+    }
     return 1;
 }
 

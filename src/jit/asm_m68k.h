@@ -223,6 +223,37 @@ void m68k_emit_move_l_dn_to_disp_am(CodeBuf *cb, M68kReg dn,
  * the register direct.  Opcode 0100 1010 1000 0nnn. */
 void m68k_emit_tst_l_dn(CodeBuf *cb, M68kReg dn);
 
+/* --- Direct-call site encoders (specs/jit-direct-calls.md §3). --- */
+
+/* LEA (d16,PC),An — An = address of the extension word + d16.  4 bytes;
+ * the displacement is patched once the call-site cell's offset is known
+ * (PC = instruction start + 2, the offset of the displacement word). */
+void m68k_emit_lea_pc_disp_to_an(CodeBuf *cb, int16_t disp, M68kReg an);
+
+/* MOVEA.L (An),Am — load the longword at (An) into Am.  2 bytes. */
+void m68k_emit_movea_l_ind_an_to_am(CodeBuf *cb, M68kReg an, M68kReg am);
+
+/* CMP.L (xxx).L,Dn — flags from Dn - [addr].  6 bytes. */
+void m68k_emit_cmp_l_abs_dn(CodeBuf *cb, uint32_t addr, M68kReg dn);
+
+/* CMP.L (d16,An),Dn — flags from Dn - [An+d16].  4 bytes. */
+void m68k_emit_cmp_l_disp_an_dn(CodeBuf *cb, int16_t disp, M68kReg an,
+                                M68kReg dn);
+
+/* CMPA.L (d16,An),Am — flags from Am - [An+d16] (32-bit, unsigned
+ * conditions apply: BLS = Am <= [An+d16]).  4 bytes. */
+void m68k_emit_cmpa_l_disp_an_am(CodeBuf *cb, int16_t disp, M68kReg an,
+                                 M68kReg am);
+
+/* JSR (An) — call the address held in An.  2 bytes. */
+void m68k_emit_jsr_ind_an(CodeBuf *cb, M68kReg an);
+
+/* PEA (d16,An) — push An + d16.  4 bytes. */
+void m68k_emit_pea_disp_an(CodeBuf *cb, int16_t disp, M68kReg an);
+
+/* BLS.W — branch if lower or same (unsigned <=).  4 bytes. */
+void m68k_emit_bls_w(CodeBuf *cb, int16_t disp);
+
 /* Overwrite a 16-bit big-endian field already written to `code` at byte
  * offset `patch_off`.  Used to fill in forward-branch displacements
  * once the target's native offset is known.  No-op if patch_off+2

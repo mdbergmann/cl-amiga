@@ -1247,6 +1247,13 @@ static CL_Obj bi_proclaim(CL_Obj *args, int n)
 
 static CL_Obj trace_list = CL_NIL;
 
+/* Symbols currently traced, process-wide (cl_trace_count is per thread).
+ * A JIT call site never fills while it is nonzero (runtime.c): a site
+ * filled by an untracing thread would let a tracing one skip the trace.
+ * Changed only under the tables write lock, and always before the
+ * cl_call_gen bump that invalidates the filled sites. */
+volatile uint32_t cl_traced_function_count = 0;
+
 static CL_Obj bi_trace_function(CL_Obj *args, int n)
 {
     CL_Symbol *s;
@@ -1264,6 +1271,7 @@ static CL_Obj bi_trace_function(CL_Obj *args, int n)
         if (!(s->flags & CL_SYM_TRACED)) {
             s->flags |= CL_SYM_TRACED;
             cl_trace_count++;
+            cl_traced_function_count++;
             newly = 1;
             /* Traced calls must take the trampoline, not a filled site. */
             cl_call_gen_bump("trace");
@@ -1296,6 +1304,7 @@ static CL_Obj bi_untrace_function(CL_Obj *args, int n)
         }
         s->flags &= ~CL_SYM_TRACED;
         cl_trace_count--;
+        cl_traced_function_count--;
         cl_call_gen_bump("untrace");
         {
             CL_Obj prev = CL_NIL, curr = trace_list;
@@ -1342,6 +1351,7 @@ static CL_Obj bi_untrace_all(CL_Obj *args, int n)
             list = cl_cdr(list);
         }
         trace_list = CL_NIL;
+        cl_traced_function_count = 0;
     }
     cl_tables_rwunlock();
     cl_trace_count = 0;
@@ -1483,6 +1493,55 @@ static CL_Obj bi_jit_set_active(CL_Obj *args, int n)
     active = !CL_NULL_P(args[0]);
     cl_jit_set_active(active);
     return active ? CL_T : CL_NIL;
+}
+
+/* (%JIT-SET-DIRECT-CALLS BOOL) -- the kill switch of native-to-native
+ * direct calls (specs/jit-direct-calls.md): with NIL no JIT call site
+ * fills, so every call from native code takes the helper path, for A/B
+ * runs and bisection.  Toggling bumps the call generation.  Returns the
+ * new state as T/NIL; always NIL on a build without the JIT. */
+static CL_Obj bi_jit_set_direct_calls(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    cl_jit_set_direct_calls(!CL_NULL_P(args[0]));
+    return cl_jit_direct_calls_enabled() ? CL_T : CL_NIL;
+}
+
+/* (%JIT-DIRECT-CALL-STATS) -- plist of the call-site miss path's counters
+ * since boot: :FILLS :MISSES :REFUSED-TRACE :REFUSED-SHADOW :REFUSED-ABI
+ * :REFUSED-NOT-NATIVE, plus :GEN (the current call generation) and
+ * :ENABLED.  A hit is never counted (it runs no C).  All zero on host. */
+static CL_Obj bi_jit_direct_call_stats(CL_Obj *args, int n)
+{
+    static const char *const names[CL_JIT_DS_COUNT] = {
+        "FILLS", "MISSES", "REFUSED-TRACE", "REFUSED-SHADOW",
+        "REFUSED-ABI", "REFUSED-NOT-NATIVE"
+    };
+    uint32_t st[CL_JIT_DS_COUNT];
+    CL_Obj result = CL_NIL, val = CL_NIL;
+    int i;
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_jit_direct_call_stats(st);
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(val);
+    /* Each allocating call is its own statement (tests/test_gc_arg_order.sh):
+     * an allocation inside cl_cons's argument list could move RESULT after
+     * it was read. */
+    result = cl_cons(cl_jit_direct_calls_enabled() ? CL_T : CL_NIL, result);
+    val = cl_intern_keyword("ENABLED", 7);
+    result = cl_cons(val, result);
+    val = cl_bignum_from_uint32(cl_call_gen);
+    result = cl_cons(val, result);
+    val = cl_intern_keyword("GEN", 3);
+    result = cl_cons(val, result);
+    for (i = CL_JIT_DS_COUNT - 1; i >= 0; i--) {
+        val = cl_bignum_from_uint32(st[i]);
+        result = cl_cons(val, result);
+        val = cl_intern_keyword(names[i], (uint32_t)strlen(names[i]));
+        result = cl_cons(val, result);
+    }
+    CL_GC_UNPROTECT(2);
+    return result;
 }
 
 /* (%JIT-SET-HOT-THRESHOLD N) — compile a function on its Nth interpreted
@@ -2326,6 +2385,8 @@ void cl_builtins_init(void)
     cl_register_builtin("%JIT-INVOKE-COUNT",  bi_jit_invoke_count,  0, 0, cl_package_clamiga);
     cl_register_builtin("%JIT-C-FLOOR",       bi_jit_c_floor,       0, 0, cl_package_clamiga);
     cl_register_builtin("%CALL-GEN",          bi_call_gen,          0, 0, cl_package_clamiga);
+    cl_register_builtin("%JIT-SET-DIRECT-CALLS", bi_jit_set_direct_calls, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%JIT-DIRECT-CALL-STATS", bi_jit_direct_call_stats, 0, 0, cl_package_clamiga);
     cl_register_builtin("%JIT-DISASSEMBLE",   bi_jit_disassemble,   1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-SET-ACTIVE",    bi_jit_set_active,    1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-ACTIVE-P",      bi_jit_active_p,      0, 0, cl_package_clamiga);

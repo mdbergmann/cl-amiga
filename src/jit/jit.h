@@ -23,10 +23,30 @@
 #define CL_JIT_HOT_DEFAULT  8
 #define CL_JIT_HOT_MAX      126    /* the count lives in 7 bits */
 
+/* Native-to-native direct calls (specs/jit-direct-calls.md): the counters of
+ * the call-site miss path, in this order, for %JIT-DIRECT-CALL-STATS. */
+enum {
+    CL_JIT_DS_FILLS, CL_JIT_DS_MISSES, CL_JIT_DS_REFUSED_TRACE,
+    CL_JIT_DS_REFUSED_SHADOW, CL_JIT_DS_REFUSED_ABI,
+    CL_JIT_DS_REFUSED_NOT_NATIVE, CL_JIT_DS_COUNT
+};
+
 #ifdef JIT_M68K
+
+/* The highest positional arity native code is entered with (cl_jit_invoke,
+ * the pass-through matcher, the walker's gate, the call-site fill rule). */
+#define CL_JIT_PASSTHROUGH_MAX_ARITY 6
 
 /* One-time init at boot, after cl_compiler_init. */
 void   cl_jit_init(void);
+
+/* The direct-call kill switch (%JIT-SET-DIRECT-CALLS, CLAMIGA_JIT_DIRECT=0):
+ * while off, no call site fills, so every call takes the helper path.
+ * Toggling bumps cl_call_gen. */
+void   cl_jit_set_direct_calls(int on);
+int    cl_jit_direct_calls_enabled(void);
+/* Copy the CL_JIT_DS_* counters into OUT[CL_JIT_DS_COUNT]. */
+void   cl_jit_direct_call_stats(uint32_t *out);
 
 /* Optionally translate this bytecode to native m68k. May leave
  * bc->native_code == NULL if the function is ineligible or the JIT is
@@ -124,6 +144,10 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len);
 #else  /* !JIT_M68K — host / non-m68k targets get no-op stubs */
 
 static inline void   cl_jit_init(void)                       { }
+static inline void   cl_jit_set_direct_calls(int on)          { (void)on; }
+static inline int    cl_jit_direct_calls_enabled(void)       { return 0; }
+static inline void   cl_jit_direct_call_stats(uint32_t *out)
+{ int i; for (i = 0; i < CL_JIT_DS_COUNT; i++) out[i] = 0; }
 static inline void   cl_jit_compile(CL_Bytecode *bc)         { (void)bc; }
 static inline void   cl_jit_note_definition(CL_Bytecode *bc) { (void)bc; }
 static inline void   cl_jit_note_call(CL_Bytecode *bc)       { (void)bc; }

@@ -35,6 +35,7 @@
 #include "core/builtins.h"   /* cl_ffi_stub_call (jit_dispatch) */
 #include "jit/jit.h"         /* cl_jit_invoke (jit_dispatch) */
 #include "platform/platform.h" /* CL_NOINLINE */
+#include "platform/platform_thread.h" /* platform_atomic_cas (call-site fill) */
 #include <setjmp.h>
 #include <string.h>          /* memcpy for mv_values preservation */
 
@@ -489,22 +490,128 @@ static CL_Obj jit_dispatch(CL_Obj func, CL_Obj *operand_top, uint32_t nargs)
     return jit_dispatch_apply(func, operand_top, nargs);
 }
 
-/* Backing for OP_CALL: the function value sits under the arguments. */
-CL_Obj cl_jit_runtime_call(CL_Obj *operand_top, uint32_t nargs)
+/* --- Direct native-to-native calls (specs/jit-direct-calls.md) ----------
+ *
+ * Every call site in native code owns a CL_JitCallSite cell.  The emitted
+ * hit path (jit.c, emit_call_site) reads gen/func/entry, then compares the
+ * gen it read against cl_call_gen, and JSRs straight into `entry` with
+ * `func` pushed over the arguments -- no helper, no argument copy, no
+ * FindTask.  Anything else lands here, in the miss path: the dispatch the
+ * site used to call unconditionally, after an attempt to fill the cell.
+ *
+ * Filling races with readers on other tasks (the m68k JIT is single-CPU,
+ * but preemptive).  The rules that keep a reader from ever pairing one
+ * fill's func with another's entry:
+ *   - the hit path reads all three words BEFORE comparing gen, so a reader
+ *     preempted mid-read compares a gen whose site has since changed;
+ *   - a site's func/entry change only while site->gen != cl_call_gen, and
+ *     cl_call_gen only grows: a reader holding the old gen then misses;
+ *   - fillers serialize through a try-lock (a contended fill is skipped;
+ *     the next miss retries), and write func, entry, then gen;
+ *   - G, the gen recorded, is read BEFORE any input of the fill rule.
+ *     Every input -- the function cell, native_code, TRACE, shadow frames,
+ *     the kill switch -- changes before its own cl_call_gen bump, so a
+ *     fill that saw an old input records an old gen and simply misses.
+ *
+ * The counters are process-wide statics written on the miss path only;
+ * the m68k JIT runs on one CPU, so there is no cache line to bounce. */
+static int jit_direct_calls = 1;
+static uint32_t jit_ds[CL_JIT_DS_COUNT];
+static volatile uint32_t jit_site_fill_lock = 0;
+
+void cl_jit_set_direct_calls(int on)
 {
+    jit_direct_calls = on ? 1 : 0;
+    cl_call_gen_bump("direct calls");   /* the fill rule changed */
+}
+
+int cl_jit_direct_calls_enabled(void) { return jit_direct_calls; }
+
+void cl_jit_direct_call_stats(uint32_t *out)
+{
+    int i;
+    for (i = 0; i < CL_JIT_DS_COUNT; i++) out[i] = jit_ds[i];
+}
+
+static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
+                              uint32_t g, CL_Obj func, uint32_t nargs)
+{
+    uint32_t ftype, arity;
+    CL_Bytecode *bc;
+
+    jit_ds[CL_JIT_DS_MISSES]++;
+    if (!jit_direct_calls) return;
+    if (cl_jit_shadow_frames_enabled()) {
+        jit_ds[CL_JIT_DS_REFUSED_SHADOW]++;     /* the frame is cl_jit_invoke's */
+        return;
+    }
+    if (cl_traced_function_count != 0 || thr->trace_count != 0) {
+        jit_ds[CL_JIT_DS_REFUSED_TRACE]++;      /* traced calls take cl_vm_apply */
+        return;
+    }
+    if (!CL_HEAP_P(func) || func >= cl_heap.arena_size) {
+        jit_ds[CL_JIT_DS_REFUSED_NOT_NATIVE]++;
+        return;
+    }
+    ftype = CL_HDR_TYPE(CL_OBJ_TO_PTR(func));
+    bc = (ftype == TYPE_BYTECODE || ftype == TYPE_CLOSURE)
+         ? jit_dispatch_bytecode_of(func, ftype) : NULL;
+    if (bc == NULL || bc->native_code == NULL) {
+        jit_ds[CL_JIT_DS_REFUSED_NOT_NATIVE]++; /* builtin, interpreted, GF, ... */
+        return;
+    }
+    /* The positional native ABI, entered with exactly its arity: anything
+     * else needs jit_dispatch's checks (and OP_CALL's diagnostics). */
+    arity = bc->arity;
+    if (bc->flags != 0 || bc->n_optional != 0 || (arity & 0x8000) ||
+        arity != nargs || nargs > CL_JIT_PASSTHROUGH_MAX_ARITY) {
+        jit_ds[CL_JIT_DS_REFUSED_ABI]++;
+        return;
+    }
+    if (!platform_atomic_cas(&jit_site_fill_lock, 0, 1))
+        return;                                 /* a peer is filling; retry later */
+    if (site->gen != cl_call_gen) {             /* never rewrite a live site */
+        site->gen   = 0;
+        site->func  = func;
+        site->entry = bc->native_code;
+        site->gen   = g;
+        jit_ds[CL_JIT_DS_FILLS]++;
+    }
+    jit_site_fill_lock = 0;
+}
+
+/* Miss path of an OP_CALL / OP_TAILCALL site: the callee is the function
+ * value under the arguments. */
+CL_Obj cl_jit_runtime_call_site(CL_Obj *operand_top, uint32_t nargs,
+                                CL_JitCallSite *site)
+{
+    CL_Thread *thr = cl_get_current_thread();
+    uint32_t g;
     if (nargs > 255) nargs = 255;   /* defensive -- OP_CALL is u8 */
+    /* A hit never polls: a requester sets the flag, then bumps
+     * cl_call_gen, so this thread's next call misses and lands here. */
+    if (thr->gc_requested) cl_gc_safepoint();
+    if (thr->interrupt_pending) cl_thread_handle_interrupt(thr);
+    g = cl_call_gen;
+    jit_site_try_fill(thr, site, g, operand_top[nargs], nargs);
     return jit_dispatch(operand_top[nargs], operand_top, nargs);
 }
 
-/* Backing for OP_CALL_GLOBAL / the fallback arm of OP_TAILCALL_GLOBAL: the
- * fused `FLOAD sym; CALL n`.  The arguments sit on the operand stack exactly
- * as for cl_jit_runtime_call, but there is no function slot under them -- the
- * callee is resolved from SYM here (same rules as cl_jit_runtime_fload). */
-CL_Obj cl_jit_runtime_call_global(CL_Obj *operand_top, uint32_t nargs,
-                                  CL_Obj sym)
+/* Miss path of an OP_CALL_GLOBAL / OP_TAILCALL_GLOBAL site (and the fused
+ * LOAD_/GLOAD_CALL_GLOBAL heads): the callee is SYM's function. */
+CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
+                                       CL_Obj sym, CL_JitCallSite *site)
 {
+    CL_Thread *thr = cl_get_current_thread();
+    uint32_t g;
+    CL_Obj func;
     if (nargs > 255) nargs = 255;   /* defensive -- the operand is a u8 */
-    return jit_dispatch(cl_jit_runtime_fload(sym), operand_top, nargs);
+    if (thr->gc_requested) cl_gc_safepoint();
+    if (thr->interrupt_pending) cl_thread_handle_interrupt(thr);
+    g = cl_call_gen;
+    func = cl_jit_runtime_fload(sym);   /* UNDEFINED-FUNCTION as before */
+    jit_site_try_fill(thr, site, g, func, nargs);
+    return jit_dispatch(func, operand_top, nargs);
 }
 
 /* Backing for OP_APPLY.  Flatten `arglist` into a stack-local buffer, resolve

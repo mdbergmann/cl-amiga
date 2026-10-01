@@ -1,6 +1,6 @@
 # Direct native-to-native calls (m68k JIT)
 
-Status: **in progress** (2026-10-01): phases 1, 2 and 3 done.  Follows the open lever in
+Status: **in progress** (2026-10-01): phases 1 to 4 done.  Follows the open lever in
 `specs/native-backend.md` §"Status (2026-09-16, direct call dispatch from
 JIT'd code)": *direct JSR to a native callee from the call site (no helper
 at all)*.  The idea is borrowed from Evergreen CL's T1 baseline JIT
@@ -154,25 +154,35 @@ m68k operand stack (`(a7)` = last argument):
 ```
         lea     site(pc),a1
         move.l  (a1)+,d0            ; site.gen
+        move.l  (a1)+,d1            ; site.func
+        movea.l (a1),a0             ; site.entry
         cmp.l   cl_call_gen,d0      ; abs.l
         bne.w   .miss
         cmpa.l  JIT_FLOOR(a3),a7    ; per-thread C-stack floor, see §4
         bls.w   .miss
-        move.l  (a1)+,-(a7)         ; push site.func  (callee's 8(a6))
-        movea.l (a1),a0             ; site.entry
+        move.l  d1,-(a7)            ; push site.func  (callee's 8(a6))
         jsr     (a0)
         lea     4+4n(a7),a7         ; drop func + args
         bra.w   .done
-.miss:  ; today's sequence, calling the _site variant of the helper:
-        ; push site addr, sym, n, operand_top; jsr cl_jit_runtime_call_global_site
-        ; lea 16(a7),a7 ; lea 4n(a7),a7
+.miss:  move.l  a7,a0               ; operand_top
+        pea     -8(a1)              ; the cell
+        move.l  #sym,-(a7)
+        move.l  #n,-(a7)
+        move.l  a0,-(a7)
+        jsr     cl_jit_runtime_call_global_site
+        lea     16+4n(a7),a7
 .done:  ; D0 -> stack cache, as today
 ```
 
-That is 10 instructions on a hit, all reads.  `OP_CALL` is the same, plus
-`cmp.l site.func` against the function slot under the arguments
-(`4n(a7)`).  It falls through to `.miss` on a mismatch, so FUNCALL of a
-different function at the same site is just a miss.
+That is 12 instructions on a hit, all reads.  All three words are read
+**before** gen is compared (as built; the first draft compared first): see
+§5 for why that order is what keeps a preempted reader from pairing one
+fill's `func` with another's `entry`.  `OP_CALL` is the same, plus
+`cmp.l 4n(a7),d1` against the function slot under the arguments.  It falls
+through to `.miss` on a mismatch, so FUNCALL of a different function at the
+same site is just a miss.  As built, `OP_TAILCALL`'s fallback goes through a
+site too, so all four call opcodes share one emitter (`emit_call_site`) and
+the old `cl_jit_runtime_call[_global]` helpers are gone.
 
 `OP_TAILCALL_GLOBAL`'s fallback is "call, then UNLK/RTS", as it is today;
 only the call part changes.  The self-tail-call `bra` stays first and is
@@ -263,6 +273,22 @@ on a foreign task (MUI hooks on `input.device`) enters through
 4. If it fills, write `func` and `entry` first and `gen = g` last.  The
    m68k JIT is single-CPU and has no reordering, so a preempted half-fill
    leaves `gen` stale, which reads as a miss.
+
+   As built, three more rules close the races a preemptive scheduler
+   leaves (runtime.c, above `jit_site_try_fill`):
+   - fillers serialize through a try-lock (`platform_atomic_cas`); a
+     contended fill is skipped, and the next miss retries;
+   - a site is rewritten only while `site->gen != cl_call_gen`: a live
+     site is never touched, and since `cl_call_gen` only grows, a reader
+     that read the old gen before the rewrite compares it after its three
+     reads and misses;
+   - every input of the fill rule changes **before** its bump.  Replacing
+     native code therefore unhooks `bc->native_code`, bumps, and only then
+     frees the old code (`jit_compile_impl`, `cl_jit_emit_stub`).
+   - TRACE is process-wide for the fill rule: a new counter,
+     `cl_traced_function_count`, refuses fills while any symbol is traced
+     (`cl_trace_count` is per thread, so a site filled by an untracing
+     thread would otherwise let a tracing one skip the trace).
 5. Dispatch this call through `jit_dispatch`, unchanged.  The next call
    through the site hits.
 
@@ -275,7 +301,22 @@ NULL.
 Safepoint latency is unchanged.  A requester sets the target's flag, then
 bumps.  The target's next call site misses and polls.  Today the target
 polls at its next call as well.  Call-free native loops do not poll, today
-or after this change.
+or after this change.  (As built, the miss path polls before every
+dispatch, so a call from native code to a builtin now polls too, as the
+interpreter's OP_CALL does.)
+
+**Ctrl-C needs no bump.**  The break poll (`VM_POLL_BREAK`) lives only in
+`cl_vm_run`; neither `jit_dispatch` nor native code polls it.  A
+native-to-native call chain did not see Ctrl-C before this change either,
+and every path back into the interpreter (an interpreted callee, a
+builtin that applies Lisp) still runs it.
+
+**A nested entry on a foreign stack.**  `jit_c_floor` is measured on the
+outermost entry's stack.  A nested `cl_jit_invoke` whose SP lies outside
+`(jit_c_floor, jit_stack_top]` is a callback on another task's stack (or
+already below the floor), so it parks the floor at the top of the address
+space until it returns: every site misses there, and the miss path's
+`cl_check_c_stack` measures the real stack.
 
 ### 6. What the direct path skips, and why that is safe
 
@@ -290,7 +331,7 @@ or after this change.
 ### 7. Diagnostics
 
 - `(clamiga::%jit-direct-call-stats)` → plist `:fills :misses :refused-trace
-  :refused-shadow :refused-abi :refused-not-native :gen`.  The counters are
+  :refused-shadow :refused-abi :refused-not-native :gen :enabled`.  The counters are
   bumped **only on the miss path** (C), never on a hit.
 - `(clamiga::%jit-set-direct-calls nil|t)` and `CLAMIGA_JIT_DIRECT=0`: the
   kill switch for A/B runs and bisection.  It bumps, and fill then refuses.
@@ -349,7 +390,9 @@ bound as the existing `jit-direct-*` block does):
 - **GC between calls:** a caller allocates enough to force collections and
   compaction between calls through the same site.  The value is right, and
   `:fills` grows once per collection, not per call.  Also run under
-  `CLAMIGA_GC_STRESS=1` in the Amiga gc-stress leg.
+  `CLAMIGA_GC_STRESS=1` in the Amiga gc-stress leg.  (As built there is
+  no Amiga gc-stress leg; the check is a `stress-check`, and the host
+  gc-stress run covers the `%call-gen` side.)
 - **ABA:** create a closure, call it through a site, drop it, collect,
   allocate a different closure of the same size, call it through the same
   site.  The result is the new closure's.

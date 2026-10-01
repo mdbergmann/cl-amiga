@@ -189,6 +189,59 @@ void m68k_emit_blt_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 13, disp);
 void m68k_emit_bge_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 12, disp); }
 void m68k_emit_bgt_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 14, disp); }
 void m68k_emit_ble_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 15, disp); }
+void m68k_emit_bls_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb,  3, disp); }
+
+/* LEA (d16,PC),An: 0100 an 111 111 010 + 16-bit disp.  See M68000 PRM
+ * §4-120 (EA mode 7, register 2). */
+void m68k_emit_lea_pc_disp_to_an(CodeBuf *cb, int16_t disp, M68kReg an)
+{
+    cb_emit_u16(cb, (uint16_t)(0x41FA | ((an & 7) << 9)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* MOVEA.L (An),Am: 0010 am 001 010 an.  2 bytes. */
+void m68k_emit_movea_l_ind_an_to_am(CodeBuf *cb, M68kReg an, M68kReg am)
+{
+    cb_emit_u16(cb, (uint16_t)(0x2000 | ((am & 7) << 9) |
+                               (1 << 6) | (2 << 3) | (an & 7)));
+}
+
+/* CMP.L <ea>,Dn: 1011 dn 010 <ea>.  EA (xxx).L = mode 7, reg 1.  See
+ * M68000 PRM §4-75. */
+void m68k_emit_cmp_l_abs_dn(CodeBuf *cb, uint32_t addr, M68kReg dn)
+{
+    cb_emit_u16(cb, (uint16_t)(0xB080 | ((dn & 7) << 9) | (7 << 3) | 1));
+    cb_emit_u32(cb, addr);
+}
+
+void m68k_emit_cmp_l_disp_an_dn(CodeBuf *cb, int16_t disp, M68kReg an,
+                                M68kReg dn)
+{
+    cb_emit_u16(cb, (uint16_t)(0xB080 | ((dn & 7) << 9) | (5 << 3) | (an & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* CMPA.L <ea>,Am: 1011 am 111 <ea>.  See M68000 PRM §4-77. */
+void m68k_emit_cmpa_l_disp_an_am(CodeBuf *cb, int16_t disp, M68kReg an,
+                                 M68kReg am)
+{
+    cb_emit_u16(cb, (uint16_t)(0xB1C0 | ((am & 7) << 9) | (5 << 3) | (an & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* JSR (An): 0100 1110 10 010 an.  See M68000 PRM §4-119. */
+void m68k_emit_jsr_ind_an(CodeBuf *cb, M68kReg an)
+{
+    cb_emit_u16(cb, (uint16_t)(0x4E90 | (an & 7)));
+}
+
+/* PEA (d16,An): 0100 1000 01 101 an + 16-bit disp.  See M68000 PRM
+ * §4-159. */
+void m68k_emit_pea_disp_an(CodeBuf *cb, int16_t disp, M68kReg an)
+{
+    cb_emit_u16(cb, (uint16_t)(0x4868 | (an & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
 
 void m68k_patch_disp16(uint8_t *code, uint32_t code_len,
                        uint32_t patch_off, int16_t disp)
