@@ -722,7 +722,7 @@ uint32_t cl_amiga_library_base_address(CL_Obj base_sym)
 
     base_val = cl_symbol_value(base_sym);
     if (base_val == CL_UNBOUND)
-        cl_error(CL_ERR_UNBOUND,
+        cl_error_cell(CL_ERR_UNBOUND, base_sym,
                  "OP_AMIGA_CALL: unbound library base %s",
                  cl_symbol_name(base_sym));
     if (CL_NULL_P(base_val))

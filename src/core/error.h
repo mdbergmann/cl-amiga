@@ -221,6 +221,12 @@ int cl_error_frame_push(void);
 /* Signal an error — jumps to nearest CL_CATCH */
 CL_NORETURN void cl_error(int code, const char *fmt, ...);
 
+/* cl_error for a CELL-ERROR (CL_ERR_UNBOUND / CL_ERR_UNDEFINED): the
+ * same message, debugger and unwind, plus the :name slot set to NAME so
+ * (cell-error-name c) answers it (CLHS 9.2 CELL-ERROR).  Every runtime
+ * site that holds the symbol uses this, not plain cl_error. */
+CL_NORETURN void cl_error_cell(int code, CL_Obj name, const char *fmt, ...);
+
 /* Longjmp to the current top C error frame with cl_error's full
  * per-frame snapshot restores (gc roots, jit depth, debugger state,
  * FASL readers, compiler chain, handler/restart tops).  For the

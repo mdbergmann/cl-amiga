@@ -7073,6 +7073,33 @@ y" 1))
        '(setf ubs-amiga-no-such-setter)
        (handler-case (fdefinition '(setf ubs-amiga-no-such-setter))
          (undefined-function (c) (cell-error-name c))))
+;; The runtime's own UNDEFINED-FUNCTION / UNBOUND-VARIABLE (a call, FUNCALL
+;; or APPLY of a symbol, a variable reference) name the cell too; FUNCALL
+;; of a symbol with no function is UNDEFINED-FUNCTION, not TYPE-ERROR.
+(check "undefined-function / unbound-variable are cell-errors (CLHS)" '(t t t t)
+       (list (subtypep 'undefined-function 'cell-error)
+             (subtypep 'unbound-variable 'cell-error)
+             (not (null (member (find-class 'cell-error)
+                                (class-precedence-list (find-class 'undefined-function)))))
+             (handler-case cen-amiga-unbound-2 (cell-error () t))))
+(check "runtime undefined-function: cell-error-name and report"
+       '(cen-amiga-no-such-fn "Undefined function: CEN-AMIGA-NO-SUCH-FN")
+       (handler-case (cen-amiga-no-such-fn 1)
+         (undefined-function (c) (list (cell-error-name c) (princ-to-string c)))))
+(check "funcall of fbound-less symbol: undefined-function names it"
+       'cen-amiga-no-such-fn-2
+       (handler-case (funcall 'cen-amiga-no-such-fn-2)
+         (type-error () :type-error)
+         (undefined-function (c) (cell-error-name c))))
+(check "apply of fbound-less symbol: undefined-function names it"
+       'cen-amiga-no-such-fn-3
+       (let ((s 'cen-amiga-no-such-fn-3))
+         (handler-case (apply s '(1))
+           (undefined-function (c) (cell-error-name c)))))
+(check "runtime unbound-variable: cell-error-name and report"
+       '(cen-amiga-unbound "Unbound variable: CEN-AMIGA-UNBOUND")
+       (handler-case cen-amiga-unbound
+         (unbound-variable (c) (list (cell-error-name c) (princ-to-string c)))))
 (check "fdefinition (setf x) undefined: report names (SETF X)" t
        (handler-case (fdefinition '(setf ubs-amiga-no-such-setter))
          (undefined-function (c)

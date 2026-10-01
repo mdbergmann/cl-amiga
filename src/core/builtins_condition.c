@@ -150,6 +150,12 @@ static void build_hierarchy(void)
     /* unbound-slot -> cell-error */
     hierarchy_add(cl_list2(SYM_UNBOUND_SLOT, SYM_CELL_ERROR));
 
+    /* undefined-function -> cell-error (CLHS) */
+    hierarchy_add(cl_list2(SYM_UNDEFINED_FUNCTION_COND, SYM_CELL_ERROR));
+
+    /* unbound-variable -> cell-error (CLHS) */
+    hierarchy_add(cl_list2(SYM_UNBOUND_VARIABLE_COND, SYM_CELL_ERROR));
+
     /* cell-error -> error */
     hierarchy_add(cl_list2(SYM_CELL_ERROR, SYM_ERROR_COND));
 
@@ -179,12 +185,6 @@ static void build_hierarchy(void)
 
     /* program-error -> error */
     hierarchy_add(cl_list2(SYM_PROGRAM_ERROR, SYM_ERROR_COND));
-
-    /* undefined-function -> error */
-    hierarchy_add(cl_list2(SYM_UNDEFINED_FUNCTION_COND, SYM_ERROR_COND));
-
-    /* unbound-variable -> error */
-    hierarchy_add(cl_list2(SYM_UNBOUND_VARIABLE_COND, SYM_ERROR_COND));
 
     /* type-error -> error */
     hierarchy_add(cl_list2(SYM_TYPE_ERROR, SYM_ERROR_COND));

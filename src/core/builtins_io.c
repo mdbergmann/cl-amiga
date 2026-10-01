@@ -3026,7 +3026,7 @@ static CL_Obj bi_disassemble(CL_Obj *args, int n)
             if (sv != CL_UNBOUND && !CL_NULL_P(sv))
                 arg = sv;
             else
-                cl_error(CL_ERR_UNDEFINED, "DISASSEMBLE: no function binding");
+                cl_error_cell(CL_ERR_UNDEFINED, arg, "DISASSEMBLE: no function binding");
         }
     }
 

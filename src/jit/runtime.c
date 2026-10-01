@@ -199,7 +199,7 @@ CL_Obj cl_jit_runtime_fload(CL_Obj sym)
     fval = cl_symbol_value(sym);
     if (fval != CL_UNBOUND) return fval;
 
-    cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
+    cl_error_cell(CL_ERR_UNDEFINED, sym, "Undefined function: %s",
              cl_symbol_name(sym));
     return CL_NIL;   /* unreachable; cl_error longjmps */
 }
@@ -213,7 +213,7 @@ CL_Obj cl_jit_runtime_gload(CL_Obj sym)
 {
     CL_Obj val = cl_symbol_value(sym);
     if (val == CL_UNBOUND)
-        cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
+        cl_error_cell(CL_ERR_UNBOUND, sym, "Unbound variable: %s",
                  cl_symbol_name(sym));
     return val;
 }
@@ -647,8 +647,9 @@ CL_Obj cl_jit_runtime_apply(CL_Obj func, CL_Obj arglist)
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
         CL_Obj fval = s->function;
         if (CL_NULL_P(fval) || fval == CL_UNBOUND)
-            cl_error(CL_ERR_TYPE,
-                     "APPLY: symbol has no function binding");
+            cl_error_cell(CL_ERR_UNDEFINED, func,
+                          "APPLY: undefined function: %s",
+                          cl_symbol_name(func));
         func = fval;
     }
 

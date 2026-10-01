@@ -2693,7 +2693,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             val = VM_GLOBAL_VALUE(sym);
             if (val == CL_UNBOUND) {
                 frame->ip = ip;
-                cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
+                cl_error_cell(CL_ERR_UNBOUND, sym, "Unbound variable: %s",
                          cl_symbol_name(sym));
             }
             cl_mv_count = 1;              /* OP_GLOAD's write */
@@ -2710,7 +2710,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             val = VM_GLOBAL_VALUE(sym);
             if (val == CL_UNBOUND) {
                 frame->ip = ip;
-                cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
+                cl_error_cell(CL_ERR_UNBOUND, sym, "Unbound variable: %s",
                          cl_symbol_name(sym));
             }
             a = cl_vm_pop();
@@ -2727,7 +2727,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             val = VM_GLOBAL_VALUE(sym);
             if (val == CL_UNBOUND) {
                 frame->ip = ip;
-                cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
+                cl_error_cell(CL_ERR_UNBOUND, sym, "Unbound variable: %s",
                          cl_symbol_name(sym));
             }
             cl_vm_push(val);              /* the callee establishes the MV state */
@@ -2749,7 +2749,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj val = VM_GLOBAL_VALUE(sym);
             if (val == CL_UNBOUND) {
                 frame->ip = ip;   /* the backtrace names this line */
-                cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
+                cl_error_cell(CL_ERR_UNBOUND, sym, "Unbound variable: %s",
                          cl_symbol_name(sym));
             }
             cl_vm_push(val);
@@ -2839,7 +2839,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 /* Fall back to value slot (for labels/flet value bindings) */
                 cl_vm_push(cl_symbol_value_on(thr, sym));
             } else {
-                cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
+                cl_error_cell(CL_ERR_UNDEFINED, sym, "Undefined function: %s",
                          cl_symbol_name(sym));
             }
             cl_mv_count = 1;
@@ -3139,8 +3139,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func_obj);
                 func_obj = s->function;
                 if (CL_NULL_P(func_obj) || func_obj == CL_UNBOUND)
-                    cl_error(CL_ERR_TYPE, "Not a function: symbol %s",
-                             cl_symbol_name(arg_base[-1]));
+                    cl_error_cell(CL_ERR_UNDEFINED, arg_base[-1],
+                                  "Undefined function: %s",
+                                  cl_symbol_name(arg_base[-1]));
                 arg_base[-1] = func_obj;
             }
             goto do_call;
@@ -3199,7 +3200,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 func_obj = cl_symbol_value_on(thr, sym);
                 if (func_obj == CL_UNBOUND) {
                     frame->ip = ip;   /* the backtrace names this line */
-                    cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
+                    cl_error_cell(CL_ERR_UNDEFINED, sym, "Undefined function: %s",
                              cl_symbol_name(sym));
                 }
             }
@@ -4537,9 +4538,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             /* Resolve symbol to its function binding */
             if (CL_SYMBOL_P(apply_func)) {
                 CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(apply_func);
+                CL_Obj apply_sym = apply_func;
                 apply_func = s->function;
                 if (CL_NULL_P(apply_func) || apply_func == CL_UNBOUND)
-                    cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
+                    cl_error_cell(CL_ERR_UNDEFINED, apply_sym,
+                                  "APPLY: undefined function: %s",
+                                  cl_symbol_name(apply_sym));
             }
 
             /* Reader-GF fast path — same probe as OP_CALL's, before the

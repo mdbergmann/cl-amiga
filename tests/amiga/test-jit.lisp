@@ -2434,6 +2434,27 @@
 (defun jds-r () 5)
 (check "jit-site-redef-after-fmakunbound" '(5 5) (list (jds-r-caller) (jds-r-caller)))
 
+;; CLHS CELL-ERROR: the JIT's own raise paths (FLOAD / GLOAD helpers, the
+;; APPLY trampoline) name the cell; the report text is unchanged.
+(defun jcen-call () (jcen-no-such-fn 1))
+(defun jcen-gload () jcen-unbound-var)
+(defun jcen-apply (s) (apply s '(1 2)))
+(check "jit-cell-error-callers-native" '(t t t)
+  (list (and (clamiga::%jit-dump-bytes #'jcen-call) t)
+        (and (clamiga::%jit-dump-bytes #'jcen-gload) t)
+        (and (clamiga::%jit-dump-bytes #'jcen-apply) t)))
+(check "jit-cell-error-name-undefined-function"
+  '(jcen-no-such-fn "Undefined function: JCEN-NO-SUCH-FN")
+  (handler-case (jcen-call)
+    (undefined-function (c) (list (cell-error-name c) (princ-to-string c)))))
+(check "jit-cell-error-name-unbound-variable"
+  '(jcen-unbound-var "Unbound variable: JCEN-UNBOUND-VAR")
+  (handler-case (jcen-gload)
+    (unbound-variable (c) (list (cell-error-name c) (princ-to-string c)))))
+(check "jit-cell-error-name-apply-symbol" 'jcen-no-such-fn-2
+  (handler-case (jcen-apply 'jcen-no-such-fn-2)
+    (undefined-function (c) (cell-error-name c))))
+
 ;; A redefinition with another arity at a filled site: the call no longer
 ;; fits, so it misses and keeps OP_CALL's diagnostic.
 (defun jds-ar (a) a)

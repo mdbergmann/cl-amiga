@@ -6234,6 +6234,38 @@ ff_line=$(echo "$out" | grep -F 'FF:')
 check_contains "fixed format: ~F/~$/~R survive compaction" "FF-OK" \
     "$( [ "$ff_line" = 'FF:[****3.30|    003.30|     3.3][***-3.30|-   003.30|    -3.3][****0.33|    000.33|.3333333][      AB|        AB|      AB][(NIL NIL)| (NIL NIL)|(NIL NIL)]00002.55' ] && echo FF-OK || echo "$ff_line")"
 
+# --- Case: runtime CELL-ERROR names ----------------------------------------
+# cl_error_cell conses the :name slot onto a condition it just allocated;
+# the name and the condition must survive the compaction each cons forces,
+# and so must a fresh uninterned name nothing else holds.
+cat > "$WORK/cellerr.lisp" <<'EOF'
+(defun ce-name (thunk)
+  (handler-case (funcall thunk)
+    (cell-error (c) (list (type-of c) (cell-error-name c) (princ-to-string c)))))
+(format t "CE-CALL:~S~%" (ce-name (lambda () (ce-no-such-fn 1))))
+(format t "CE-VAR:~S~%" (ce-name (lambda () ce-unbound-var)))
+(format t "CE-FUNCALL:~S~%" (ce-name (lambda () (funcall 'ce-no-such-fn-2))))
+(format t "CE-APPLY:~S~%" (ce-name (lambda () (apply 'ce-no-such-fn-3 '(1)))))
+(let ((g (make-symbol "CE-FRESH")) (n 0))
+  (dotimes (i 20)
+    (make-list 3)
+    (when (eq (cell-error-name
+               (handler-case (funcall g) (undefined-function (c) c)))
+              g)
+      (incf n)))
+  (format t "CE-FRESH:~S~%" n))
+EOF
+out=$(run_stress "$WORK/cellerr.lisp")
+check_contains "cell-error name: undefined call" \
+  'CE-CALL:(UNDEFINED-FUNCTION CE-NO-SUCH-FN "Undefined function: CE-NO-SUCH-FN")' "$out"
+check_contains "cell-error name: unbound variable" \
+  'CE-VAR:(UNBOUND-VARIABLE CE-UNBOUND-VAR "Unbound variable: CE-UNBOUND-VAR")' "$out"
+check_contains "cell-error name: funcall of a symbol" \
+  'CE-FUNCALL:(UNDEFINED-FUNCTION CE-NO-SUCH-FN-2 ' "$out"
+check_contains "cell-error name: apply of a symbol" \
+  'CE-APPLY:(UNDEFINED-FUNCTION CE-NO-SUCH-FN-3 ' "$out"
+check_contains "cell-error name: uninterned name survives compaction" "CE-FRESH:20" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

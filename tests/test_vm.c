@@ -1867,6 +1867,79 @@ TEST(eval_undefined_setf_function_name_in_report)
         "(T (SETF NO-SUCH-SETF-ACCESSOR-XYZ))");
 }
 
+/* CLHS CELL-ERROR: every runtime UNDEFINED-FUNCTION / UNBOUND-VARIABLE
+ * carries the name.  The VM's own raise sites (OP_CALL_GLOBAL, OP_FLOAD,
+ * OP_GLOAD, FUNCALL / APPLY of a symbol) used plain cl_error and left
+ * CELL-ERROR-NAME NIL; FUNCALL of an fbound-less symbol was even a
+ * TYPE-ERROR.  The report text is unchanged. */
+TEST(eval_runtime_cell_error_name)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (cen-no-such-fn-a 1)"
+        "  (undefined-function (c) (list (cell-error-name c) (princ-to-string c))))"),
+        "(CEN-NO-SUCH-FN-A \"Undefined function: CEN-NO-SUCH-FN-A\")");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall (lambda () (cen-no-such-fn-b)))"
+        "  (undefined-function (c) (cell-error-name c)))"),
+        "CEN-NO-SUCH-FN-B");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall 'cen-no-such-fn-c 1)"
+        "  (undefined-function (c) (cell-error-name c)))"),
+        "CEN-NO-SUCH-FN-C");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s 'cen-no-such-fn-d))"
+        "  (handler-case (funcall s)"
+        "    (undefined-function (c) (cell-error-name c))))"),
+        "CEN-NO-SUCH-FN-D");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (apply 'cen-no-such-fn-e '(1 2))"
+        "  (undefined-function (c) (cell-error-name c)))"),
+        "CEN-NO-SUCH-FN-E");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s 'cen-no-such-fn-f))"
+        "  (handler-case (apply s 1 '(2))"
+        "    (undefined-function (c) (cell-error-name c))))"),
+        "CEN-NO-SUCH-FN-F");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (mapcar 'cen-no-such-fn-g '(1))"
+        "  (undefined-function (c) (cell-error-name c)))"),
+        "CEN-NO-SUCH-FN-G");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (function cen-no-such-fn-h)"
+        "  (undefined-function (c) (cell-error-name c)))"),
+        "CEN-NO-SUCH-FN-H");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (typep 1 '(satisfies cen-no-such-pred))"
+        "  (undefined-function (c) (cell-error-name c)))"),
+        "CEN-NO-SUCH-PRED");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case cen-unbound-var-a"
+        "  (unbound-variable (c) (list (cell-error-name c) (princ-to-string c))))"),
+        "(CEN-UNBOUND-VAR-A \"Unbound variable: CEN-UNBOUND-VAR-A\")");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall (lambda () (if cen-unbound-var-b 1 2)))"
+        "  (unbound-variable (c) (cell-error-name c)))"),
+        "CEN-UNBOUND-VAR-B");
+    /* CLHS: both are CELL-ERRORs (the C hierarchy; the CLOS classes are
+     * checked in tests/amiga/run-tests.lisp, test_vm runs without CLOS) */
+    ASSERT_STR_EQ(eval_print(
+        "(list (subtypep 'undefined-function 'cell-error)"
+        "      (subtypep 'unbound-variable 'cell-error)"
+        "      (typep (make-condition 'undefined-function :name 'x) 'cell-error))"),
+        "(T T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(list (handler-case (cen-no-such-fn-j) (cell-error (c) (cell-error-name c)))"
+        "      (handler-case cen-unbound-var-c (cell-error (c) (cell-error-name c)))"
+        "      (handler-case (symbol-function 'cen-no-such-fn-k)"
+        "        (cell-error (c) (cell-error-name c))))"),
+        "(CEN-NO-SUCH-FN-J CEN-UNBOUND-VAR-C CEN-NO-SUCH-FN-K)");
+    /* the TYPE-ERROR handler no longer sees FUNCALL of an unbound symbol */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall 'cen-no-such-fn-i)"
+        "  (type-error () :type) (undefined-function () :undef))"),
+        ":UNDEF");
+}
+
 TEST(eval_file_error_pathname_accessor)
 {
     ASSERT_STR_EQ(eval_print(
@@ -11752,6 +11825,7 @@ int main(void)
     RUN(eval_package_error_package_accessor);
     RUN(eval_cell_error_name_accessor);
     RUN(eval_undefined_setf_function_name_in_report);
+    RUN(eval_runtime_cell_error_name);
     RUN(eval_file_error_pathname_accessor);
     RUN(eval_define_compiler_macro);
     RUN(eval_setf_values);

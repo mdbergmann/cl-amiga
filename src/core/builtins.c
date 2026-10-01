@@ -227,7 +227,7 @@ CL_Obj cl_coerce_funcdesig(CL_Obj obj, const char *context)
                 fn = cl_unwrap_funcallable(fn);
             return fn;
         }
-        cl_error(CL_ERR_UNDEFINED, "Undefined function: %s", cl_symbol_name(obj));
+        cl_error_cell(CL_ERR_UNDEFINED, obj, "Undefined function: %s", cl_symbol_name(obj));
     }
     {
         char val[96];
@@ -1144,7 +1144,8 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
         func = s->function;
         if (CL_NULL_P(func) || func == CL_UNBOUND) {
             cl_vm.sp = saved_sp;
-            cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
+            cl_error_cell(CL_ERR_UNDEFINED, args[0],
+                          "APPLY: undefined function: %s", cl_symbol_name(args[0]));
         }
     }
     /* Reader-GF fast path — same probe as bi_funcall's, before the unwrap
@@ -1198,7 +1199,8 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
         func = s->function;
         if (CL_NULL_P(func) || func == CL_UNBOUND)
-            cl_error(CL_ERR_TYPE, "FUNCALL: symbol has no function binding");
+            cl_error_cell(CL_ERR_UNDEFINED, args[0],
+                          "FUNCALL: undefined function: %s", cl_symbol_name(args[0]));
     }
     /* Reader-GF fast path: probe before the unwrap below discards the GF
      * identity cl_vm_apply's own probe would need.  (funcall #'reader x)

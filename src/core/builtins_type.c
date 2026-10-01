@@ -749,7 +749,7 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             if (CL_NULL_P(pred_fn) || pred_fn == CL_UNBOUND) {
                 pred_fn = cl_symbol_value(pred_name);
                 if (CL_NULL_P(pred_fn) || pred_fn == CL_UNBOUND)
-                    cl_error(CL_ERR_UNDEFINED, "TYPEP: undefined predicate %s",
+                    cl_error_cell(CL_ERR_UNDEFINED, pred_name, "TYPEP: undefined predicate %s",
                              cl_symbol_name(pred_name));
             }
             result = cl_vm_apply(pred_fn, &obj, 1);

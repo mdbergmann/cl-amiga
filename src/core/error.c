@@ -341,6 +341,8 @@ CL_NORETURN static void cl_error_unwind(int code)
     cl_error_frame_longjmp(code);
 }
 
+static CL_NORETURN void error_raise(int code, CL_Obj cell_name);
+
 void cl_error(int code, const char *fmt, ...)
 {
     va_list ap;
@@ -350,6 +352,27 @@ void cl_error(int code, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(cl_error_msg, sizeof(cl_error_msg), fmt, ap);
     va_end(ap);
+
+    error_raise(code, CL_UNBOUND);
+}
+
+void cl_error_cell(int code, CL_Obj name, const char *fmt, ...)
+{
+    va_list ap;
+
+    cl_error_code = code;
+
+    va_start(ap, fmt);
+    vsnprintf(cl_error_msg, sizeof(cl_error_msg), fmt, ap);
+    va_end(ap);
+
+    error_raise(code, name);
+}
+
+/* cl_error's body after the message is formatted.  CELL_NAME is
+ * CL_UNBOUND for a plain error, else the CELL-ERROR's :name. */
+static void error_raise(int code, CL_Obj cell_name)
+{
 
     /* Macroexpansion error context is snapshot in cl_capture_backtrace —
      * the bottleneck every raise path (cl_error, cl_raise_condition, the
@@ -391,11 +414,19 @@ void cl_error(int code, const char *fmt, ...)
 
     /* Signal through condition handler stack before unwinding */
     {
-        CL_Obj cond = cl_create_condition_from_error(code, cl_error_msg);
-        /* Rooted across the handlers and the debugger, which allocate
-         * freely (bi_error's discipline); the unwind below restores the
-         * root count, so no explicit pop. */
+        CL_Obj cond;
+        /* cell_name, cond: rooted across the allocations, the handlers
+         * and the debugger, which allocate freely (bi_error's
+         * discipline); the unwind below restores the root count, so no
+         * explicit pop. */
+        CL_GC_PROTECT(cell_name);
+        cond = cl_create_condition_from_error(code, cl_error_msg);
         CL_GC_PROTECT(cond);
+        if (cell_name != CL_UNBOUND && CL_CONDITION_P(cond)) {
+            CL_Obj pair = cl_cons(KW_NAME, cell_name);
+            pair = cl_cons(pair, ((CL_Condition *)CL_OBJ_TO_PTR(cond))->slots);
+            ((CL_Condition *)CL_OBJ_TO_PTR(cond))->slots = pair;
+        }
         cl_signal_condition(cond);
         /* Invoke debugger before unwinding (returns if user picks "top level") */
         cl_invoke_debugger(cond);

@@ -415,10 +415,6 @@ directly instead of attempting a symbol lookup."
   (list (find-class 'error)))
 (%make-bootstrap-class 'program-error
   (list (find-class 'error)))
-(%make-bootstrap-class 'undefined-function
-  (list (find-class 'error)))
-(%make-bootstrap-class 'unbound-variable
-  (list (find-class 'error)))
 (%make-bootstrap-class 'simple-error
   (list (find-class 'error) (find-class 'simple-condition)))
 (%make-bootstrap-class 'simple-warning
@@ -430,6 +426,11 @@ directly instead of attempting a symbol lookup."
 (%make-bootstrap-class 'cell-error
   (list (find-class 'error)))
 (%make-bootstrap-class 'unbound-slot
+  (list (find-class 'cell-error)))
+;; CLHS: UNDEFINED-FUNCTION and UNBOUND-VARIABLE are CELL-ERRORs too
+(%make-bootstrap-class 'undefined-function
+  (list (find-class 'cell-error)))
+(%make-bootstrap-class 'unbound-variable
   (list (find-class 'cell-error)))
 (%make-bootstrap-class 'stream-error
   (list (find-class 'error)))
