@@ -2304,6 +2304,44 @@
   (list (abi-rot-funcall 0 1 'b "c" #\d) (abi-rot-funcall 1 1 'b "c" #\d)
         (abi-rot-funcall 1003 1 'b "c" #\d)))
 
+;; --- The native entry trampoline and the C-stack floor
+;; (specs/jit-direct-calls.md phase 2).  cl_jit_invoke enters native code
+;; through cl_jit_enter (src/jit/jit_enter_m68k.s), which loads A3 with the
+;; CL_Thread and pushes the arguments; the jit-abi-* checks above go
+;; through it for every positional arity, the walker-key-* checks for the
+;; keyword ABI.  The outermost entry computes CL_Thread.jit_c_floor once:
+;; %JIT-C-FLOOR returns (FLOOR SP) from inside native code, NIL outside.
+(defun jef-floor () (clamiga::%jit-c-floor))
+(defun jef-deep (n)
+  (if (= n 0) (jef-floor) (car (list (jef-deep (- n 1))))))
+(defun jef-error (n) (if (= n 0) (error "jef") (car (list (jef-error (- n 1))))))
+;; Interpreted (&optional keeps the walker off it): calls the builtin with
+;; no native frame on the stack.
+(defun jef-vm-floor (&optional x) (declare (ignore x)) (clamiga::%jit-c-floor))
+(check "jit-enter-all-native" t
+  (every (lambda (f) (not (null (clamiga::%jit-dump-bytes f))))
+         (list #'jef-floor #'jef-deep #'jef-error)))
+(check "jit-enter-floor-outside-native" nil (jef-vm-floor))
+(let ((r (jef-floor)))
+  (check "jit-enter-floor-shape" t
+    (and (consp r) (integerp (first r)) (integerp (second r)) t))
+  ;; The floor lies below the native frame, by less than any Amiga stack
+  ;; (the test runner's is 128K..800K) minus the 16K margin.
+  (check "jit-enter-floor-below-sp" t
+    (and (< 0 (first r) (second r))
+         (< (- (second r) (first r)) (* 4 1024 1024))))
+  ;; Computed once, at the outermost entry: fifty nested native frames
+  ;; deeper the floor is the same and the stack pointer lower.
+  (let ((d (jef-deep 50)))
+    (check "jit-enter-floor-same-when-nested" (first r) (first d))
+    (check "jit-enter-floor-sp-deeper" t (< (second d) (second r))))
+  ;; An error unwinding out of native code leaves no stale floor behind:
+  ;; the next outermost entry finds the same one.
+  (check "jit-enter-error-unwinds" :caught
+    (handler-case (jef-error 20) (error () :caught)))
+  (check "jit-enter-floor-after-unwind" (first r) (first (jef-floor))))
+(check "jit-enter-floor-outside-after-unwind" nil (jef-vm-floor))
+
 ; --- String-scan fast path (opcodes.h 0xC0-0xC4, specs/performance.md 4.4).
 ; Five opcodes, each with a walker template: AREF (helper call with the
 ; accessor kind), CHAREQ (inline character-tag test + CMP.L, helper for

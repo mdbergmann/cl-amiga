@@ -1,6 +1,6 @@
 # Direct native-to-native calls (m68k JIT)
 
-Status: **proposed** (2026-10-01).  Follows the open lever in
+Status: **in progress** (2026-10-01): phases 1 and 2 done.  Follows the open lever in
 `specs/native-backend.md` §"Status (2026-09-16, direct call dispatch from
 JIT'd code)": *direct JSR to a native callee from the call site (no helper
 at all)*.  The idea is borrowed from Evergreen CL's T1 baseline JIT
@@ -214,6 +214,12 @@ this.  `FindTask` per call is what we are removing, so:
   - saves A3 and loads `thread`;
   - pushes `argv[0..n-1]` in operand-stack order, then `func`;
   - `jsr (entry)`, pops, restores A3, and returns D0.
+
+  The keyword ABI enters through it as well, with argv = `{args, nargs,
+  bc}`, so A3 is valid in every native function, keyword or not.
+  `cl_jit_restore_depth` clears the floor with `jit_stack_top` when an
+  unwind leaves native code entirely.  `(clamiga::%jit-c-floor)` returns
+  `(floor sp)` from inside native code (NIL outside), for the tests.
 
   The precedents are `stack_swap_m68k.s` and `cpu_store_probe_m68k.s`.  A
   side effect: the `CL_JIT_PASSTHROUGH_MAX_ARITY` cap (6) no longer comes

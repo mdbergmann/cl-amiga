@@ -70,6 +70,14 @@ uint32_t cl_jit_native_bytes(void);
  * Not wired into vm.c in the skeleton. */
 CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs);
 
+/* src/jit/jit_enter_m68k.s: call native `entry` with A3 = `thread`,
+ * argv[0..nargs-1] pushed in that order (argv[0] highest, i.e. the
+ * operand-stack order of a native call site), then `func`.  Only
+ * cl_jit_invoke calls it.  See specs/jit-direct-calls.md §4. */
+struct CL_Thread_s;
+CL_Obj cl_jit_enter(void *entry, struct CL_Thread_s *thread, CL_Obj func,
+                    const CL_Obj *argv, int32_t nargs);
+
 /* Runtime introspection: is the JIT compiled in and active? */
 int    cl_jit_enabled(void);
 

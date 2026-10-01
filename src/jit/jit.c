@@ -250,8 +250,9 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
  * "reset mv, load arg, return".  Strict on metadata so optional/&key/
  * &rest variants don't sneak through.
  *
- * Capped at the arity that `cl_jit_invoke` knows how to dispatch
- * (`CL_JIT_PASSTHROUGH_MAX_ARITY` — bump in lockstep with the switch).
+ * Capped at `CL_JIT_PASSTHROUGH_MAX_ARITY`, the positional arity
+ * cl_jit_invoke accepts (cl_jit_enter itself takes any count; lifting
+ * the cap is specs/jit-direct-calls.md §"Later").
  *
  * Returns 1 and stores the source slot j in *slot_out on match. */
 #define CL_JIT_PASSTHROUGH_MAX_ARITY 6
@@ -599,7 +600,7 @@ static void cache_push_obj(CodeBuf *cb, int *head, int *depth,
  * Stack frame, after `link a6,#-N` and the cache-reg save:
  *
  *   8(a6)            func_obj (closure or raw bytecode CL_Obj) —
- *                    pushed as the first C-ABI arg by cl_jit_invoke
+ *                    pushed last by cl_jit_enter (or a native caller)
  *                    so OP_UPVAL / OP_CELL_SET_UPVAL can dereference
  *                    cl->upvalues[index]
  *  12(a6) + 4*(arity-1-i)
@@ -615,6 +616,13 @@ static void cache_push_obj(CodeBuf *cb, int *head, int *depth,
  *   (a7)             operand-stack TOS (uncached portion), grows downward
  *   D7 / D6 / D5     top 1–3 elements when cache_depth > 0 (see §"Three-
  *                    slot stack cache" earlier in this file)
+ *
+ * Registers: D0/D1/A0/A1 scratch, D5-D7 the stack cache, A6 the frame,
+ * A7 the operand stack.  A3 = the current CL_Thread *, loaded by
+ * cl_jit_enter (jit_enter_m68k.s) and callee-saved through every helper
+ * and OS call; native call sites read CL_Thread.jit_c_floor through it
+ * (specs/jit-direct-calls.md §4).  NEVER allocate or clobber A3 in a
+ * template or a hand-written helper.  A2/A4/A5 are unused.
  *
  * For bytecode slot s, slot_disp() picks the right displacement.
  *
@@ -1404,11 +1412,10 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     }
 
     arity = (uint16_t)(bc->arity & 0x7FFF);
-    /* The positional ABI is dispatched by a switch on arity in
-     * cl_jit_invoke (cases 0..CL_JIT_PASSTHROUGH_MAX_ARITY).  The
-     * kw-ABI is dispatched as three fixed C args (bc, nargs, args),
-     * so it isn't constrained by that switch — arity bounded only
-     * by frame-size headroom below. */
+    /* cl_jit_invoke accepts positional arities
+     * 0..CL_JIT_PASSTHROUGH_MAX_ARITY.  The kw-ABI is entered with
+     * three fixed words (bc, nargs, args), so it isn't constrained by
+     * that cap — arity bounded only by frame-size headroom below. */
     if (!is_kw && arity > CL_JIT_PASSTHROUGH_MAX_ARITY) return 0;
 
     n_locals = bc->n_locals;
@@ -4328,10 +4335,9 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
  *   native_code for bytecodes whose arity is fixed (matchers and the
  *   walker's non-kw gate both refuse &optional/&key/&rest), and
  *   OP_CALL has already verified nargs == bc->arity, so the
- *   per-arity cast is sound.  Args are read straight off
- *   `cl_vm.stack[sp - nargs ... sp - 1]` and passed REVERSED, with
- *   `func` prepended: native(func, a[n-1], …, a[0]).  That puts them
- *   in operand-stack order on the m68k stack — the last argument at
+ *   call is sound.  cl_jit_enter (jit_enter_m68k.s) pushes
+ *   `cl_vm.stack[sp - nargs ... sp - 1]` first to last, then `func`:
+ *   operand-stack order on the m68k stack — the last argument at
  *   `8(sp)` after the JSR, the first one highest — which is the order
  *   a native caller's operand stack already holds them in (walker
  *   reads them via slot_disp's A6-relative offsets after LINK).
@@ -4355,14 +4361,14 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
  *
  * m68k SysV ABI: D0 holds the return value on RTS; callee preserves
  * D2..D7 and A2..A6.  The current templates clobber only D0/D1/A0/A1
- * (caller-saved), so no register save/restore is needed on either
- * side.
+ * (caller-saved).  cl_jit_enter loads A3 = this thread's CL_Thread for
+ * the native code and restores the caller's A3 on return.
  *
- * Unknown arities in the positional switch fall back to CL_NIL —
- * that shouldn't happen because cl_jit_compile gatekeeps which
- * shapes get native_code, but keep the defensive branch so a future
- * matcher mismatch surfaces as a wrong value rather than a wild
- * jump. */
+ * A positional arity above CL_JIT_PASSTHROUGH_MAX_ARITY returns CL_NIL
+ * without calling — that shouldn't happen because cl_jit_compile
+ * gatekeeps which shapes get native_code, but keep the defensive branch
+ * so a future matcher mismatch surfaces as a wrong value rather than a
+ * wild jump. */
 CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
 {
     CL_Obj result = CL_NIL;
@@ -4393,8 +4399,16 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     prev_nargs = t->jit_current_nargs;
     if (prev_depth == 0) {
         extern volatile int cl_jit_active_threads;
+        long headroom;
         t->jit_stack_top = CL_CAPTURE_SP();
         cl_jit_active_threads++;
+        /* The C-stack floor native code compares A7 against (through A3)
+         * before a direct call: once per outermost entry, so the per-call
+         * FindTask of cl_check_c_stack is gone.  The 16K margin is
+         * cl_check_c_stack's.  Headroom unknown -> NULL, never fires. */
+        headroom = platform_stack_headroom();
+        t->jit_c_floor = (headroom >= 0)
+            ? (char *)t->jit_stack_top - headroom + 16384 : NULL;
     }
     t->jit_depth = prev_depth + 1;
     t->jit_current_nargs = (int32_t)nargs;
@@ -4424,76 +4438,26 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     }
 
     if (is_kw) {
-        /* Kw ABI: native(func, bc, nargs, args).  args may be NULL when
-         * the caller passed zero arguments — the helper checks
-         * nargs == 0 before any deref. */
-        typedef CL_Obj (*native_fn_kw_t)(CL_Obj, CL_Bytecode *, int32_t, CL_Obj *);
-        CL_Obj *args = (nargs > 0) ? &cl_vm.stack[cl_vm.sp - nargs] : NULL;
-        result = ((native_fn_kw_t)bc->native_code)(func_obj, bc, (int32_t)nargs, args);
+        /* Kw ABI: native(func, bc, nargs, args), C order.  args may be
+         * NULL when the caller passed zero arguments -- the helper checks
+         * nargs == 0 before any deref.  cl_jit_enter pushes argv[0]
+         * first (highest address), so the three words go in reversed. */
+        CL_Obj kw[3];
+        kw[0] = (CL_Obj)(uintptr_t)((nargs > 0) ? &cl_vm.stack[cl_vm.sp - nargs] : NULL);
+        kw[1] = (CL_Obj)(int32_t)nargs;
+        kw[2] = (CL_Obj)(uintptr_t)bc;
+        result = cl_jit_enter(bc->native_code, t, func_obj, kw, 3);
         goto done;
     }
 
-    switch (nargs) {
-    case 0: {
-        typedef CL_Obj (*native_fn0_t)(CL_Obj);
-        result = ((native_fn0_t)bc->native_code)(func_obj);
-        break;
-    }
-    case 1: {
-        typedef CL_Obj (*native_fn1_t)(CL_Obj, CL_Obj);
-        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn1_t)bc->native_code)(func_obj, a0);
-        break;
-    }
-    case 2: {
-        typedef CL_Obj (*native_fn2_t)(CL_Obj, CL_Obj, CL_Obj);
-        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 2];
-        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn2_t)bc->native_code)(func_obj, a1, a0);
-        break;
-    }
-    case 3: {
-        typedef CL_Obj (*native_fn3_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj);
-        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 3];
-        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 2];
-        CL_Obj a2 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn3_t)bc->native_code)(func_obj, a2, a1, a0);
-        break;
-    }
-    case 4: {
-        typedef CL_Obj (*native_fn4_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
-        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 4];
-        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 3];
-        CL_Obj a2 = cl_vm.stack[cl_vm.sp - 2];
-        CL_Obj a3 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn4_t)bc->native_code)(func_obj, a3, a2, a1, a0);
-        break;
-    }
-    case 5: {
-        typedef CL_Obj (*native_fn5_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
-        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 5];
-        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 4];
-        CL_Obj a2 = cl_vm.stack[cl_vm.sp - 3];
-        CL_Obj a3 = cl_vm.stack[cl_vm.sp - 2];
-        CL_Obj a4 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn5_t)bc->native_code)(func_obj, a4, a3, a2, a1, a0);
-        break;
-    }
-    case 6: {
-        typedef CL_Obj (*native_fn6_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
-        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 6];
-        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 5];
-        CL_Obj a2 = cl_vm.stack[cl_vm.sp - 4];
-        CL_Obj a3 = cl_vm.stack[cl_vm.sp - 3];
-        CL_Obj a4 = cl_vm.stack[cl_vm.sp - 2];
-        CL_Obj a5 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn6_t)bc->native_code)(func_obj, a5, a4, a3, a2, a1, a0);
-        break;
-    }
-    default:
-        result = CL_NIL;
-        break;
-    }
+    /* Positional ABI: the arguments are cl_vm.stack[sp-nargs .. sp-1] in
+     * natural order; cl_jit_enter lays them out in operand-stack order
+     * (parameter i at 12+4*(nargs-1-i)(a6)).  The walker keeps positional
+     * arity <= CL_JIT_PASSTHROUGH_MAX_ARITY; the guard keeps a matcher
+     * mismatch a wrong value rather than a wild call. */
+    if (nargs >= 0 && nargs <= CL_JIT_PASSTHROUGH_MAX_ARITY)
+        result = cl_jit_enter(bc->native_code, t, func_obj,
+                              &cl_vm.stack[cl_vm.sp - nargs], (int32_t)nargs);
 
 done:
     if (pushed_frame) cl_vm.fp--;

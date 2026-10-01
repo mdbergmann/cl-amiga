@@ -309,6 +309,15 @@ typedef struct CL_Thread_s {
      * See specs/native-backend.md §"GC interaction" — option A. */
     int    jit_depth;
     void  *jit_stack_top;
+    /* Lowest SP native code may run at before a call must take the C
+     * helper path (which signals "C stack nearly exhausted"): the outermost
+     * cl_jit_invoke sets it to SP - platform_stack_headroom() + 16K, the
+     * margin cl_check_c_stack keeps.  NULL = headroom unknown, the compare
+     * never fires.  Read by native code through A3 (= this CL_Thread, set
+     * by cl_jit_enter), so it costs no FindTask per call.  Like
+     * jit_stack_top it is only meaningful while jit_depth > 0.  See
+     * specs/jit-direct-calls.md §4. */
+    char  *jit_c_floor;
     /* Captured C stack pointer at the moment this thread PARKED for a
      * stop-the-world GC (safepoint or safe-region entry).  A peer thread that
      * initiates a compaction cannot use its own SP as the lower bound when

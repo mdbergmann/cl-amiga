@@ -162,11 +162,12 @@ JIT_SRC      = $(SRCDIR)/jit/codebuf.c \
                $(SRCDIR)/jit/codegen_m68k.c \
                $(SRCDIR)/jit/asm_m68k.c \
                $(SRCDIR)/jit/runtime.c
+JIT_ASM      = $(SRCDIR)/jit/jit_enter_m68k.s
 MAIN_SRC     = $(SRCDIR)/main.c
 
 ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS)) \
-           $(patsubst $(SRCDIR)/%.s,$(BUILDDIR)/%.o,$(PLATFORM_ASM))
+           $(patsubst $(SRCDIR)/%.s,$(BUILDDIR)/%.o,$(PLATFORM_ASM) $(JIT_ASM))
 
 .PHONY: amiga test-amiga test-amiga-lowend examples-amiga image-amiga editor-image-amiga clean check-toolchain probes
 

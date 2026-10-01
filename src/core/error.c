@@ -31,7 +31,10 @@ void cl_jit_restore_depth(int new_depth)
     if (cur > 0 && new_depth == 0) cl_jit_active_threads--;
     else if (cur == 0 && new_depth > 0) cl_jit_active_threads++;
     CT->jit_depth = new_depth;
-    if (new_depth == 0) CT->jit_stack_top = NULL;
+    if (new_depth == 0) {
+        CT->jit_stack_top = NULL;
+        CT->jit_c_floor   = NULL;
+    }
 }
 
 int cl_error_frame_push(void)

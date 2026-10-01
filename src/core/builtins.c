@@ -1432,6 +1432,27 @@ static CL_Obj bi_jit_invoke_count(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)cl_jit_invoke_count_get());
 }
 
+/* (%JIT-C-FLOOR) -- (FLOOR SP) while called from inside native code: the
+ * C-stack floor the outermost cl_jit_invoke computed for native call sites
+ * (CL_Thread.jit_c_floor, specs/jit-direct-calls.md §4) and this builtin's
+ * own stack address, both as integers.  NIL outside native code, on host
+ * (no JIT) and when the platform cannot measure the stack. */
+static CL_Obj bi_jit_c_floor(CL_Obj *args, int n)
+{
+    volatile char probe;
+    CL_Obj floor_obj, sp_obj, result;
+    CL_UNUSED(args); CL_UNUSED(n);
+    if (CT->jit_depth <= 0 || CT->jit_c_floor == NULL) return CL_NIL;
+    floor_obj = cl_bignum_from_uint32((uint32_t)(uintptr_t)CT->jit_c_floor);
+    CL_GC_PROTECT(floor_obj);
+    sp_obj = cl_bignum_from_uint32((uint32_t)(uintptr_t)&probe);
+    CL_GC_PROTECT(sp_obj);
+    result = cl_cons(sp_obj, CL_NIL);
+    result = cl_cons(floor_obj, result);
+    CL_GC_UNPROTECT(2);
+    return result;
+}
+
 /* (%JIT-SET-ACTIVE BOOL) — toggle whether functions defined from now on may
  * be JIT-compiled (at definition in eager mode, else once they turn hot);
  * one defined while it is off stays bytecode.  Returns the new state as
@@ -2292,6 +2313,7 @@ void cl_builtins_init(void)
     cl_register_builtin("%JIT-DUMP-BYTES",    bi_jit_dump_bytes,    1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-COMPILE-STUB",  bi_jit_compile_stub,  1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-INVOKE-COUNT",  bi_jit_invoke_count,  0, 0, cl_package_clamiga);
+    cl_register_builtin("%JIT-C-FLOOR",       bi_jit_c_floor,       0, 0, cl_package_clamiga);
     cl_register_builtin("%JIT-DISASSEMBLE",   bi_jit_disassemble,   1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-SET-ACTIVE",    bi_jit_set_active,    1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-ACTIVE-P",      bi_jit_active_p,      0, 0, cl_package_clamiga);
