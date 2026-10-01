@@ -107,9 +107,10 @@
 ;   move.l 8(a7),d0              ; 0x20 0x2F 0x00 0x08
 ;   rts                          ; 0x4E 0x75
 ; (12 bytes).  C ABI on m68k puts the first arg at 4(sp) after JSR;
-; cl_jit_invoke prepends `func_obj` as the first C arg (so OP_UPVAL
-; can reach the active closure's upvalues) which shifts the user's
-; first arg to 8(sp).  The returned CL_Obj is whatever bit pattern
+; cl_jit_invoke pushes `func_obj` below the arguments (so OP_UPVAL
+; can reach the active closure's upvalues), and the arguments sit in
+; operand-stack order above it: the LAST one at 8(sp), argument j of n
+; at (8 + 4*(n-1-j))(sp).  The returned CL_Obj is whatever bit pattern
 ; the caller passed — fixnums, symbols, conses all round-trip
 ; without reinterpretation.
 ;
@@ -151,17 +152,17 @@
          (multiple-value-list (jit-id (values 1 2)))))
 
 ; --- 2-arg pass-through: same template as 1-arg identity (mv-reset
-; JSR + load + rts), just a different stack displacement.  With the func-obj-first ABI, user
-; arg j sits at (8 + 4*j)(a7): first arg at 8(a7), second arg at
-; 12(a7).  The behavioral test then proves cl_jit_invoke's 2-arg
-; dispatch loads both args off the VM stack and passes them in the
-; right order. ---
+; JSR + load + rts), just a different stack displacement.  The
+; arguments are in operand-stack order, so of two the second sits at
+; 8(a7) and the first at 12(a7).  The behavioral test then proves
+; cl_jit_invoke's 2-arg dispatch loads both args off the VM stack and
+; passes them in the right order. ---
 (defun jit-2arg-fst (x y) x)
 (defun jit-2arg-snd (x y) y)
 (check "jit-2arg-fst-bytes" t
-  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-2arg-fst) 8))
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-2arg-fst) 12))
 (check "jit-2arg-snd-bytes" t
-  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-2arg-snd) 12))
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-2arg-snd) 8))
 (check "jit-2arg-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
     (jit-2arg-fst 1 2)
@@ -178,10 +179,12 @@
 
 ; --- Higher arities: same matcher / template, different switch case
 ; in cl_jit_invoke.  Cover arity 3 (middle slot) and arity 6 (the cap,
-; CL_JIT_PASSTHROUGH_MAX_ARITY).  Each emits move.l (8+4*j)(a7),d0 ;
-; rts where j is the source slot (user-arg index), since the
-; func-obj-first ABI offsets every user arg by +4.  The 6-arg case
-; proves all six switch arms load args in the correct order. ---
+; CL_JIT_PASSTHROUGH_MAX_ARITY).  Each emits move.l (8+4*(n-1-j))(a7),d0
+; ; rts where j is the source slot (user-arg index) of an arity-n
+; function: operand-stack order puts the last argument at 8(a7).  The
+; middle of three stays at 12; the 6-arg case puts the first at 28 and
+; the last at 8, and proves all six switch arms load args in the
+; correct order. ---
 (defun jit-3arg-mid (x y z) y)
 (check "jit-3arg-mid-bytes" t
   (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-3arg-mid) 12))
@@ -190,9 +193,9 @@
 (defun jit-6arg-1 (a b c d e f) a)
 (defun jit-6arg-6 (a b c d e f) f)
 (check "jit-6arg-1-bytes" t
-  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-6arg-1) 8))
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-6arg-1) 28))
 (check "jit-6arg-6-bytes" t
-  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-6arg-6) 28))
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-6arg-6) 8))
 (check "jit-6arg-1-returns" 'first  (jit-6arg-1 'first 2 3 4 5 'last))
 (check "jit-6arg-6-returns" 'last   (jit-6arg-6 'first 2 3 4 5 'last))
 
@@ -352,7 +355,7 @@
 
 ; `(if x x y)` — then-branch returns the test value (so JIT'd code
 ; threads the same arg through both LOAD-and-test and the result),
-; else-branch returns y (a second parameter that lives at 12(a6)).
+; else-branch returns y (the last parameter, which lives at 12(a6)).
 (defun walker-if-x-y (x y) (if x x y))
 (check "walker-if-x-y-then-fixnum" 7   (walker-if-x-y 7 99))
 (check "walker-if-x-y-then-symbol" 'a  (walker-if-x-y 'a 'b))
@@ -2233,6 +2236,73 @@
         (let ((results (mapcar #'mp:join-thread workers)))
           (mp:join-thread compactor)
           (every #'identity results))))))
+
+;; --- Positional native ABI: argument order (specs/jit-direct-calls.md
+;; phase 1).  A positional native function finds its parameters above A6 in
+;; operand-stack order (the last argument nearest the return address), so a
+;; native caller will be able to JSR into it without re-copying them.  Every
+;; reader of a parameter slot has to agree on that order: OP_LOAD / OP_STORE,
+;; closure captures, the pass-through template, the self-tail-call argument
+;; rewrites and cl_jit_invoke's entry.  Each callee returns all of its
+;; arguments, reached from an interpreted caller (cl_jit_invoke straight from
+;; the VM), from a native caller (jit_dispatch) and by FUNCALL.  Distinct
+;; argument types make a swapped pair show.
+(defun abi-0 () (list))
+(defun abi-1 (a) (list a))
+(defun abi-2 (a b) (list a b))
+(defun abi-3 (a b c) (list a b c))
+(defun abi-4 (a b c d) (list a b c d))
+(defun abi-5 (a b c d e) (list a b c d e))
+(defun abi-6 (a b c d e f) (list a b c d e f))
+;; OP_STORE into the first and the last parameter slot.
+(defun abi-store-6 (a b c d e f)
+  (setq a (list :a a) f (list :f f))
+  (list a b c d e f))
+;; Parameters captured by a closure (OP_CLOSURE reads them via slot_disp).
+(defun abi-capture-3 (a b c) (funcall (lambda () (list c b a))))
+;; Self tail calls through OP_TAILCALL_GLOBAL and OP_TAILCALL that rotate
+;; their parameters: the rewrite into the parameter slots must land each
+;; argument where the next round's OP_LOAD reads it.
+(defun abi-rot-global (n a b c d)
+  (if (= n 0) (list a b c d) (abi-rot-global (- n 1) b c d a)))
+(defun abi-rot-funcall (n a b c d)
+  (if (= n 0) (list a b c d) (funcall #'abi-rot-funcall (- n 1) b c d a)))
+;; Native callers.
+(defun abi-native-caller ()
+  (list (abi-0) (abi-1 1) (abi-2 1 'b) (abi-3 1 'b "c")
+        (abi-4 1 'b "c" #\d) (abi-5 1 'b "c" #\d '(e))
+        (abi-6 1 'b "c" #\d '(e) 6.5)))
+(defun abi-native-funcall (f g)
+  (list (funcall f 1 'b "c") (funcall g 1 'b "c" #\d '(e) 6.5)))
+;; An interpreted caller: &optional keeps the walker off it.
+(defun abi-vm-caller (&optional (x 1))
+  (list (abi-0) (abi-1 x) (abi-2 x 'b) (abi-3 x 'b "c")
+        (abi-4 x 'b "c" #\d) (abi-5 x 'b "c" #\d '(e))
+        (abi-6 x 'b "c" #\d '(e) 6.5)))
+(defparameter *abi-expected*
+  '(() (1) (1 b) (1 b "c") (1 b "c" #\d) (1 b "c" #\d (e))
+    (1 b "c" #\d (e) 6.5)))
+(check "jit-abi-all-native" t
+  (every (lambda (f) (not (null (clamiga::%jit-dump-bytes f))))
+         (list #'abi-0 #'abi-1 #'abi-2 #'abi-3 #'abi-4 #'abi-5 #'abi-6
+               #'abi-store-6 #'abi-capture-3 #'abi-rot-global
+               #'abi-rot-funcall #'abi-native-caller #'abi-native-funcall)))
+(check "jit-abi-vm-caller-not-native" nil (clamiga::%jit-dump-bytes #'abi-vm-caller))
+(check "jit-abi-from-vm" *abi-expected* (abi-vm-caller))
+(check "jit-abi-from-native" *abi-expected* (abi-native-caller))
+(check "jit-abi-funcall-native" '((1 b "c") (1 b "c" #\d (e) 6.5))
+  (abi-native-funcall #'abi-3 #'abi-6))
+(check "jit-abi-apply" '(1 b "c" #\d (e) 6.5)
+  (apply #'abi-6 '(1 b "c" #\d (e) 6.5)))
+(check "jit-abi-store" '((:a 1) b "c" #\d (e) (:f 6.5))
+  (abi-store-6 1 'b "c" #\d '(e) 6.5))
+(check "jit-abi-capture" '("c" b 1) (abi-capture-3 1 'b "c"))
+(check "jit-abi-self-tco-global" '((1 b "c" #\d) (b "c" #\d 1) (#\d 1 b "c"))
+  (list (abi-rot-global 0 1 'b "c" #\d) (abi-rot-global 1 1 'b "c" #\d)
+        (abi-rot-global 1003 1 'b "c" #\d)))
+(check "jit-abi-self-tco-funcall" '((1 b "c" #\d) (b "c" #\d 1) (#\d 1 b "c"))
+  (list (abi-rot-funcall 0 1 'b "c" #\d) (abi-rot-funcall 1 1 'b "c" #\d)
+        (abi-rot-funcall 1003 1 'b "c" #\d)))
 
 ; --- String-scan fast path (opcodes.h 0xC0-0xC4, specs/performance.md 4.4).
 ; Five opcodes, each with a walker template: AREF (helper call with the

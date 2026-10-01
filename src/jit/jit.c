@@ -602,8 +602,10 @@ static void cache_push_obj(CodeBuf *cb, int *head, int *depth,
  *                    pushed as the first C-ABI arg by cl_jit_invoke
  *                    so OP_UPVAL / OP_CELL_SET_UPVAL can dereference
  *                    cl->upvalues[index]
- *  12(a6) + 4*i      parameter i (i in [0, arity)) — placed there by
- *                    the m68k C ABI before the JSR (i = 0 at 12(a6))
+ *  12(a6) + 4*(arity-1-i)
+ *                    parameter i (i in [0, arity)), in operand-stack
+ *                    order: the LAST parameter sits at 12(a6), the
+ *                    first one highest (see slot_disp)
  *   4(a6)            return address (pushed by JSR)
  *   0(a6)            saved A6 (pushed by LINK)
  *  -4(a6) - 4*j      "extra" local j (j = slot - arity, j in [0, n_extra))
@@ -643,17 +645,22 @@ typedef struct {
 /* A6-relative displacement of bytecode slot `slot`.
  *
  * Non-keyworded (is_kw == 0): the first `slot_anchor` slots (= the
- * required-arg count) live in the C-ABI positional-arg slots above
- * A6; remaining slots are in the LINK frame below A6.  After LINK
- * a6,#-N the call frame above A6 is:
+ * required-arg count) live in the positional-arg slots above A6;
+ * remaining slots are in the LINK frame below A6.  The arguments are
+ * in OPERAND-STACK order — the order a caller's operand stack already
+ * holds them in (last argument at the lowest address), so a native
+ * caller can push `func_obj` over its arguments and JSR without
+ * re-copying them (specs/jit-direct-calls.md §4).  After LINK a6,#-N
+ * the call frame above A6 of an arity-n function is:
  *
- *   8(a6)         = first  C arg = `func_obj`   (closure or bytecode)
- *   12(a6)        = second C arg = user arg 0
- *   16(a6)        = third  C arg = user arg 1
+ *   8(a6)            = `func_obj`   (closure or bytecode)
+ *   12(a6)           = user arg n-1
+ *   16(a6)           = user arg n-2
  *   …
+ *   12+4*(n-1)(a6)   = user arg 0
  *
- * so user slot s sits at 12 + 4*s.  Slot slot_anchor (first non-arg
- * local) sits at -4(a6), slot_anchor+1 at -8(a6), and so on.
+ * so user slot s sits at 12 + 4*(n-1-s).  Slot slot_anchor (first
+ * non-arg local) sits at -4(a6), slot_anchor+1 at -8(a6), and so on.
  *
  * Keyworded (is_kw == 1): every slot lives below A6 in the LINK
  * frame, laid out FORWARD so the helper's plain C array indexing
@@ -666,7 +673,7 @@ static int16_t slot_disp(uint8_t slot, uint16_t slot_anchor, int is_kw)
         return (int16_t)(-4 * ((int32_t)slot_anchor - (int32_t)slot));
     }
     if (slot < slot_anchor) {
-        return (int16_t)(12 + 4 * (int)slot);
+        return (int16_t)(12 + 4 * ((int)slot_anchor - 1 - (int)slot));
     }
     return (int16_t)(-4 * ((int)slot - (int)slot_anchor + 1));
 }
@@ -2259,8 +2266,8 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 
             /* Self-recursive TCO is disabled for keyworded shapes:
              * the kw-prologue ABI passes (bc, nargs, args) rather
-             * than positional C-ABI args, so the args don't sit at
-             * 8+4*i(a6) and the copy-into-frame trick below would
+             * than positional args, so the args don't sit in the
+             * slots above A6 and the copy-into-frame trick below would
              * read garbage.  Recursive &key calls fall back to the
              * cl_jit_runtime_call path (still tail-position correct,
              * just at the cost of one extra m68k frame per call). */
@@ -2297,13 +2304,16 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                 m68k_emit_beq_w(cb, 0);   /* D0==0 → not self → fallback */
 
                 /* Copy args into frame slots.  src[i] = 4*i(a7) holds
-                 * argN-1-i; dst slot for parameter (N-1-i) is at
-                 * slot_disp(N-1-i, arity) = 8+4*(N-1-i) from A6. */
+                 * arg N-1-i, whose parameter slot is at
+                 * slot_disp(N-1-i, arity) = 12+4*i(a6): both sides are
+                 * in operand-stack order, so this is a straight block
+                 * copy (ascending, and the source lies below the
+                 * frame, so the order of the moves does not matter). */
                 for (i = 0; i < nargs; i++) {
                     int16_t src_disp = (int16_t)(4 * (int32_t)i);
                     /* Self-TCO is gated to non-kw shapes above, so
-                     * slot_anchor == arity here and the legacy
-                     * positional layout applies. */
+                     * slot_anchor == arity here and the positional
+                     * layout applies. */
                     int16_t dst_disp = slot_disp((uint8_t)(nargs - 1 - i),
                                                  slot_anchor, is_kw);
                     m68k_emit_move_l_disp_an_to_dn(cb, src_disp, REG_A7, REG_D0);
@@ -3217,7 +3227,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             /* Push captures in reverse so A7 ends pointing at values[0].
              * Two descriptor forms:
              *   is_local=1 — load from this frame's local slot via
-             *                slot_disp (positional C arg or LINK-frame
+             *                slot_disp (positional arg or LINK-frame
              *                local, depending on slot vs slot_anchor).
              *   is_local=0 — load from this function's own closure's
              *                upvalue at cap_idx, by calling
@@ -3852,14 +3862,11 @@ static void jit_compile_impl(CL_Bytecode *bc, int replace)
         emit_obj_imm_d0(&cb, &relocs, value);
         m68k_emit_rts(&cb);
     } else if (matches_passthrough(bc, &slot)) {
-        /* Emit: jsr mv_reset ; move.l (8 + 4*slot)(sp),d0 ; rts.  The C
-         * ABI on m68k lays args out starting at 4(A7) after JSR pushes
-         * the return address, each 32-bit slot bumping by 4.
-         * cl_jit_invoke casts native_code to the matching arity's C
-         * function-pointer type and passes args through normal calling
-         * convention with `func` prepended, so user-arg j sits at C-ABI
-         * slot (j+1) = (4 + 4*(j+1))(sp) = (8 + 4*j)(sp).  No heap
-         * immediates.
+        /* Emit: jsr mv_reset ; move.l (8 + 4*(n-1-slot))(sp),d0 ; rts.
+         * After the JSR the return address is at (sp) and `func` at
+         * 4(sp); above it the n arguments sit in operand-stack order
+         * (the positional native ABI, see slot_disp), so user-arg j is
+         * at (8 + 4*(n-1-j))(sp).  No heap immediates.
          *
          * The helper call comes FIRST so the displacement is computed
          * against the unchanged A7 (JSR's pushed return address is gone
@@ -3868,7 +3875,7 @@ static void jit_compile_impl(CL_Bytecode *bc, int replace)
          * the last thing that happens before RTS.  It writes
          * `cl_mv_count = 1`, which the matched shape requires: OP_LOAD
          * does not touch the MV buffer (see matches_passthrough). */
-        int16_t disp = (int16_t)(8 + 4 * (int)slot);
+        int16_t disp = (int16_t)(8 + 4 * ((int)bc->arity - 1 - (int)slot));
         m68k_emit_jsr_abs_l(&cb, (uint32_t)(uintptr_t)&cl_jit_runtime_mv_reset);
         m68k_emit_move_l_disp_an_to_dn(&cb, disp, REG_A7, REG_D0);
         m68k_emit_rts(&cb);
@@ -4322,10 +4329,12 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
  *   walker's non-kw gate both refuse &optional/&key/&rest), and
  *   OP_CALL has already verified nargs == bc->arity, so the
  *   per-arity cast is sound.  Args are read straight off
- *   `cl_vm.stack[sp - nargs ... sp - 1]` and passed via the normal
- *   m68k C calling convention with `func` prepended, so emitted
- *   code reads them from `8(sp)`, `12(sp)`, … (walker via the
- *   matching A6-relative offsets after LINK).
+ *   `cl_vm.stack[sp - nargs ... sp - 1]` and passed REVERSED, with
+ *   `func` prepended: native(func, a[n-1], …, a[0]).  That puts them
+ *   in operand-stack order on the m68k stack — the last argument at
+ *   `8(sp)` after the JSR, the first one highest — which is the order
+ *   a native caller's operand stack already holds them in (walker
+ *   reads them via slot_disp's A6-relative offsets after LINK).
  *
  *   Kw ABI (when bc->flags & 1).  The walker emits a kw-prologue
  *   that JSRs cl_jit_runtime_kw_prologue to populate the LINK
@@ -4440,7 +4449,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         typedef CL_Obj (*native_fn2_t)(CL_Obj, CL_Obj, CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn2_t)bc->native_code)(func_obj, a0, a1);
+        result = ((native_fn2_t)bc->native_code)(func_obj, a1, a0);
         break;
     }
     case 3: {
@@ -4448,7 +4457,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn3_t)bc->native_code)(func_obj, a0, a1, a2);
+        result = ((native_fn3_t)bc->native_code)(func_obj, a2, a1, a0);
         break;
     }
     case 4: {
@@ -4457,7 +4466,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a3 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn4_t)bc->native_code)(func_obj, a0, a1, a2, a3);
+        result = ((native_fn4_t)bc->native_code)(func_obj, a3, a2, a1, a0);
         break;
     }
     case 5: {
@@ -4467,7 +4476,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a3 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a4 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn5_t)bc->native_code)(func_obj, a0, a1, a2, a3, a4);
+        result = ((native_fn5_t)bc->native_code)(func_obj, a4, a3, a2, a1, a0);
         break;
     }
     case 6: {
@@ -4478,7 +4487,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         CL_Obj a3 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a4 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a5 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn6_t)bc->native_code)(func_obj, a0, a1, a2, a3, a4, a5);
+        result = ((native_fn6_t)bc->native_code)(func_obj, a5, a4, a3, a2, a1, a0);
         break;
     }
     default:
