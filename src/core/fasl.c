@@ -3684,6 +3684,10 @@ static CL_Obj fasl_load(const uint8_t *data, uint32_t size, int check_deps)
             return CL_NIL;
         }
 
+        /* One unit is one top-level form: drop the frame snapshot a
+         * previous unit's handled error left, or a later EXT:BACKTRACE
+         * reports a truncated window (the source loaders do the same). */
+        cl_debug_base_fp = 0;
         if (!CL_NULL_P(bc_obj))
             cl_vm_eval(bc_obj);
     }

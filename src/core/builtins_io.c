@@ -542,6 +542,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             /* see the file-load loop below */
             cl_current_source_file = own_file;
             cl_current_file_id = own_file_id;
+            cl_debug_base_fp = 0;
             expr = cl_read_from_stream(stream);
             if (cl_reader_eof()) break;
 
@@ -956,6 +957,10 @@ static CL_Obj bi_load(CL_Obj *args, int n)
          * stream and need no such care. */
         cl_current_source_file = own_file;
         cl_current_file_id = own_file_id;
+        /* The previous form's handled error left its frame snapshot behind
+         * (see the --load loop in repl.c): a stale one truncates a later
+         * EXT:BACKTRACE. */
+        cl_debug_base_fp = 0;
         expr = cl_read_from_stream(stream);
         if (cl_reader_eof()) break;
 
