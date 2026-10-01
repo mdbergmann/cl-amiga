@@ -1,0 +1,396 @@
+# Native Code Backend (AArch64)
+
+Status: proposal, 2026-10-01.  Nothing here is implemented yet.  Both
+prerequisites are on master: direct native-to-native calls
+(`specs/jit-direct-calls.md`, 27c74b00) and the loop poll
+(`specs/native-backend.md`, "Status (2026-10-01, native loops poll)",
+b8f57acc).
+
+A template JIT for 64-bit ARM hosts, Apple Silicon macOS first, then
+Linux.  It is the m68k backend's sibling (`specs/native-backend.md`): it
+uses the same bytecode, lazy compilation policy (`specs/lazy-jit.md`),
+runtime helpers (`src/jit/runtime.c`) and dispatch path.  Only instruction
+selection, the frame layout and the executable-memory plumbing are new.
+
+## Motivation
+
+- **Speed on the development host.**  Interpreted code on an M-series
+  Mac is fast, but fixnum loops, struct access and call-heavy code still
+  pay for dispatch on every opcode.  The m68k numbers
+  (`trunk/bench-jit-loop.lisp`, `trunk/bench-jit-call.lisp`) show what a
+  template JIT takes off that.
+- **JIT bugs found under `make test`.**  Today every JIT change is
+  verified only in FS-UAE.  A second backend that shares the walker's
+  structure and all of `runtime.c` runs the runtime helpers, the
+  hot-compile policy, NLX through native frames and the GC interaction
+  natively, under the gc-stress suite, in CI (`macos-latest` is arm64).
+- **A second CPU before MorphOS.**  A PPC JIT would follow the same
+  recipe; doing it once on the host proves the split.
+
+## Non-goals
+
+- No optimizing tier, no speculation, no deoptimization (see the
+  evergreen assessment that led here: the template JIT's inline fast path
+  with a slow-path call already behaves like speculation that never fails).
+- No x86-64 backend.
+- No Windows ARM64 in this spec: `longjmp` there unwinds with SEH and
+  would need unwind tables for every JIT frame (evergreen's
+  `native_transfer/win64.rs` is that work for x86-64).  The build keeps
+  the stubs on Windows.
+
+## What we take from evergreen, and what not
+
+Evergreen (github.com/atgreen/evergreen) is GPL-3.0 with a Classpath
+exception; clamiga is Apache-2.0.  **No code is copied.**  Encodings come
+from the Arm ARM (DDI 0487, C4.1); the ideas below are design, not text.
+
+Taken:
+
+1. **Encoders are plain functions.**  One C function per instruction,
+   returning the 32-bit word, or failing when an operand does not fit its
+   field so the caller emits a longer form (`movz`/`movk` for a wide
+   constant, a register-offset load for a far displacement).  Every
+   encoder is pinned by a unit test.
+2. **A sibling walker, not a portability layer.**  `jit_walk_a64.c`
+   mirrors the m68k walker case by case, with its own register roles.
+   No abstract "emit add" interface over both CPUs.
+3. **One label/fixup pass.**  Branches go to labels that are bound later;
+   every displacement is filled in and range-checked in one `finish` step.
+4. **A first slice that cannot be wrong.**  Phase 1 runs the operand
+   stack and control flow natively and sends every other opcode to the
+   runtime, so its results are by construction the interpreter's.
+5. **The JIT's frame is the interpreter's frame.**  Locals and the
+   operand stack live on the GC-rooted `cl_vm.stack`, not on the native
+   stack (see "GC interaction").
+6. **Full instruction-cache maintenance.**  Their `jit.rs` documents an
+   `ISB`-only flush that worked by accident.  We call
+   `sys_icache_invalidate` on macOS and `__builtin___clear_cache` on Linux.
+
+Not taken: tiering beyond lazy compile, type-feedback tables, deopt,
+OSR, `regalloc2`.
+
+## Architecture constraints from our runtime
+
+- `CL_Obj` is a 32-bit arena offset, tag bit 0 = fixnum
+  (`src/core/types.h`).  All Lisp values are handled in `w` registers;
+  a heap address is `arena_base + uxtw(obj)`, which AArch64 addresses in
+  one instruction: `ldr w0, [x23, w1, uxtw]`.
+- VM stack slots are 4 bytes (`CL_Obj *cl_vm.stack`, index `cl_vm.sp`).
+  The VM stack and the arena are allocated once and never move
+  (`vm.c:257`, `mem.c:1052`).
+- The host runs threads (per-thread `CL_Thread`, `cl_vm` = `CT->vm`),
+  stop-the-world GC, and by default the generational collector, whose
+  minors **move** young objects (`specs/generational-gc.md`).  The
+  generational GC tracks old-space writes by `mprotect` faults, so stores
+  from JIT code need no write barrier; the fault handler is address-based
+  and does not care that the faulting PC is in JIT code.
+- Host error frames use `_setjmp`/`_longjmp` (`src/core/error.h:29`), which
+  on macOS and Linux arm64 restore registers without unwinding.  A
+  `cl_error` from inside a helper drops the native frames above the
+  catching C frame, exactly as on m68k.
+
+## Register roles
+
+AAPCS64 makes x19-x28 callee-saved, so these survive every helper call.
+**x18 is reserved on Apple platforms and never used.**  x29/x30 form a
+standard frame record so `lldb`, `sample` and crash reports walk through
+JIT frames.
+
+| Role                                  | m68k      | AArch64 |
+|---------------------------------------|-----------|---------|
+| current `CL_Thread *`                 | A3 (after direct-calls phase 2) | x19 |
+| operand-stack pointer (next free slot in `cl_vm.stack`) | A7 (m68k stack) | x20 |
+| locals base `bp` (`cl_vm.stack + bp`) | A6 frame  | x21 |
+| literal pool (heap constants)         | baked immediates | x22 |
+| arena base                            | A5        | x23 |
+| top-of-stack cache (phase 2)          | D5-D7     | w24-w26 |
+| result / first helper argument        | D0        | w0 / x0 |
+| scratch                               | D1-D3     | x9-x15 |
+| far-call veneer                       | -         | x16, x17 |
+
+Helper calls load the 64-bit helper address from a per-function constant
+area at the end of the code (`ldr x16, lit; blr x16`).  Helper addresses
+never move, so this area is never patched.
+
+## Entry and frame layout
+
+The native entry has one signature for every arity.  On m68k,
+`cl_jit_invoke` enters native code through the assembly trampoline
+`cl_jit_enter(void *entry, CL_Thread *thread, CL_Obj func, const CL_Obj
+*argv, int32_t nargs)` (`src/jit/jit_enter_m68k.s`), which loads A3 and
+copies the arguments onto the m68k stack.  AArch64 needs no trampoline:
+the arguments stay where the caller pushed them, and the AAPCS64 argument
+registers carry the rest, so `cl_jit_invoke` calls the entry directly:
+
+```c
+typedef CL_Obj (*cl_a64_entry_t)(CL_Thread *thr, CL_Obj *bp,
+                                 uint32_t nargs, CL_Obj func_obj);
+```
+
+The arguments are already on `cl_vm.stack` (the caller pushed them).
+The prologue:
+
+1. saves x19-x26 and the frame record;
+2. checks that `bp + n_locals + max_stack + 1` fits in the VM stack, and
+   otherwise calls the helper that raises the interpreter's own
+   stack-overflow error;
+3. sets non-argument locals to NIL;
+4. stores `func_obj` in a hidden slot right after the locals, so closure
+   upvalues (`OP_UPVAL`) read it from rooted memory after any GC;
+5. points x20 at the slot after that.
+
+Frame in `cl_vm.stack`: `[args | other locals | func_obj | operand stack ...]`.
+A `&key` function uses the same entry; its keyword prologue is the existing
+`cl_jit_runtime_kw_prologue` helper, which already works on args in the VM
+stack.
+
+Who pops the arguments is unchanged: `cl_jit_invoke`'s contract with its
+callers stays as it is today.
+
+## GC interaction
+
+The m68k JIT keeps its operand stack and interior locals on the CPU stack.
+The GC therefore scans that stack conservatively and pins whatever it
+finds (`specs/native-backend.md`, "GC interaction"), a scheme built for the
+classic collector.  The generational collector has neither the header
+index nor the pinning (`native-backend.md:451`).  The AArch64 backend
+avoids all of it.
+
+**Rule 1: at every call out of native code, every live `CL_Obj` is in
+`cl_vm.stack` below `cl_vm.sp`.**
+- Before a helper call (and before the `_setjmp` of an NLX frame) the
+  code stores the top-of-stack cache registers to their slots and writes
+  `cl_vm.sp` from x20.
+- After the call it reloads x20 from `cl_vm.sp` and refills the cache
+  lazily.
+- No `CL_Obj` and no raw arena pointer lives in a register across a call.
+
+Then the GC needs no knowledge of JIT frames: `cl_vm.stack` is already a
+root, the hidden `func_obj` slot keeps the function and its bytecode
+alive, and a moving minor or major collection forwards everything in
+place.  `gc_scan_jit_native_stack` and the `jit_stack_top` bookkeeping
+stay m68k-only.  This rule is the AArch64 form of the m68k
+`cache_flush`-before-JSR rule, with memory instead of the CPU stack as
+the target.
+
+**Rule 2: heap constants are loaded from a literal pool, never encoded in
+instructions.**  An AArch64 instruction cannot carry a 32-bit immediate
+the way an m68k `move.l #imm` does, so the m68k scheme of patching
+immediates inside the code does not carry over.
+- Each compiled function gets a pool: an array of 32-bit words holding
+  every heap `CL_Obj` the code uses (quoted constants, symbols, the
+  self-bytecode, closure templates, `T`).
+- The pool is ordinary `platform_alloc` memory, not executable memory.
+  The prologue loads its address into x22.
+- Code reads constants with `ldr w0, [x22, #4*i]`.
+
+**Rule 3: both collectors forward every pool word.**
+- On AArch64 `bc->native_relocs` points at the pool and
+  `native_reloc_count` is its length.  The field is reused, so the
+  `CL_Bytecode` layout is unchanged and neither `CL_IMAGE_VERSION` nor
+  `CL_FASL_VERSION` changes.
+- `GC_BYTECODE_TAIL` in `mem.c` gets an AArch64 branch that forwards each
+  native-endian word in place.  Since the pool is data, no
+  instruction-cache flush and no write-protect toggle is needed.
+- The open point is **minor collections**: an old bytecode on a clean page
+  is not visited by a minor, but its pool may hold a young constant that
+  the minor moves.
+  - Every installed pool is registered in a global list (added on
+    install, removed when the bytecode's native code is freed).
+  - Each collection, minor or major, forwards every word in that list
+    after forwarding is computed.
+  - A pool is a copy of `bc->constants`, so liveness still comes from the
+    bytecode; the list only forwards and never marks.
+- `tests/test_gc_jit_reloc.c` gets an AArch64 counterpart covering both
+  collectors.
+
+**Rule 4: native loops poll.**  The interpreter runs `CL_SAFEPOINT` and
+the Ctrl-C poll on every backward jump (`vm.c`, `OP_JMP`).  On the host
+a call-free native loop would otherwise stall every stop-the-world GC in
+other threads forever.  Every loop header emits:
+
+```
+ldrh w9, [x19, #offsetof(CL_Thread, jit_loop_ctr)]
+subs w9, w9, #1
+strh w9, [x19, #offsetof(CL_Thread, jit_loop_ctr)]
+b.lo poll_stub              ; borrow: sync sp, call cl_jit_runtime_loop_poll, reload
+```
+
+The poll counter is per-thread, as the hot-path rule in `CLAUDE.md`
+requires.  The m68k walker lacked this poll too and gained it on
+2026-10-01 (`specs/native-backend.md`, "Status (2026-10-01, native loops
+poll)").  Its form is cheaper than the sequence above, and AArch64 should
+copy it: a per-thread countdown `CL_Thread.jit_loop_ctr`, decremented at
+every loop header and before each self-tail-call branch, and a call to
+`cl_jit_runtime_loop_poll` every 256 iterations.  That helper runs the
+safepoint, interrupt and Ctrl-C checks.  The `jit-loop-poll-*` checks in
+`tests/amiga/test-jit.lisp` are the tests to port.
+
+## Executable memory
+
+A new platform interface, implemented in `platform_posix.c` for arm64 and
+absent elsewhere:
+
+```c
+void *platform_jit_reserve(uint32_t bytes);       /* code region         */
+void  platform_jit_write_begin(void);             /* this thread may write */
+void  platform_jit_write_end(void *p, uint32_t n);/* back to exec + flush  */
+void  platform_jit_release_all(void);             /* shutdown              */
+```
+
+- **macOS**: one `mmap(MAP_PRIVATE|MAP_ANON|MAP_JIT, PROT_READ|PROT_WRITE|
+  PROT_EXEC)` region per chunk.
+  - `pthread_jit_write_protect_np(0)` before writing and
+    `pthread_jit_write_protect_np(1)` after; the toggle is per-thread, so
+    a thread compiling does not stop others from running JIT code.
+  - Then `sys_icache_invalidate(p, n)`.
+  - A locally built binary is not signed with the hardened runtime and
+    needs no entitlement.  A signed build would need
+    `com.apple.security.cs.allow-jit`.
+- **Linux** (phase 4): a `memfd` mapped twice, a writable view and an
+  executable view, because flipping `mprotect` on a page another thread
+  is executing from is not safe.  Then `__builtin___clear_cache`.
+
+**Code allocator** (`src/jit/codeheap.c`):
+- Apple pages are 16 KB, so one mapping per function would waste most of
+  the memory.  Functions are carved from 1 MB chunks with a first-fit
+  free list (16-byte granules, under a mutex, since threads compile
+  concurrently).
+- The two places that `platform_free` native code today (bytecode sweep
+  in `mem.c:4084`, recompile in `jit.c`) call `jit_code_free` instead.
+- Chunks are released in shutdown after the `cl_thread_count > 0` check,
+  and `tests/test_memleak_tracked.sh` gets a JIT scenario.
+
+## Code layout in the tree
+
+```
+src/jit/jit_common.c     new: hot policy, on/off switches, stats, invoke
+                         bookkeeping -- moved out of jit.c
+src/jit/jit.c            the m68k walker and its compile driver (stays)
+src/jit/jit_walk_a64.c   new: the AArch64 walker and its compile driver
+src/jit/asm_a64.{c,h}    new: encoders + label/fixup
+src/jit/codeheap.{c,h}   new: executable-memory allocator (AArch64 only)
+src/jit/runtime.c        unchanged, shared
+```
+
+- `jit.h` guards become `#if defined(JIT_M68K) || defined(JIT_A64)`.
+- The `Makefile` defines `JIT_A64` when `uname -m` is `arm64`/`aarch64`
+  and the system is Darwin (Linux from phase 4), and adds the new files.
+- `--no-jit`, `%JIT-SET-ACTIVE`, `%JIT-SET-HOT-THRESHOLD` and the lazy
+  policy behave as on m68k.
+- `%JIT-DISASSEMBLE` gets a small decoder for the instruction forms
+  `asm_a64.c` emits, plus a `.word` fallback, as on m68k.
+
+## Phases
+
+Each phase ends with `make test`, `make test-gc-stress` and
+`make test-memleak` green on an arm64 Mac, and on an x86-64 host as
+well, where the backend compiles to stubs.  Phase 0 touches `jit.c`,
+so it also needs `make -f Makefile.cross test-amiga`.
+
+### Phase 0: split and plumbing
+- Move the CPU-independent parts of `jit.c` into `jit_common.c`: the
+  hot-call policy (`cl_jit_note_definition`, `cl_jit_note_call`, the
+  threshold), the on/off switches, the stats, and `cl_jit_invoke`'s
+  bookkeeping.  The m68k walker stays in `jit.c`, which keeps the change
+  to the m68k binary small; `test-amiga` decides.  Moving the walker into
+  a file of its own can come later, if it ever helps.
+- Add `JIT_A64`, `asm_a64.c` with the encoders phase 1 needs, the code
+  heap and the platform calls.
+- Make `cl_jit_emit_stub` (`%JIT-COMPILE-STUB`) emit and run a `ret`
+  stub.
+- Tests:
+  - `tests/test_asm_a64.c`: every encoder against its known word,
+    recorded once from `clang -c` output; the test itself needs no
+    assembler.
+  - Encoder failure on out-of-range operands.
+  - Label fixups, forward and backward, including the out-of-range
+    error.
+  - On arm64 only, assemble tiny functions and call them.
+
+### Phase 1: the walker that cannot be wrong
+- Native operand stack, locals, constants from the pool, jumps with the
+  backward-branch poll, `OP_RET`, the entry/prologue above, and calls
+  through the existing `jit_dispatch` helpers.
+- Every other opcode the m68k walker handles is a call to its existing
+  runtime helper, or a decline (the function stays interpreted).
+- No inline fast paths and no register cache yet.
+- Tests:
+  - The behavioural sections of `tests/amiga/test-jit.lisp` run on the
+    host through a new shell test, with JIT on, eager
+    (`%JIT-SET-HOT-THRESHOLD 0`).  The m68k byte goldens are guarded with
+    `#+m68k`, and new AArch64 goldens are added for the matcher shapes.
+  - The same run under `CLAMIGA_GC_STRESS=1`.
+  - The whole `make test` Lisp suite once with eager JIT, as a
+    differential run against the interpreter.
+  - A threaded test: a call-free native loop in one thread while another
+    thread forces GCs, which must finish (Rule 4).
+
+### Phase 2: inline fast paths and the register cache
+Fixnum templates check both operands before touching the stack (taken
+from evergreen), so a failed check leaves the frame as the slow path
+expects:
+
+```
+and  w9, wa, wb  ; tbz w9, #0, slow        ; both fixnums?
+add:  sub w9, wb, #1 ; adds wr, wa, w9 ; b.vs slow
+sub:  subs wr, wa, wb ; b.vs slow ; add wr, wr, #1
+mul:  asr w9, wa, #1 ; sub w10, wb, #1 ; smull x11, w9, w10
+      cmp x11, w11, sxtw ; b.ne slow ; orr wr, w11, #1
+<,=:  cmp wa, wb ; cset / b.cond            ; tagged order = numeric order
+```
+
+Also inline: `EQ`, `NOT`, `CAR`/`CDR` with the type check, `GLOAD`/`GSTORE`
+fast paths, `STRUCT_REF`/`STRUCT_SET`.  A 3-slot top-of-stack cache in
+w24-w26 removes most `LOAD`/`STORE`/`POP` memory traffic.  Each new
+template gets a gc-stress case that forces its slow path, i.e. a non-fixnum
+or an allocating helper.
+
+### Phase 3: parity with the m68k walker
+- NLX frames (`BLOCK`, `CATCH`, `TAGBODY`, `UWPROT`, `HANDLER_CASE`) use
+  the same split as m68k: helper `*_alloc`, inline `_setjmp`, helper
+  `*_commit`, and `post_longjmp` on the second return.
+  - `_setjmp` restores x19-x28, so x20 must be reloaded from `cl_vm.sp`
+    at the landing, as after any call.
+- Also: dynamic binding, PROGV, multiple values, closures and upvalues,
+  `&key` prologues, the string-scan opcodes.
+- Target: the m68k walker's opcode list, minus `OP_AMIGA_CALL`.
+- Shadow frames (`%JIT-SET-FRAMES`) work unchanged and now show every
+  local, since the locals are on the VM stack.
+
+### Phase 4: Linux arm64
+- Memfd double mapping, `JIT_A64` on Linux.
+- An `ubuntu-24.04-arm` CI job.
+
+### Later
+- Direct native-to-native calls through call-site cells guarded by
+  `cl_call_gen`, as the m68k walker does them (`specs/jit-direct-calls.md`).
+  The cell, the miss path and every `cl_call_gen` bump are portable; only
+  the hit path is new code.
+- `&optional`/`&rest` prologues in the walker, on both CPUs.
+
+## Measuring
+
+Run `trunk/bench-opt.lisp`, `trunk/bench-jit-loop.lisp` and
+`trunk/bench-jit-call.lisp`, JIT on vs `--no-jit`, interleaved pairs on
+one machine.  Record the results in `docs/benchmarks.md`.
+
+**Success:**
+- the loop and arithmetic rows at least 3x the interpreter;
+- no call row slower than the interpreter.  The m68k JIT made calls
+  slower until `jit_dispatch` was fixed, so this is checked from phase 1
+  on.
+
+**Stop:** if phase 2 does not reach 1.5x on the `vm.*` rows of
+bench-opt, the backend is not worth its maintenance cost, and it stops
+there.
+
+## Open questions
+
+- Is a full minor pass over the pool list cheap enough, or should pools
+  of old bytecodes be skipped unless a constant was young at install?
+  Measure the minor pause with `ext:%gengc-stats` on the Clamacs host
+  frontend before optimizing.
+- The m68k walker matches some whole-function patterns (constant return,
+  argument passthrough).  Are they worth porting, or does the walker
+  output come close enough on AArch64?  Decide from phase 1 disassembly.
