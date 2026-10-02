@@ -2308,6 +2308,50 @@ TEST(eval_optional_suppliedp)
     ASSERT_STR_EQ(eval_print("(opt-sp2 5 10)"), "(5 T 10 T)");
 }
 
+/* A supplied-p variable and &rest (CLHS 3.4.1.2-3.4.1.3): the &rest list
+ * lies right after the positional parameters.  Its slot used to come after
+ * the supplied-p slots, so the first supplied-p store overwrote the list and
+ * the rest variable read an empty slot. */
+TEST(eval_optional_suppliedp_rest)
+{
+    eval_print("(defun opt-sp-r (a &optional (b 2 bp) &rest r) (list a b bp r))");
+    ASSERT_STR_EQ(eval_print("(opt-sp-r 1)"), "(1 2 NIL NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-sp-r 1 5)"), "(1 5 T NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-sp-r 1 5 6 7)"), "(1 5 T (6 7))");
+    eval_print("(defun opt-sp-r2 (&optional (a 1 ap) (b 2 bp) &rest r) (list a ap b bp r))");
+    ASSERT_STR_EQ(eval_print("(opt-sp-r2)"), "(1 NIL 2 NIL NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-sp-r2 9 8 7 6)"), "(9 T 8 T (7 6))");
+    /* &rest holds the keyword pairs too. */
+    eval_print("(defun opt-sp-rk (&optional (a 1 ap) &rest r &key x) (list a ap r x))");
+    ASSERT_STR_EQ(eval_print("(opt-sp-rk)"), "(1 NIL NIL NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-sp-rk 1 :x 2)"), "(1 T (:X 2) 2)");
+    /* A lambda, and APPLY's spread arguments. */
+    ASSERT_STR_EQ(eval_print("(funcall (lambda (&optional (a 1 ap) &rest r) (list a ap r)) 1 2 3)"),
+                  "(1 T (2 3))");
+    ASSERT_STR_EQ(eval_print("(apply #'opt-sp-r 1 5 '(6 7 8))"), "(1 5 T (6 7 8))");
+}
+
+/* CLHS 3.4.1: an init-form may refer to any parameter variable to its left,
+ * supplied-p variables included.  They used to be bound only after every
+ * default had run, so a later default read the global value (unbound). */
+TEST(eval_optional_default_sees_suppliedp)
+{
+    eval_print("(defun opt-sp-d (&optional (a 1 ap) (b (if ap :sup :nosup))) (list a b))");
+    ASSERT_STR_EQ(eval_print("(opt-sp-d)"), "(1 :NOSUP)");
+    ASSERT_STR_EQ(eval_print("(opt-sp-d 5)"), "(5 :SUP)");
+    ASSERT_STR_EQ(eval_print("(opt-sp-d 5 6)"), "(5 6)");
+    /* ... but not its own: (b ... bp) does not see bp in its default. */
+    eval_print("(defvar *opt-sp-glob* :global)");
+    eval_print("(defun opt-sp-own (&optional (*opt-sp-glob* *opt-sp-glob*)) *opt-sp-glob*)");
+    ASSERT_STR_EQ(eval_print("(opt-sp-own)"), ":GLOBAL");
+    ASSERT_STR_EQ(eval_print("(opt-sp-own 3)"), "3");
+    /* With &rest after them. */
+    eval_print("(defun opt-sp-dr (&optional (a 1 ap) (b (list ap)) &rest r) (list a b r))");
+    ASSERT_STR_EQ(eval_print("(opt-sp-dr)"), "(1 (NIL) NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-sp-dr 4)"), "(4 (T) NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-sp-dr 4 5 6)"), "(4 5 (6))");
+}
+
 TEST(eval_optional_lambda)
 {
     ASSERT_EQ_INT(eval_int("((lambda (a &optional (b 5)) (+ a b)) 10)"), 15);
@@ -11850,6 +11894,8 @@ int main(void)
     RUN(eval_optional);
     RUN(eval_optional_default);
     RUN(eval_optional_suppliedp);
+    RUN(eval_optional_suppliedp_rest);
+    RUN(eval_optional_default_sees_suppliedp);
     RUN(eval_key);
     RUN(eval_key_default);
     RUN(eval_optional_lambda);

@@ -759,6 +759,19 @@ y" 1))
 (defun opt-def (a &optional (b 10)) (+ a b))
 (check "optional default" 11 (opt-def 1))
 (check "optional override" 3 (opt-def 1 2))
+; Regression: a supplied-p variable's store overwrote the &rest list (its
+; slot came after the supplied-p slots, the VM puts the list right after
+; the positional parameters).
+(defun opt-sp-rest (a &optional (b 2 bp) &rest r) (list a b bp r))
+(check "optional supplied-p + rest" '((1 2 nil nil) (1 5 t nil) (1 5 t (6 7)))
+  (list (opt-sp-rest 1) (opt-sp-rest 1 5) (opt-sp-rest 1 5 6 7)))
+(defun opt-sp-rest-key (&optional (a 1 ap) &rest r &key x) (list a ap r x))
+(check "optional supplied-p + rest + key" '((1 nil nil nil) (1 t (:x 2) 2))
+  (list (opt-sp-rest-key) (opt-sp-rest-key 1 :x 2)))
+; Regression: a later default sees an earlier supplied-p variable (CLHS 3.4.1).
+(defun opt-sp-later (&optional (a 1 ap) (b (if ap :sup :nosup))) (list a b))
+(check "optional default sees earlier supplied-p" '((1 :nosup) (5 :sup) (5 6))
+  (list (opt-sp-later) (opt-sp-later 5) (opt-sp-later 5 6)))
 (defun key-test (&key x y) (list x y))
 (check "key both" '(1 2) (key-test :x 1 :y 2))
 (check "key none" '(nil nil) (key-test))

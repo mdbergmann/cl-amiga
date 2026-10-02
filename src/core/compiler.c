@@ -1410,53 +1410,72 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     for (i = 0; i < inner->ll.n_required; i++)
         cl_env_add_local(env, inner->ll.required[i]);
 
-    /* Emit prologue for optional defaults.
-     * Add each optional local AFTER compiling its default expression,
-     * so the default can refer to earlier params but not the current one.
-     * This is critical for &optional (*special* *special*) where the
-     * default should read the dynamic/global value, not the uninitialized slot. */
-    for (i = 0; i < inner->ll.n_optional; i++) {
-        if (!CL_NULL_P(inner->ll.opt_defaults[i])) {
-            int skip_pos;
-            cl_emit(inner, OP_ARGC);
-            cl_emit_const(inner, CL_MAKE_FIXNUM(inner->ll.n_required + i + 1));
-            cl_emit(inner, OP_GE);
-            skip_pos = cl_emit_jump(inner, OP_JTRUE);
-            {
-                int saved = inner->in_tail;
-                inner->in_tail = 0;
-                compile_expr(inner, inner->ll.opt_defaults[i]);
-                inner->in_tail = saved;
+    /* &optional, &rest and the optionals' supplied-p variables.  Their
+     * slots are fixed by the frame layout every frame setup (vm.c OP_CALL,
+     * the JIT prologues) uses: the optionals right after the required
+     * parameters, the &rest list right after them, then the supplied-p
+     * variables.  Each slot is reserved under a non-symbol sentinel and its
+     * name revealed only once the variable is bound, so an init form sees
+     * the parameters to its left -- supplied-p variables included -- but not
+     * its own or later ones (CLHS 3.4.1.2).  This matters for
+     * &optional (*special* *special*), where the default must read the
+     * dynamic value, not the uninitialized slot.  Names are revealed from
+     * inner->ll (forwarded by the compiler's GC walkers), never from a C
+     * copy: compile_expr can compact. */
+    {
+        int rest_slot = -1;
+        int sp_slot = -1;       /* the next supplied-p slot (they are contiguous) */
+        for (i = 0; i < inner->ll.n_optional; i++)
+            cl_env_add_local(env, CL_MAKE_FIXNUM(0));
+        if (inner->ll.has_rest)
+            rest_slot = cl_env_add_local(env, CL_MAKE_FIXNUM(0));
+        for (i = 0; i < inner->ll.n_optional; i++) {
+            if (!CL_NULL_P(inner->ll.opt_suppliedp[i])) {
+                int s = cl_env_add_local(env, CL_MAKE_FIXNUM(0));
+                if (sp_slot < 0) sp_slot = s;
             }
-            cl_emit(inner, OP_STORE);
-            cl_emit(inner, (uint8_t)(inner->ll.n_required + i));
-            cl_emit(inner, OP_POP);
-            cl_patch_jump(inner, skip_pos);
         }
-        cl_env_add_local(env, inner->ll.opt_names[i]);
-    }
-    /* Allocate slots for &optional supplied-p variables and emit init code.
-     * Each supplied-p var is T if argc >= n_required + i + 1, else NIL. */
-    for (i = 0; i < inner->ll.n_optional; i++) {
-        if (!CL_NULL_P(inner->ll.opt_suppliedp[i])) {
-            int sp_slot = cl_env_add_local(env, inner->ll.opt_suppliedp[i]);
-            int skip_pos;
-            /* Default is NIL (already zero-initialized by VM).
-             * If argument was supplied, set to T. */
-            cl_emit(inner, OP_ARGC);
-            cl_emit_const(inner, CL_MAKE_FIXNUM(inner->ll.n_required + i + 1));
-            cl_emit(inner, OP_GE);
-            skip_pos = cl_emit_jump(inner, OP_JNIL);
-            cl_emit_const(inner, CL_T);
-            cl_emit(inner, OP_STORE);
-            cl_emit(inner, (uint8_t)sp_slot);
-            cl_emit(inner, OP_POP);
-            cl_patch_jump(inner, skip_pos);
+        for (i = 0; i < inner->ll.n_optional; i++) {
+            int opt_slot = inner->ll.n_required + i;
+            if (!CL_NULL_P(inner->ll.opt_defaults[i])) {
+                int skip_pos;
+                cl_emit(inner, OP_ARGC);
+                cl_emit_const(inner, CL_MAKE_FIXNUM(inner->ll.n_required + i + 1));
+                cl_emit(inner, OP_GE);
+                skip_pos = cl_emit_jump(inner, OP_JTRUE);
+                {
+                    int saved = inner->in_tail;
+                    inner->in_tail = 0;
+                    compile_expr(inner, inner->ll.opt_defaults[i]);
+                    inner->in_tail = saved;
+                }
+                cl_emit(inner, OP_STORE);
+                cl_emit(inner, (uint8_t)opt_slot);
+                cl_emit(inner, OP_POP);
+                cl_patch_jump(inner, skip_pos);
+            }
+            if (opt_slot >= 0 && opt_slot < CL_MAX_LOCALS)
+                env->locals[opt_slot] = inner->ll.opt_names[i];
+            if (!CL_NULL_P(inner->ll.opt_suppliedp[i]) && sp_slot >= 0) {
+                int skip_pos;
+                /* NIL from the frame setup; T if the argument was passed. */
+                cl_emit(inner, OP_ARGC);
+                cl_emit_const(inner, CL_MAKE_FIXNUM(inner->ll.n_required + i + 1));
+                cl_emit(inner, OP_GE);
+                skip_pos = cl_emit_jump(inner, OP_JNIL);
+                cl_emit_const(inner, CL_T);
+                cl_emit(inner, OP_STORE);
+                cl_emit(inner, (uint8_t)sp_slot);
+                cl_emit(inner, OP_POP);
+                cl_patch_jump(inner, skip_pos);
+                env->locals[sp_slot] = inner->ll.opt_suppliedp[i];
+                sp_slot++;
+            }
         }
+        if (rest_slot >= 0)
+            env->locals[rest_slot] = inner->ll.rest_name;
     }
 
-    if (inner->ll.has_rest)
-        cl_env_add_local(env, inner->ll.rest_name);
     for (i = 0; i < inner->ll.n_keys; i++)
         inner->key_slot_indices[i] = cl_env_add_local(env, inner->ll.key_names[i]);
     /* Always allocate a tracking slot per key for VM-level supplied-p.
