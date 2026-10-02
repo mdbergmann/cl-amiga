@@ -147,9 +147,7 @@ static CL_Obj vmstack_dispatch(CL_Thread *thr, CL_Obj func, CL_Obj *args,
         if (ftype == TYPE_BYTECODE || ftype == TYPE_CLOSURE) {
             CL_Bytecode *bc = cl_jit_bytecode_of(func, ftype);
             if (bc != NULL && bc->native_code != NULL) {
-                uint32_t arity = bc->arity & 0x7FFF;
-                if ((bc->arity & 0x8000) == 0 && bc->n_optional == 0 &&
-                    ((bc->flags & 1) ? nargs >= arity : nargs == arity)) {
+                if (cl_jit_vmstack_fits(bc, nargs)) {
                     cl_check_c_stack("a native call");
                     if (site != NULL) vmstack_try_fill(thr, site, g, func);
                     return cl_jit_invoke(func, bc, (int)nargs);
@@ -233,7 +231,7 @@ int cl_jit_vmstack_is_self(CL_Obj func, CL_Obj entered)
  * nothing is traced -- else NULL. */
 CL_Bytecode *cl_jit_vmstack_native_callee(CL_Obj func, uint32_t nargs)
 {
-    uint32_t ftype, arity;
+    uint32_t ftype;
     CL_Bytecode *bc;
     CL_Thread *thr = CT;
     if (thr->trace_count != 0 || cl_traced_function_count != 0) return NULL;
@@ -242,11 +240,7 @@ CL_Bytecode *cl_jit_vmstack_native_callee(CL_Obj func, uint32_t nargs)
     if (ftype != TYPE_BYTECODE && ftype != TYPE_CLOSURE) return NULL;
     bc = cl_jit_bytecode_of(func, ftype);
     if (bc == NULL || bc->native_code == NULL) return NULL;
-    arity = bc->arity & 0x7FFF;
-    if ((bc->arity & 0x8000) || bc->n_optional != 0 ||
-        !((bc->flags & 1) ? nargs >= arity : nargs == arity))
-        return NULL;
-    return bc;
+    return cl_jit_vmstack_fits(bc, nargs) ? bc : NULL;
 }
 
 /* A tail call that is not a self call (OP_TAILCALL with SYMREF NULL, the
@@ -303,29 +297,57 @@ CL_Obj cl_jit_vmstack_push_local(CL_Obj *item, CL_Obj *slot)
     return cell;
 }
 
-/* The &key prologue (phase 3), run before anything else touches the frame:
- * BP[0 .. NARGS-1] holds the arguments the caller pushed, FUNC the function
- * value (closure or bytecode) the frame was entered with.  The interpreter's
- * normal-call matcher (vm.c, OP_CALL): the keyword pairs are copied out
- * first -- they sit on the slots the other locals take -- then every local
- * after the required ones is NIL, then the pairs are matched right to left
- * so the leftmost duplicate wins (CLHS 3.4.1.4.1), and FUNC goes into the
- * function slot BP[n_locals].  Non-allocating up to the errors, so neither
- * FUNC nor the bytecode it leads to can move while it runs. */
-void cl_jit_vmstack_kw_prologue(uint32_t nargs, CL_Obj *bp, CL_Obj func)
+/* The prologue of a function with &rest or &key (the walker sets up an
+ * &optional-only frame inline), run before anything else touches the
+ * frame: BP[0 .. NARGS-1] holds the arguments the caller pushed, FUNC the
+ * function value (closure or bytecode) the frame was entered with, and
+ * cl_vm.sp is BP + n_locals + 1.  The interpreter's normal-call frame
+ * (vm.c, OP_CALL):
+ *   - the arguments past the positional ones (required and optional) are
+ *     copied out first -- they sit on the slots the other locals take --
+ *     into vm_extra_args_buf, a root both collectors forward;
+ *   - the missing optionals and every local after the positional ones are
+ *     NIL, FUNC goes into the function slot BP[n_locals];
+ *   - &rest: the extra arguments, consed into a list, go into the slot right
+ *     after the positional ones.  The consing may collect: every value is
+ *     in the frame (below sp) or in vm_extra_args_buf by then, and the
+ *     bytecode is re-derived from the function slot afterwards;
+ *   - &key: the pairs are matched right to left so the leftmost duplicate
+ *     wins (CLHS 3.4.1.4.1), with the interpreter's errors. */
+void cl_jit_vmstack_ll_prologue(uint32_t nargs, CL_Obj *bp, CL_Obj func)
 {
+    CL_Thread *thr = CT;
     CL_Obj extra[256];
     CL_Bytecode *bc = cl_jit_bytecode_of(func, CL_HDR_TYPE(CL_OBJ_TO_PTR(func)));
-    uint32_t arity = bc->arity & 0x7FFF;
+    uint32_t n_pos = (bc->arity & 0x7FFFu) + bc->n_optional;
     uint32_t n_locals = bc->n_locals;
     uint32_t n_extra = 0, i;
-    int allow = (bc->flags & 2) != 0;
+    int allow;
 
-    for (i = arity; i < nargs && n_extra < 256; i++)
-        extra[n_extra++] = bp[i];
-    for (i = arity; i < n_locals; i++)
+    for (i = n_pos; i < nargs && n_extra < 256; i++)
+        thr->vm_extra_args_buf[n_extra++] = bp[i];
+    thr->vm_extra_count = (int)n_extra;
+    for (i = nargs < n_pos ? nargs : n_pos; i < n_locals; i++)
         bp[i] = CL_NIL;
     bp[n_locals] = func;
+
+    if (bc->arity & 0x8000u) {
+        CL_Obj rest = CL_NIL;
+        int32_t j;
+        CL_GC_PROTECT(rest);
+        for (j = (int32_t)n_extra - 1; j >= 0; j--)
+            rest = cl_cons_rooted(&thr->vm_extra_args_buf[j], &rest);
+        CL_GC_UNPROTECT(1);
+        bp[n_pos] = rest;
+        func = bp[n_locals];              /* forwarded if it moved */
+        bc = cl_jit_bytecode_of(func, CL_HDR_TYPE(CL_OBJ_TO_PTR(func)));
+    }
+    for (i = 0; i < n_extra; i++)
+        extra[i] = thr->vm_extra_args_buf[i];
+    thr->vm_extra_count = 0;
+    if ((bc->flags & 1u) == 0) return;
+
+    allow = (bc->flags & 2) != 0;
 
     if (n_extra & 1u)
         cl_error(CL_ERR_ARGS, "odd number of keyword arguments");

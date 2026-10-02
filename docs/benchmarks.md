@@ -7,6 +7,29 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-10-02 — AArch64 JIT `&optional`/`&rest` prologues: an `&optional` leaf call 5× the interpreter
+
+**Context**: `specs/native-backend-a64.md`, "&optional and &rest": the
+walker compiles every lambda list, so a function with `&optional` or `&rest`
+parameters no longer stays bytecode.
+
+**Environment**: Apple M-series, macOS, `make host`, branch
+`feat/a64-optrest` on b10b3d1d.
+
+**Command**: `./build/host/clamiga --no-userinit --heap 8M --non-interactive
+--load trunk/bench-jit-call.lisp`, three runs.
+
+| row (200k calls)        | bc ms | JIT ms |
+|-------------------------|-------|--------|
+| call native leaf        | 6     | 1      |
+| call `&optional` leaf   | 7-8   | 1-2    |
+| funcall native leaf     | 5-6   | 1      |
+
+The `&optional` leaf (`(a &optional (b 1))`, called with one argument) was
+equal before (8 ms, interpreted); it now costs what a required-argument leaf
+does.  The default runs as the compiler's own bytecode prologue, compiled
+like any code.
+
 ## 2026-10-02 — AArch64 JIT direct calls: native-to-native calls 2.3×, call-return 6× the interpreter
 
 **Context**: `specs/native-backend-a64.md`, phase 5: a call site whose cell
@@ -119,7 +142,8 @@ with 3-14×.
 `trunk/bench-jit-call.lisp` (`--heap 8M`), JIT ms per row, phase 1 → phase
 2: builtin LOGTEST 3 → 1, call native leaf 4 → 2, fixnum `case` 4 → 2,
 decode-key mix (native helper) 15 → 14.  No row is slower than the
-interpreter; the `&optional` leaf stays equal (8 ms, still interpreted).
+interpreter; the `&optional` leaf stays equal (8 ms, still interpreted --
+compiled since the `&optional`/`&rest` entry above).
 
 ## 2026-10-01 — JIT direct native-to-native calls: a call to a native leaf 6.2 → 0.9 us (FS-UAE 040)
 

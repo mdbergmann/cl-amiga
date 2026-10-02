@@ -41,15 +41,14 @@
 ; --- Byte-pipeline smoke: %JIT-COMPILE-STUB writes NOP+RTS into a
 ; function's native_code slot, %JIT-DUMP-BYTES reads it back. ---
 
-; Use a function whose lambda-list pins one of the walker's metadata
-; gates (`bc->n_optional != 0`) so neither the trivial-leaf matchers
-; nor the per-opcode walker auto-compile it.  Gives a clean "no
-; native_code yet" baseline to verify %JIT-COMPILE-STUB attaches the
-; stub bytes.  (Previously this used `(and x y)`, which relied on
-; OP_MV_RESET making the walker bail — landing OP_MV_RESET in the
-; walker took that out from under the test; &optional is a stable
-; bail point because supporting it is a much larger metadata change.)
+; A function defined with the JIT off stays bytecode (see "hot: defined
+; with the JIT off stays bytecode"), which gives a clean "no native_code
+; yet" baseline to verify %JIT-COMPILE-STUB attaches the stub bytes.
+; (This used to rely on a shape the walkers decline -- (and x y), then
+; &optional -- and each one went away when a walker learned it.)
+(clamiga::%jit-set-active nil)
 (defun jit-stub-test-fn (x &optional y) (or x y))
+(clamiga::%jit-set-active t)
 (check "jit-dump-before-stub" nil (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
 (check "jit-compile-stub-succeeds" t (clamiga::%jit-compile-stub #'jit-stub-test-fn))
 ; NOP = 0x4E71, RTS = 0x4E75 → bytes 78 113 78 117
@@ -2185,11 +2184,15 @@
     (error (e) (not (null (search "Too few arguments to JDC-LEAF" (format nil "~A" e)))))))
 
 ;; An FFI stub (DEFCFUN) from a JIT'd caller: IoErr() through dos.library.
-(defvar *jdc-dos* (amiga:open-library "dos.library" 36))
-(amiga.ffi:defcfun jdc-ioerr *jdc-dos* -132 ())
-(defun jdc-ffi-caller () (integerp (jdc-ioerr)))
-(check "jit-direct-ffi-stub" t (jdc-ffi-caller))
-(amiga:close-library *jdc-dos*)
+;; AmigaOS only: on a host the AMIGA.FFI package does not exist, and the
+;; reader error would end the LOAD of this file right here.
+#+amigaos
+(progn
+  (defvar *jdc-dos* (amiga:open-library "dos.library" 36))
+  (amiga.ffi:defcfun jdc-ioerr *jdc-dos* -132 ())
+  (defun jdc-ffi-caller () (integerp (jdc-ioerr)))
+  (check "jit-direct-ffi-stub" t (jdc-ffi-caller))
+  (amiga:close-library *jdc-dos*))
 
 ;; A traced callee still traces from a JIT'd caller (tracing routes every
 ;; call through the trampoline).
@@ -2216,6 +2219,9 @@
 ;; arguments live on the rooted VM stack for the call and the caller's
 ;; operand stack is scanned conservatively.
 (defun jdc-alloc (n) (let ((acc nil)) (dotimes (i n) (setq acc (list i (car acc)))) acc))
+;; m68k: the host's heap (32M in the AArch64 walker test) needs no
+;; collection for 300000 conses, so "a collection happened" is the Amiga's.
+#+m68k
 (stress-check "jit-direct-builtin-across-gc" '(t (299999 299998))
   (let ((g0 (clamiga::%get-gc-count)))
     (let ((r (jdc-alloc 300000)))
@@ -2297,11 +2303,13 @@
         (abi-6 1 'b "c" #\d '(e) 6.5)))
 (defun abi-native-funcall (f g)
   (list (funcall f 1 'b "c") (funcall g 1 'b "c" #\d '(e) 6.5)))
-;; An interpreted caller: &optional keeps the walker off it.
+;; An interpreted caller: defined with the JIT off, it stays bytecode.
+(clamiga::%jit-set-active nil)
 (defun abi-vm-caller (&optional (x 1))
   (list (abi-0) (abi-1 x) (abi-2 x 'b) (abi-3 x 'b "c")
         (abi-4 x 'b "c" #\d) (abi-5 x 'b "c" #\d '(e))
         (abi-6 x 'b "c" #\d '(e) 6.5)))
+(clamiga::%jit-set-active t)
 (defparameter *abi-expected*
   '(() (1) (1 b) (1 b "c") (1 b "c" #\d) (1 b "c" #\d (e))
     (1 b "c" #\d (e) 6.5)))
@@ -2338,13 +2346,19 @@
 (defun jef-deep (n)
   (if (= n 0) (jef-floor) (car (list (jef-deep (- n 1))))))
 (defun jef-error (n) (if (= n 0) (error "jef") (car (list (jef-error (- n 1))))))
-;; Interpreted (&optional keeps the walker off it): calls the builtin with
-;; no native frame on the stack.
+;; Interpreted (defined with the JIT off): calls the builtin with no native
+;; frame on the stack.
+(clamiga::%jit-set-active nil)
 (defun jef-vm-floor (&optional x) (declare (ignore x)) (clamiga::%jit-c-floor))
+(clamiga::%jit-set-active t)
 (check "jit-enter-all-native" t
   (every (lambda (f) (not (null (clamiga::%jit-dump-bytes f))))
          (list #'jef-floor #'jef-deep #'jef-error)))
 (check "jit-enter-floor-outside-native" nil (jef-vm-floor))
+;; The floor is the m68k entry trampoline's (cl_jit_enter); AArch64 has
+;; none -- %JIT-C-FLOOR is NIL there, and a direct call checks the C stack
+;; itself (tests/test_jit_a64_walk.sh part 4).
+#+m68k
 (let ((r (jef-floor)))
   (check "jit-enter-floor-shape" t
     (and (consp r) (integerp (first r)) (integerp (second r)) t))
@@ -2559,6 +2573,10 @@
     (list v (not (null (search "JDS-TR-LEAF" captured)))
           (> (jds-stat :refused-trace) r0))))
 (untrace jds-tr-leaf)
+;; The jit-site-* fill counts and refusals are the m68k cells' rules (the
+;; AArch64 ones -- refused while frames are OFF, per-thread counters -- are
+;; tests/test_jit_a64_walk.sh part 4's).
+#+m68k
 (check "jit-site-untrace-refills" '(12 t)
   (let ((f0 (jds-stat :fills)))
     (list (jds-tr-caller 4) (> (jds-stat :fills) f0))))
@@ -2571,6 +2589,7 @@
 (let ((bt (jds-bt-caller)))
   (check "jit-site-shadow-frames-backtrace" '("JDS-BT-LEAF" "JDS-BT-CALLER")
     (list (symbol-name (second (first bt))) (symbol-name (second (second bt))))))
+#+m68k
 (check "jit-site-shadow-frames-refused" t
   (let ((r0 (jds-stat :refused-shadow)))
     (jds-loop 3)
@@ -2629,6 +2648,7 @@
   (not (null (clamiga::%jit-dump-bytes #'jlp-spin))))
 ;; The poll at the loop header: subq.w #1,jit_loop_ctr(a3) ($536B d16),
 ;; bcc.w over the call ($6400 $0008), jsr abs.l ($4EB9).
+#+m68k
 (check "jit-loop-poll-emitted-at-loop-header" t
   (let ((b (clamiga::%jit-dump-bytes #'jlp-spin)))
     (let ((p (search '(#x53 #x6B) b)))
@@ -2645,6 +2665,10 @@
 (defun jlp-tail (i n)
   (if (or *jlp-stop* (>= i n)) i (jlp-tail (+ i 1) n)))
 (jlp-tail 0 10)
+;; These three are m68k-paced: a native host finishes +JLP-N+ iterations
+;; long before the 0.2 s sleep is over (the AArch64 loop poll is
+;; tests/test_jit_a64_walk.sh part 2's, a loop bounded by its stop flag).
+#+m68k
 (check "jit-loop-poll-self-tail-call-interrupt-delivered" '(:interrupted t)
   (progn
     (setq *jlp-stop* nil)
@@ -2656,6 +2680,7 @@
         (unless r (setq *jlp-stop* :forced))
         (list r (< (mp:join-thread th) +jlp-n+))))))
 
+#+m68k
 (check "jit-loop-poll-interrupt-delivered" '(:interrupted t)
   (progn
     (setq *jlp-stop* nil)
@@ -2670,6 +2695,7 @@
 ;; A full GC requested from here has to stop the spinning thread at its
 ;; next loop iteration, not after its last one: the collection returns
 ;; while the spinner is still alive and short of N.
+#+m68k
 (check "jit-loop-poll-stw-gc-not-delayed" '(t t t)
   (progn
     (setq *jlp-stop* nil)
@@ -2830,7 +2856,13 @@
 ; image, whose native code is dropped on restore, run native code again.
 (clamiga::%jit-set-hot-threshold *jit-suite-hot-threshold*)
 (defun hot-native-p (f) (and (clamiga::%jit-dump-bytes f) t))
-(check "hot: default threshold" 8 (clamiga::%jit-hot-threshold))
+;; The default is 8, unless CLAMIGA_JIT_HOT set another at boot (`make
+;; test-jit-eager` runs everything with 0).  The checks below are written
+;; against 8, so the section pins it.
+(check "hot: default threshold"
+  (if (ext:getenv "CLAMIGA_JIT_HOT") *jit-suite-hot-threshold* 8)
+  (clamiga::%jit-hot-threshold))
+(clamiga::%jit-set-hot-threshold 8)
 ; %JIT-SET-HOT-THRESHOLD documents its domain as (INTEGER 0 126) -- the
 ; count lives in 7 bits of bc->jit_hot (CL_BC_JIT_COUNT_MASK) and 127 is
 ; reserved as the CL_BC_JIT_SETTLED sentinel.  A negative value signals;
@@ -2935,9 +2967,9 @@
 ; small count (cl_jit_note_call re-checks before it writes), and a
 ; declined function would then be tried again every 8 calls.  That race
 ; is too narrow to force from here, so this is a smoke test of concurrent
-; settling.  hot-race-declined always declines: its &optional arg bails
-; every matcher/walker, as jit-stub-test-fn's does at the top of this
-; file.  %JIT-HOT-COMPILE-COUNT counts every function the hot path tries,
+; settling.  On m68k hot-race-declined always declines: its &optional
+; arg bails every matcher/walker.  AArch64 compiles every lambda list, so
+; there it is a race to settle to native code.  %JIT-HOT-COMPILE-COUNT counts every function the hot path tries,
 ; so the target must be the only one counted in the window: the worker is
 ; (speed 3), settled at definition, and the thread's entry call into it
 ; (cl_vm_apply's stub OP_CALL, which counts like any interpreted call)
@@ -2948,7 +2980,7 @@
 (defun hot-race-worker ()
   (declare (optimize (speed 3)))
   (dotimes (i 400) (hot-race-declined i nil)))
-(check "hot: concurrent calls settle a declined function" '(nil t)
+(check "hot: concurrent calls settle a declined function" #+m68k '(nil t) #-m68k '(t t)
   (let ((prev (clamiga::%jit-set-hot-threshold 8)))
     (unwind-protect
         (let ((before (clamiga::%jit-hot-compile-count))
@@ -2964,3 +2996,9 @@
 ; Restore the suite-wide baseline established by run-tests.lisp's
 ; "declaim optimize" test — sections after this load expect speed 3.
 (declaim (optimize (speed 3)))
+
+(clamiga::%jit-set-hot-threshold *jit-suite-hot-threshold*)
+
+; The last form: a runner can tell the whole file loaded (a reader error --
+; a package missing on this platform, say -- ends a LOAD silently early).
+(defparameter *test-jit-loaded-to-end* t)

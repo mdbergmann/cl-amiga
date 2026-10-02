@@ -3,8 +3,13 @@
  * The walker runs the operand stack, the locals and control flow natively
  * and sends every opcode it has no template for to the C helper behind it
  * -- a shared one (runtime.c, runtime_nlx.c) where its semantics are the
- * interpreter's, else a VM-stack one (runtime_vmstack.c).  An &optional or
- * &rest function stays interpreted (no prologue for them yet).
+ * interpreter's, else a VM-stack one (runtime_vmstack.c).
+ *
+ * Every lambda list compiles: the prologue sets up the interpreter's frame
+ * (missing optionals NIL, the &rest list after the positional parameters,
+ * the &key matches) -- inline for required and &optional parameters, through
+ * cl_jit_vmstack_ll_prologue with &rest or &key -- and OP_ARGC, which the
+ * compiler's &optional prologue tests, reads the entry's nargs from x24.
  *
  * Phase 3 adds the m68k walker's other opcodes: the NLX frames (BLOCK,
  * CATCH, TAGBODY, UNWIND-PROTECT, HANDLER-CASE: an alloc helper, _setjmp
@@ -45,9 +50,9 @@
  * Registers (callee-saved, so they survive every helper call):
  *     x19  the current CL_Thread *          x20  the operand-stack top
  *     x21  bp                               x22  bc->constants
- *     x23  cl_arena_base                    x25  the CL_Frame (its ip)
- *     x27  cl_vm.stack (the thread's)       x28  scratch across a
- *                                                non-allocating call
+ *     x23  cl_arena_base                    x24  nargs (OP_ARGC)
+ *     x25  the CL_Frame (its ip)            x27  cl_vm.stack (the thread's)
+ *     x28  scratch across a non-allocating call
  * Caller-saved: w13-w15 the top-of-stack cache (never live across a call),
  * w10/w11 the operands a fast path read from memory, w0 a fast path's
  * result, x9, x12 and x16/x17 scratch.  x18 (reserved on Apple) is never
@@ -97,6 +102,7 @@ typedef CL_Obj (*a64_entry_t)(CL_Thread *thr, CL_Obj *bp, uint32_t nargs,
 #define R_BP    21
 #define R_K     22
 #define R_ARENA 23
+#define R_NARGS 24
 #define R_FRAME 25
 #define R_STK   27
 #define R_KEEP  28
@@ -190,8 +196,8 @@ typedef char a64_direct_layout[(sizeof(((CL_Thread *)0)->c_stack_base) == 8 &&
                                 sizeof(CL_Frame) < 4096 &&
                                 TYPE_CLOSURE < 4096) ? 1 : -1];
 
-/* The frame the prologue pushes: x29/x30, x19-x23, x25, x27 and x28 (x24
- * and x26 pad their pairs). */
+/* The frame the prologue pushes: x29/x30, x19-x25, x27 and x28 (x26 pads
+ * its pair). */
 #define FRAME_BYTES 96
 
 /* Walker limits: the operand encodings below assume them. */
@@ -734,7 +740,7 @@ static int32_t landing_ip(int32_t offset, uint32_t base, uint32_t code_len)
 static int op_operand_len(uint8_t op)
 {
     switch (op) {
-    case OP_NIL: case OP_T: case OP_POP: case OP_DUP: case OP_RET:
+    case OP_NIL: case OP_T: case OP_ARGC: case OP_POP: case OP_DUP: case OP_RET:
     case OP_CAR: case OP_CDR: case OP_CONS: case OP_NOT: case OP_EQ:
     case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV:
     case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
@@ -816,7 +822,7 @@ static uint32_t handler_case_clauses(CL_Obj types)
 static int op_cached(uint8_t op)
 {
     switch (op) {
-    case OP_NIL: case OP_T: case OP_CONST: case OP_LOAD: case OP_STORE:
+    case OP_NIL: case OP_T: case OP_ARGC: case OP_CONST: case OP_LOAD: case OP_STORE:
     case OP_POP: case OP_DUP: case OP_STORE_POP: case OP_LOAD_LOAD:
     case OP_LOAD_CONST: case OP_LOAD_STORE_POP: case OP_POP_LOAD:
     case OP_LOAD_MV_RESET: case OP_MV_RESET: case OP_LOAD_RET: case OP_RET:
@@ -1166,8 +1172,8 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out,
     uint8_t *tgt = NULL;
     A64Label *ip_lab = NULL;
     Depth d;
-    uint32_t arity, n_locals, ip, i;
-    int is_kw;
+    uint32_t arity, n_pos, n_locals, ip, i;
+    int is_kw, has_rest;
     int fell = 1;               /* control reaches the next IP from above */
     A64Label l_body, l_epilogue, l_overflow, l_check;
     uint8_t *code = NULL;
@@ -1176,18 +1182,18 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out,
 
     *sites_out = NULL;
     g->sites = NULL;
-    /* The gate: required arguments, and &key (a prologue helper matches
-     * the keywords) -- &rest and &optional need prologues the walker does
-     * not have yet. */
+    /* The gate: any lambda list.  Required and &optional parameters get an
+     * inline prologue, &rest and &key the helper (cl_jit_vmstack_ll_prologue). */
     if (bc->code == NULL || bc->code_len == 0) return NULL;
-    if (bc->arity & 0x8000) return NULL;
-    if (bc->n_optional != 0) return NULL;
     is_kw = (bc->flags & 1) != 0;
     if (is_kw ? (bc->flags & ~3u) != 0 : (bc->flags != 0 || bc->n_keys != 0))
         return NULL;
+    has_rest = (bc->arity & 0x8000) != 0;
     arity = bc->arity & 0x7FFF;
+    n_pos = arity + bc->n_optional;
     n_locals = bc->n_locals;
-    if (n_locals < arity || n_locals > A64_MAX_LOCALS) return NULL;
+    if (n_locals < n_pos + (has_rest ? 1u : 0u) || n_locals > A64_MAX_LOCALS)
+        return NULL;
     if (bc->n_constants > 0 && bc->constants == NULL) return NULL;
     if (bc->n_keys > 0) {
         if (bc->key_syms == NULL || bc->key_slots == NULL) return NULL;
@@ -1253,17 +1259,29 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out,
     {
         A64Label l_back = a64_label_new(&g->a);
         a64_bind(&g->a, l_back);
-        if (is_kw) {
-            /* The keyword pairs lie where the other locals go: the helper
-             * sets up the whole frame, the function slot included.  w2 and
-             * w3 are still the entry's nargs and function. */
+        /* The argument count, for OP_ARGC (the &optional prologue's
+         * defaults and supplied-p tests). */
+        E(a64_mov_reg(0, R_NARGS, 2));
+        if (is_kw || has_rest) {
+            /* The extra arguments lie where the other locals go: the
+             * helper sets up the whole frame, the function slot included.
+             * w2 and w3 are still the entry's nargs and function. */
             E(a64_mov_reg(0, 0, 2));
             E(a64_mov_reg(1, 1, R_BP));
             E(a64_mov_reg(0, 2, 3));
             emit_add_x(g, R_TOP, R_BP, 4 * (n_locals + 1));
-            emit_call(g, (const void *)&cl_jit_vmstack_kw_prologue);
+            emit_call(g, (const void *)&cl_jit_vmstack_ll_prologue);
         } else {
-            for (i = arity; i < n_locals; i++)
+            /* An optional not passed is NIL (the caller checked the count
+             * against the lambda list). */
+            for (i = arity; i < n_pos; i++) {
+                A64Label l_given = a64_label_new(&g->a);
+                E(a64_cmp_imm(0, R_NARGS, i));
+                a64_bcond(&g->a, A64_HI, l_given);
+                emit_store_local(g, A64_ZR, i);
+                a64_bind(&g->a, l_given);
+            }
+            for (i = n_pos; i < n_locals; i++)
                 emit_store_local(g, A64_ZR, i);        /* NIL == 0 */
             emit_store_local(g, 3, n_locals);          /* func */
             emit_add_x(g, R_TOP, R_BP, 4 * (n_locals + 1));
@@ -1316,6 +1334,14 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out,
                 depth_add(&d, 1);
                 emit_mv1(g);
                 break;
+            case OP_ARGC: {         /* the fixnum nargs: n << 1 | 1 */
+                int r = vs_push(g);
+                E(a64_add_reg(0, r, R_NARGS, R_NARGS));
+                E(a64_add_imm(0, r, r, CL_TAG_FIXNUM));
+                depth_add(&d, 1);
+                emit_mv1(g);
+                break;
+            }
             case OP_CONST:
                 emit_load_const(g, vs_push(g), read_u16_be(o));
                 depth_add(&d, 1);
@@ -1735,7 +1761,8 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out,
             case OP_TAILCALL:
             case OP_TAILCALL_GLOBAL: {
                 /* A self tail call (the callee runs this bytecode, the
-                 * argument count is the arity) reuses the frame: the
+                 * argument count fits an &optional-at-most lambda list)
+                 * reuses the frame: the
                  * arguments over the parameters, the callee as the frame's
                  * function, the other locals NIL again, an empty operand
                  * stack, the loop poll, and back to the body.  Anything else
@@ -1746,7 +1773,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out,
                 uint16_t k = global ? read_u16_be(o) : 0;
                 uint32_t n = global ? o[2] : o[0];
                 uint32_t fslot = global ? 0 : 1;
-                int self = !is_kw && (n == arity) &&
+                int self = !is_kw && !has_rest && n >= arity && n <= n_pos &&
                            (!global || bc->constants[k] == bc->name);
                 depth_need(&d, (int32_t)(n + fslot));
                 if (self) {
@@ -1768,8 +1795,13 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out,
                         emit_store_local(g, 9, i);
                     }
                     emit_store_local(g, R_KEEP, n_locals);
-                    for (i = arity; i < n_locals; i++)
+                    for (i = n; i < n_locals; i++)
                         emit_store_local(g, A64_ZR, i);
+                    if (n_pos > arity) {
+                        /* The new count, for OP_ARGC and the frame. */
+                        E(a64_movz(0, R_NARGS, n, 0));
+                        E(a64_str_uoff(2, R_NARGS, R_FRAME, OFF_F_NARGS));
+                    }
                     emit_add_x(g, R_TOP, R_BP, 4 * (n_locals + 1));
                     emit_loop_poll(g);
                     a64_b(&g->a, l_body);

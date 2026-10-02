@@ -2,7 +2,7 @@
 # The AArch64 walker (specs/native-backend-a64.md): functions run as native
 # code built from the interpreter's own helpers (phase 1) plus inline fast
 # paths and a top-of-stack register cache (phase 2), so every result must be
-# the interpreter's.  Three parts:
+# the interpreter's.  Five parts:
 #
 #   1. tests/amiga/test-jit.lisp -- the m68k JIT suite's behavioural checks
 #      -- run against this backend, eager (the file sets the hot threshold
@@ -20,6 +20,12 @@
 #      and &key functions, each against the interpreter's results (also
 #      under the classic collector), and native frames in the backtrace and
 #      FRAME-LOCALS.
+#   4. Direct native-to-native calls, against the same script with direct
+#      calls off.
+#   5. &optional and &rest: the inline &optional prologue, the &rest/&key
+#      helper, self tail calls that change the count, direct calls into
+#      such callees -- against the interpreter, direct calls off and the
+#      classic collector.
 #
 # A build without the backend (x86-64, Windows, `make host JIT=0`)
 # skips them all.  Also run by `make test-gc-stress` (CLAMIGA_GC_STRESS=1).
@@ -94,15 +100,19 @@ cat > "$WORK/suite.lisp" <<'EOF'
          (format t "FAIL: ~A - signaled error: ~A~%" ,name ,c)))))
 (defmacro stress-check (name expected actual) `(check ,name ,expected ,actual))
 (load "tests/amiga/test-jit.lisp")
+(format t "~%END ~S~%" (and (boundp '*test-jit-loaded-to-end*) (symbol-value '*test-jit-loaded-to-end*)))
 (format t "~%SUITE pass=~D fail=~D~%" *pass-count* *fail-count*)
 EOF
 out=$(run "$WORK/suite.lisp")
-check_contains "test-jit.lisp ran to the end" "SUITE pass=" "$out"
+check_contains "test-jit.lisp ran" "SUITE pass=" "$out"
+# A reader error (AMIGA.FFI on a host, 2026-10-02) ends the LOAD early and
+# silently: everything after it never ran.  The file's last form says it got there.
+check_contains "test-jit.lisp loaded to its last form" "END T" "$out"
 check_contains "every behavioural check of test-jit.lisp passes" "fail=0" "$out"
 # Its checks number in the hundreds: guard against the file running only a few.
 pass_n=$(echo "$out" | sed -n 's/.*SUITE pass=\([0-9]*\).*/\1/p')
 total=$((total + 1))
-if [ -n "$pass_n" ] && [ "$pass_n" -ge 350 ]; then
+if [ -n "$pass_n" ] && [ "$pass_n" -ge 500 ]; then
     echo "  ok  test-jit.lisp ran $pass_n checks"; passed=$((passed + 1))
 else
     echo "  FAIL  test-jit.lisp ran only '$pass_n' checks"; failed=$((failed + 1))
@@ -854,14 +864,19 @@ cat > "$WORK/p4.lisp" <<'EOF'
      (mp:join-thread (mp:make-thread
                       (lambda () (list (getf (clamiga::%jit-direct-call-stats) :fills)
                                        (p4-caller 10))))))
+;; Under CLAMIGA_GC_STRESS the collector thread stops the world without a
+;; pause and the caller advances only between collections: 200 rounds took
+;; 13-125 s there (one STW-scheduling lottery, master alike) and crossed the
+;; 300 s limit in the Linux container.  20 rounds under stress.
 (chk "P4-STW"
      (let* ((done nil)
+            (n (min 200 *churn-n*))
             (gcer (mp:make-thread
                    (lambda () (loop until done do (make-list 200) (gc)))))
-            (r (loop repeat 200 collect (p4-caller 100))))
+            (r (loop repeat n collect (p4-caller 100))))
        (setq done t)
        (mp:join-thread gcer)
-       (list (length r) (every (lambda (x) (= x 100)) r))))
+       (list (= (length r) n) (every (lambda (x) (= x 100)) r))))
 (chk "P4-INTERRUPT"
      (let* ((stop nil) (hit nil)
             (th (mp:make-thread (lambda () (loop until stop do (p4-caller 100))))))
@@ -918,7 +933,7 @@ check_contains "the kill switch: the same values" \
     "P4-KILL (100 (2) ((3 2 NIL NIL) (3 5 NIL NIL) (3 6 (\"k\") T)))" "$out"
 check_contains "the kill switch: no fills" "STAT-KILL-FILLS 0" "$out"
 check_contains "the counters are the calling thread's" "P4-THREAD-STATS (0 10)" "$out"
-check_contains "a collector thread while direct calls run" "P4-STW (200 T)" "$out"
+check_contains "a collector thread while direct calls run" "P4-STW (T T)" "$out"
 check_contains "an interrupt reaches a thread looping on direct calls" "P4-INTERRUPT T" "$out"
 # The same script with direct calls off: every line but the counters.
 offout=$(CLAMIGA_JIT_DIRECT=0 CLAMIGA_JIT_DIRECT_OFF=1 run "$WORK/p4.lisp")
@@ -932,6 +947,177 @@ else
     diff "$WORK/p4-on.txt" "$WORK/p4-off.txt" | head -20
     failed=$((failed + 1))
 fi
+
+# --- Part 5: &optional and &rest ------------------------------------------------
+# Every lambda list compiles: the inline &optional prologue (a missing optional
+# is NIL, OP_ARGC reads the entry's count), the &rest/&key helper
+# (cl_jit_vmstack_ll_prologue), a self tail call that changes the count, and
+# direct calls into such callees.  The values are the HyperSpec's (3.4.1); the
+# script also runs interpreted, with direct calls off and under the classic
+# collector, and every line but P5-NATIVE and the counters must agree.
+cat > "$WORK/p5.lisp" <<'EOF'
+(clamiga::%jit-set-hot-threshold 0)
+;; Under CLAMIGA_GC_STRESS every allocation compacts: fewer consing rounds.
+(defparameter *p5-n* (if (ext:getenv "CLAMIGA_GC_STRESS") 20 1000))
+(defmacro chk (name form)
+  `(format t "~A ~S~%" ,name
+           (handler-case ,form (error (c) (list :error (princ-to-string c))))))
+(defun native-p (f) (not (null (clamiga::%jit-dump-bytes f))))
+(defun p5-k () (list "k"))
+(defvar *p5-s* :global)
+
+;; --- &optional: defaults see the earlier parameters, supplied-p -----------
+(defun p5-o (a &optional (b 10) (c (list a b) cp)) (list a b c cp))
+(defun p5-o-heap (&optional (x (p5-k)) (y (p5-k))) (list x y))
+(defun p5-o-special (&optional (s *p5-s*)) s)
+(defun p5-o-err (&optional (x (error "default ~A" 1))) x)
+(defun p5-o-nil (&optional a b) (list a b))
+;; --- &rest ----------------------------------------------------------------
+(defun p5-r (a &rest r) (list a r))
+(defun p5-r-gc (&rest xs) (gc) xs)
+(defun p5-r-sum (&rest xs) (let ((s 0)) (dolist (x xs s) (setq s (+ s x)))))
+;; --- Mixed ----------------------------------------------------------------
+(defun p5-or (a &optional (b 2 bp) &rest r) (list a b bp r))
+(defun p5-ok (a &optional b &key (k 7 kp)) (list a b k kp))
+(defun p5-rk (&rest r &key x y &allow-other-keys) (list r x y))
+(defun p5-ork (&optional (o :o) &rest r &key x) (list o r x))
+;; --- Self tail calls that change the count --------------------------------
+(defun p5-acc (n &optional (s 0)) (if (= n 0) s (p5-acc (- n 1) (+ s n))))
+(defun p5-st (n &optional (a :dflt a-p))
+  (cond ((= n 0) (list a a-p)) ((= n 1) (p5-st 0)) (t (p5-st (- n 1) n))))
+(defun p5-st-up (n &optional (a :dflt a-p))
+  (if (= n 0) (list a a-p) (if (= n 3) (p5-st-up (- n 1) :x) (p5-st-up (- n 1)))))
+;; A self tail call into &rest is an ordinary tail call.
+(defun p5-rt (n &rest r) (if (= n 0) (length r) (p5-rt (- n 1) n n)))
+;; --- Callers: direct calls with every count -------------------------------
+(defun p5-call-o () (list (p5-o 1) (p5-o 1 2) (p5-o 1 2 3)))
+(defun p5-call-r () (list (p5-r 1) (p5-r 1 2) (p5-r 1 2 (p5-k) 4)))
+;; Two-argument + only: a three-argument one calls the builtin, which misses.
+(defun p5-call-loop (n) (let ((s 0)) (dotimes (i n s) (setq s (+ s (+ (p5-acc 3) (p5-r-sum i 1)))))))
+(defun p5-tail-o (x) (p5-o x))
+(defun p5-tail-r (x) (p5-r x x))
+(defun p5-tail-loop (n) (let ((s 0)) (dotimes (i n s) (setq s (+ s (car (p5-tail-o i)) (car (p5-tail-r i)))))))
+(defun p5-too-many () (p5-o 1 2 3 4))
+(defun p5-too-few () (p5-o))
+(defun p5-mk (n) (lambda (&optional (x n) &rest r) (list x r)))
+(defun p5-fc (f) (list (funcall f) (funcall f 1) (funcall f 1 2 3)))
+
+(chk "P5-NATIVE" (mapcar #'native-p
+                         (list #'p5-o #'p5-o-heap #'p5-o-special #'p5-o-err #'p5-o-nil
+                               #'p5-r #'p5-r-gc #'p5-r-sum #'p5-or #'p5-ok #'p5-rk #'p5-ork
+                               #'p5-acc #'p5-st #'p5-st-up #'p5-rt (p5-mk 0))))
+(chk "P5-OPT" (list (p5-o 1) (p5-o 1 2) (p5-o 1 2 3)))
+(chk "P5-OPT-HEAP" (list (p5-o-heap) (p5-o-heap :a) (p5-o-heap :a :b)))
+(chk "P5-OPT-SPECIAL" (list (p5-o-special) (let ((*p5-s* :bound)) (p5-o-special)) (p5-o-special 3)))
+(chk "P5-OPT-ERR" (list (p5-o-err 5) (handler-case (p5-o-err) (error (e) (princ-to-string e)))))
+(chk "P5-OPT-NIL" (list (p5-o-nil) (p5-o-nil 1) (p5-o-nil 1 2)))
+(chk "P5-REST" (list (p5-r 1) (p5-r 1 2 3) (p5-r-gc (p5-k) (p5-k) (p5-k))))
+(chk "P5-REST-MANY" (list (p5-r-sum) (apply #'p5-r-sum (loop for i from 1 to 250 collect i))
+                          (length (apply #'p5-r (make-list 200)))))
+(chk "P5-REST-300" (apply #'p5-r-sum (make-list 300 :initial-element 1)))
+(chk "P5-OPT-REST" (list (p5-or 1) (p5-or 1 5) (p5-or 1 5 6 (p5-k))))
+(chk "P5-OPT-KEY" (list (p5-ok 1) (p5-ok 1 2) (p5-ok 1 2 :k 9) (p5-ok 1 2 :k 9 :k 10)))
+(chk "P5-OPT-KEY-BAD" (p5-ok 1 2 :q 3))
+(chk "P5-OPT-KEY-ODD" (p5-ok 1 2 :k))
+(chk "P5-REST-KEY" (list (p5-rk) (p5-rk :x 1 :y (p5-k) :z 3)))
+(chk "P5-OPT-REST-KEY" (list (p5-ork) (p5-ork :a) (p5-ork :a :x 2)))
+(chk "P5-OPT-REST-KEY-ODD" (p5-ork :a :x))
+(chk "P5-SELF-TAIL" (list (p5-acc 20000) (p5-st 3) (p5-st 2) (p5-st 0 5) (p5-st-up 5)))
+(chk "P5-REST-TAIL" (p5-rt 3000))
+(chk "P5-DIRECT" (list (p5-call-o) (p5-call-o) (p5-call-r) (p5-call-r) (p5-call-loop 100)))
+(chk "P5-TAIL-HANDOFF" (p5-tail-loop 3000))
+(chk "P5-TOO-MANY" (subseq (princ-to-string (nth-value 1 (ignore-errors (p5-too-many)))) 0 28))
+(chk "P5-TOO-FEW" (subseq (princ-to-string (nth-value 1 (ignore-errors (p5-too-few)))) 0 27))
+(chk "P5-CLOSURES" (list (p5-fc (p5-mk 1)) (p5-fc (p5-mk (p5-k)))))
+(defun p5-measure ()
+  (let* ((s0 (clamiga::%jit-direct-call-stats))
+         (r (p5-call-loop *p5-n*))
+         (s1 (clamiga::%jit-direct-call-stats)))
+    (list r (- (getf s1 :fills) (getf s0 :fills)) (- (getf s1 :misses) (getf s0 :misses)))))
+(p5-measure)
+(format t "STAT-P5 ~S~%" (p5-measure))
+(chk "P5-THREADS"
+     (let ((ths (loop for i below 4
+                      collect (let ((i i))
+                                (mp:make-thread
+                                 (lambda ()
+                                   (loop repeat (floor *p5-n* 3)
+                                         always (and (equal (p5-r i (p5-k)) (list i (list (list "k"))))
+                                                     (equal (p5-o i) (list i 10 (list i 10) nil))
+                                                     (equal (p5-or i) (list i 2 nil nil))))))))))
+       (mapcar #'mp:join-thread ths)))
+(format t "DONE~%")
+EOF
+out=$(run "$WORK/p5.lisp")
+check_contains "the &optional/&rest script ran to the end" "DONE" "$out"
+check_contains "every lambda list compiles" \
+    "P5-NATIVE (T T T T T T T T T T T T T T T T T)" "$out"
+check_contains "&optional defaults see earlier parameters; supplied-p" \
+    "P5-OPT ((1 10 (1 10) NIL) (1 2 (1 2) NIL) (1 2 3 T))" "$out"
+check_contains "&optional defaults that allocate" \
+    'P5-OPT-HEAP ((("k") ("k")) (:A ("k")) (:A :B))' "$out"
+check_contains "an &optional default reads the dynamic binding" \
+    "P5-OPT-SPECIAL (:GLOBAL :BOUND 3)" "$out"
+check_contains "an &optional default that signals" 'P5-OPT-ERR (5 "default 1")' "$out"
+check_contains "an &optional without a default is NIL" "P5-OPT-NIL ((NIL NIL) (1 NIL) (1 2))" "$out"
+check_contains "&rest: none, some, across a collection" \
+    'P5-REST ((1 NIL) (1 (2 3)) (("k") ("k") ("k")))' "$out"
+check_contains "&rest with 250 and 200 arguments" "P5-REST-MANY (0 31375 2)" "$out"
+check_contains "&optional, supplied-p and &rest" \
+    'P5-OPT-REST ((1 2 NIL NIL) (1 5 T NIL) (1 5 T (6 ("k"))))' "$out"
+check_contains "&optional then &key" \
+    "P5-OPT-KEY ((1 NIL 7 NIL) (1 2 7 NIL) (1 2 9 T) (1 2 9 T))" "$out"
+check_contains "&optional then &key: an unknown keyword" \
+    'P5-OPT-KEY-BAD (:ERROR "Unknown keyword argument: Q")' "$out"
+check_contains "&optional then &key: an odd count" \
+    'P5-OPT-KEY-ODD (:ERROR "odd number of keyword arguments")' "$out"
+check_contains "&rest holds every keyword pair" \
+    'P5-REST-KEY ((NIL NIL NIL) ((:X 1 :Y ("k") :Z 3) 1 ("k")))' "$out"
+check_contains "&optional, &rest and &key" \
+    "P5-OPT-REST-KEY ((:O NIL NIL) (:A NIL NIL) (:A (:X 2) 2))" "$out"
+check_contains "&optional, &rest and &key: an odd count" \
+    'P5-OPT-REST-KEY-ODD (:ERROR "odd number of keyword arguments")' "$out"
+check_contains "self tail calls with another argument count" \
+    "P5-SELF-TAIL (200010000 (:DFLT NIL) (:DFLT NIL) (5 T) (:DFLT NIL))" "$out"
+check_contains "a tail call into &rest, 3000 deep" "P5-REST-TAIL 2" "$out"
+check_contains "direct calls into &optional and &rest callees" \
+    'P5-DIRECT (((1 10 (1 10) NIL) (1 2 (1 2) NIL) (1 2 3 T)) ((1 10 (1 10) NIL) (1 2 (1 2) NIL) (1 2 3 T)) ((1 NIL) (1 (2)) (1 (2 ("k") 4))) ((1 NIL) (1 (2)) (1 (2 ("k") 4))) 5650)' "$out"
+check_contains "tail-call handoffs into &optional and &rest callees" "P5-TAIL-HANDOFF 8997000" "$out"
+check_contains "too many arguments to an &optional callee" \
+    'P5-TOO-MANY "Too many arguments to P5-O ("' "$out"
+check_contains "too few arguments to an &optional callee" \
+    'P5-TOO-FEW "Too few arguments to P5-O ("' "$out"
+check_contains "&optional/&rest closures through one site" \
+    'P5-CLOSURES (((1 NIL) (1 NIL) (1 (2 3))) ((("k") NIL) (1 NIL) (1 (2 3))))' "$out"
+if [ -z "$CLAMIGA_GC_STRESS" ]; then
+    check_contains "the sites into &optional/&rest callees hit: no fill, no miss" \
+        "STAT-P5 (506500 0 1)" "$out"
+fi
+check_contains "&optional and &rest on four threads" "P5-THREADS (T T T T)" "$out"
+# The same values interpreted, with direct calls off, under the classic collector.
+echo "$out" | grep -v '^STAT-\|^P5-NATIVE' > "$WORK/p5-jit.txt"
+p5_same() {
+    desc="$1"; shift
+    total=$((total + 1))
+    echo "$1" | grep -v '^STAT-\|^P5-NATIVE' > "$WORK/p5-other.txt"
+    if cmp -s "$WORK/p5-jit.txt" "$WORK/p5-other.txt"; then
+        echo "  ok  $desc"; passed=$((passed + 1))
+    else
+        echo "  FAIL  $desc"
+        diff "$WORK/p5-jit.txt" "$WORK/p5-other.txt" | head -20
+        failed=$((failed + 1))
+    fi
+}
+if [ -n "$TIMEOUT" ]; then
+    interp=$("$TIMEOUT" 300 "$CLAMIGA" --no-jit --heap 32M --no-userinit --non-interactive \
+                 --load "$WORK/p5.lisp" </dev/null 2>&1)
+else
+    interp=$("$CLAMIGA" --no-jit --heap 32M --no-userinit --non-interactive \
+                 --load "$WORK/p5.lisp" </dev/null 2>&1)
+fi
+p5_same "the interpreter gives the same results" "$interp"
+p5_same "direct calls off give the same results" "$(CLAMIGA_JIT_DIRECT=0 run "$WORK/p5.lisp")"
+p5_same "the classic collector gives the same results" "$(CLAMIGA_GENGC=0 run "$WORK/p5.lisp")"
 
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

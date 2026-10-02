@@ -36,14 +36,25 @@ CL_Obj cl_jit_vmstack_tail(struct CL_Thread_s *thr, CL_Obj *top,
                                uint32_t nargs, CL_Obj *bp, const CL_Obj *symref);
 /* FUNC's bytecode when native code may enter it with NARGS, else NULL. */
 CL_Bytecode *cl_jit_vmstack_native_callee(CL_Obj func, uint32_t nargs);
+/* Does a call with NARGS arguments fit BC's lambda list?  The interpreter's
+ * OP_CALL bounds (vm.c): at least the required ones, at most the required
+ * and optional ones -- or 255 with &rest or &key.  A call that does not fit
+ * takes the interpreter, which signals the arity error. */
+static inline int cl_jit_vmstack_fits(const CL_Bytecode *bc, uint32_t nargs)
+{
+    uint32_t arity = bc->arity & 0x7FFFu;
+    uint32_t max = ((bc->arity & 0x8000u) || (bc->flags & 1u))
+                   ? 255u : arity + bc->n_optional;
+    return nargs >= arity && nargs <= max;
+}
 CL_Obj cl_jit_vmstack_cons(CL_Obj *pair);
 CL_Obj cl_jit_vmstack_list(CL_Obj *base, uint32_t n);
 CL_Obj cl_jit_vmstack_push_local(CL_Obj *item, CL_Obj *slot);
-/* Phase 3: the &key prologue (the arguments at BP, the function value FUNC,
+/* The &rest / &key prologue (the arguments at BP, the function value FUNC,
  * before the frame is set up); OP_CLOSURE (the template a word of
  * bc->constants, the captures on the VM stack); OP_RESTART_PUSH (the name a
  * word of bc->constants, the five operands at OPS). */
-void   cl_jit_vmstack_kw_prologue(uint32_t nargs, CL_Obj *bp, CL_Obj func);
+void   cl_jit_vmstack_ll_prologue(uint32_t nargs, CL_Obj *bp, CL_Obj func);
 CL_Obj cl_jit_vmstack_make_closure(const CL_Obj *tmpl_ref, uint32_t n,
                                    CL_Obj *values);
 void   cl_jit_vmstack_restart_push(const CL_Obj *name_ref, CL_Obj *ops);

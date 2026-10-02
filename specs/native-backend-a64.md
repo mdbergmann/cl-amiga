@@ -106,6 +106,7 @@ JIT frames.
 | arena base                            | A5        | x23 |
 | top-of-stack cache (phase 2)          | D5-D7     | w24-w26 (built: w13-w15) |
 | the function's `CL_Frame` (phase 3)   | -         | x25 |
+| the entry's `nargs` (`OP_ARGC`)       | `jit_current_nargs` | w24 |
 | result / first helper argument        | D0        | w0 / x0 |
 | scratch                               | D1-D3     | x9-x15 |
 | far-call veneer                       | -         | x16, x17 |
@@ -144,7 +145,8 @@ The prologue:
 Frame in `cl_vm.stack`: `[args | other locals | func_obj | operand stack ...]`.
 A `&key` function uses the same entry; its keyword prologue is the existing
 `cl_jit_runtime_kw_prologue` helper, which already works on args in the VM
-stack.
+stack.  (Built: `cl_jit_vmstack_ll_prologue`, which also does `&rest`; see
+"&optional and &rest" below.)
 
 Who pops the arguments is unchanged: `cl_jit_invoke`'s contract with its
 callers stays as it is today.
@@ -642,8 +644,69 @@ FUNCALL 24 -> 12; bench-opt `vm.call-return` 13 -> 5 ms (6.4x the
 interpreter), `mt.call-x8` 13 -> 6, `call-args` 20 -> 14,
 `kw.call-8keys` 27 -> 23; no row slower.
 
+### &optional and &rest
+
+**Status (2026-10-02): done** on branch `feat/a64-optrest` (AArch64 only;
+the m68k walker still declines both).
+
+The walker takes every lambda list.  The frame is the one the interpreter's
+`OP_CALL` builds: the positional parameters (required and optional) where
+the caller pushed them, a missing optional NIL, the `&rest` list in the slot
+right after them, every other local NIL, `&key` matched into its slots.
+- **`&optional` only**: an inline prologue -- per optional `cmp w24, #i;
+  b.hi given; str wzr, [x21, #4i]` -- then the other locals and the
+  function slot as for required parameters.  The defaults and supplied-p
+  tests are the compiler's own bytecode prologue (`OP_ARGC; CONST k; GE;
+  JTRUE`), which the walker compiles like any code.
+- **`&rest` or `&key`**: `cl_jit_vmstack_ll_prologue` (it replaces the
+  `&key` one) copies the arguments past the positional ones into
+  `vm_extra_args_buf` (a root both collectors forward), NILs the rest of the
+  frame, stores the function slot, conses the `&rest` list -- the only
+  allocation, with everything rooted; the bytecode is re-derived from the
+  function slot afterwards -- and matches the keywords.
+- **`OP_ARGC`** pushes the fixnum `nargs`: the entry's w2, kept in x24
+  (callee-saved; it was the padding of the x23/x24 pair).  Every entry --
+  `cl_jit_invoke`, a direct call's hit, the tail-call chain -- passes the
+  count in w2, so unlike m68k nothing goes through `jit_current_nargs`.
+- **Self tail calls** stay on for `&optional`-only functions with a count
+  in `[arity, arity + n_optional]`: the copy NILs from the new count up,
+  and the code writes the new count into x24 and the frame's `nargs`
+  before branching back over the defaults.  Off with `&rest`/`&key` (a
+  tail call that conses or matches goes through the tail helper).
+- **The fit rule** (`cl_jit_vmstack_fits`, shared by the dispatch, the
+  tail helper and the direct-call fill): the interpreter's `OP_CALL`
+  bounds -- `arity <= nargs <= arity + n_optional`, or 255 with `&rest` or
+  `&key`.  A call outside them takes the interpreter, which signals the
+  arity error.  So a direct-call cell is filled only for a count the
+  callee accepts, and the hit path needs no check.
+
+Two compiler bugs surfaced and are fixed with it (interpreter and JIT
+alike; `CL_FASL_VERSION` 40): with an optional's supplied-p variable and
+`&rest`, the `&rest` slot came after the supplied-p slots, so the first
+supplied-p store overwrote the list; and a supplied-p variable was bound only
+after every default had run, so a later default could not see it (CLHS
+3.4.1).  The compiler now reserves the optional, `&rest` and supplied-p slots
+up front and reveals each name once it is bound.
+
+Tests: `tests/test_jit_a64_walk.sh` part 5 -- every shape (`&optional`,
+`&rest`, both, with `&key`), defaults that allocate, signal or read a
+special, 250 and 300 arguments, self tail calls that change the count
+(supplied-p must follow it), a 3000-deep tail into `&rest`, direct calls
+and tail handoffs into such callees, closures, four threads -- each run
+interpreted, with direct calls off and under the classic collector, every
+line identical.  Dropping the self tail call's count update, the NIL of a
+missing optional or `OP_ARGC`'s fixnum tag each fails it.
+
+Part 1 now runs all of `tests/amiga/test-jit.lisp`: its FFI block read
+`AMIGA.FFI:DEFCFUN`, a reader error on a host that ended the LOAD at line
+2189, so a third of the file (direct calls, the entry ABI, the hot path)
+had never run on this backend.  The FFI block is `#+amigaos` now, the
+m68k-only checks it uncovered are `#+m68k`, the file ends with a marker
+the walker test checks, and the minimum count is 500.
+
 ### Later
-- `&optional`/`&rest` prologues in the walker, on both CPUs.
+- `&optional` on m68k: pass `nargs` in D1 and lift the walker's gate
+  (specs/jit-direct-calls.md, "Later").
 
 ## Measuring
 
