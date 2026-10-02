@@ -264,6 +264,12 @@ void  platform_jit_flush(void *addr, uint32_t len); /* I-cache maintenance    */
 - **Linux** (phase 4): a `memfd` mapped twice, a writable view and an
   executable view, because flipping `mprotect` on a page another thread
   is executing from is not safe.  Then `__builtin___clear_cache`.
+  - So `platform_jit_map(bytes, &writable)` returns both views (the same
+    address on macOS) and `platform_jit_unmap` takes both; the write
+    window calls are no-ops on Linux.
+  - The code heap keeps its block headers and free list in the writable
+    view and translates only at its edges: install returns the
+    executable address, free takes it back.
 
 **Code allocator** (`src/jit/codeheap.{c,h}`):
 - Apple pages are 16 KB, so one mapping per function would waste most of
@@ -306,7 +312,8 @@ Phase 0 and 1 below still say `jit.c` -- the m68k walker's name then.
 
 - `jit.h` guards become `#if defined(JIT_M68K) || defined(JIT_A64)`.
 - The `Makefile` defines `JIT_A64` when `uname -m` is `arm64`/`aarch64`
-  and the system is Darwin (Linux from phase 4), and adds the new files.
+  and the system is Darwin or Linux (Linux since phase 4), and adds the
+  new files.
 - `--no-jit`, `%JIT-SET-ACTIVE`, `%JIT-SET-HOT-THRESHOLD` and the lazy
   policy behave as on m68k.
 - `%JIT-DISASSEMBLE` gets a small decoder for the instruction forms
@@ -571,6 +578,20 @@ or an allocating helper.
 ### Phase 4: Linux arm64
 - Memfd double mapping, `JIT_A64` on Linux.
 - An `ubuntu-24.04-arm` CI job.
+
+Status (done, 2026-10-02):
+- `platform_jit_map` returns two views and the code heap writes only
+  through the writable one (see "Executable memory").  The walker needed
+  no change: nothing it emits depends on Darwin (x18 is left alone
+  anyway, glibc exports `_setjmp`).
+- `test_codeheap` checks that both views hold the same bytes and, on
+  Linux, that `/proc/self/maps` lists them `r-xs` and `rw-s`: no page is
+  ever writable and executable.
+- Gates on Linux arm64 (Debian bookworm, `verify/linux-arm64/run.sh`):
+  `make test`, `test-jit-eager`, `test-gc-stress`, `test-memleak` 20/20,
+  and the `JIT=0` build all pass; the walker test is 102/102.  The same
+  gates pass on the arm64 Mac.
+- CI: `ubuntu-24.04-arm` added to the host-test matrix.
 
 ### Later
 - Direct native-to-native calls through call-site cells guarded by

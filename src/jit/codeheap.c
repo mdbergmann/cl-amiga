@@ -14,8 +14,11 @@
 #define CH_SPLIT  64u       /* split a free block only if this much is left */
 
 /* Every block starts with this header, CH_ALIGN bytes long, so the code
- * that follows it is 16-byte aligned too.  It lives inside the MAP_JIT
- * chunk and is written only inside a write window. */
+ * that follows it is 16-byte aligned too.  It lives inside the chunk and
+ * is written only inside a write window.  Chunks have two views (one
+ * memfd mapped twice on Linux, the same MAP_JIT address on macOS): block
+ * pointers and the free list are in the WRITABLE view, and only the entry
+ * handed out by install, and taken back by free, is in the executable one. */
 typedef struct CHBlock {
     uint32_t size;          /* whole block, header included */
     uint32_t magic;         /* CH_MAGIC while handed out, 0 while free */
@@ -26,7 +29,8 @@ typedef char ch_header_is_aligned[(sizeof(CHBlock) == CH_ALIGN) ? 1 : -1];
 
 /* Chunk bookkeeping is ordinary memory, never executable. */
 typedef struct CHChunk {
-    uint8_t *base;
+    uint8_t *base;          /* writable view */
+    uint8_t *exec;          /* executable view of the same bytes */
     uint32_t size;
     uint32_t used;          /* bump front */
     struct CHChunk *next;
@@ -48,11 +52,13 @@ static CHChunk *ch_new_chunk(uint32_t need)
 {
     CHChunk *c;
     uint32_t size = (need > CH_CHUNK) ? ((need + CH_CHUNK - 1) & ~(CH_CHUNK - 1)) : CH_CHUNK;
-    uint8_t *base = (uint8_t *)platform_jit_map(size);
-    if (base == NULL) return NULL;
+    void *rw = NULL;
+    uint8_t *exec = (uint8_t *)platform_jit_map(size, &rw);
+    if (exec == NULL) return NULL;
     c = (CHChunk *)platform_alloc(sizeof(CHChunk));
-    if (c == NULL) { platform_jit_unmap(base, size); return NULL; }
-    c->base = base;
+    if (c == NULL) { platform_jit_unmap(exec, rw, size); return NULL; }
+    c->base = (uint8_t *)rw;
+    c->exec = exec;
     c->size = size;
     c->used = 0;
     c->next = ch_chunks;
@@ -61,9 +67,19 @@ static CHChunk *ch_new_chunk(uint32_t need)
     return c;
 }
 
-/* Take a block of SIZE bytes (header included).  Called with the lock held
- * and the write window open. */
-static CHBlock *ch_take(uint32_t size)
+/* The chunk whose writable view holds P. */
+static CHChunk *ch_chunk_of(const void *p)
+{
+    CHChunk *c;
+    for (c = ch_chunks; c != NULL; c = c->next)
+        if ((const uint8_t *)p >= c->base && (const uint8_t *)p < c->base + c->size)
+            return c;
+    return NULL;
+}
+
+/* Take a block of SIZE bytes (header included) and store its chunk in
+ * *OWNER.  Called with the lock held and the write window open. */
+static CHBlock *ch_take(uint32_t size, CHChunk **owner)
 {
     CHBlock **link = &ch_free, *b;
     CHChunk *c;
@@ -78,6 +94,7 @@ static CHBlock *ch_take(uint32_t size)
             ch_free = rest;
             b->size = size;
         }
+        *owner = ch_chunk_of(b);
         return b;
     }
     c = ch_chunks;
@@ -88,6 +105,7 @@ static CHBlock *ch_take(uint32_t size)
     b = (CHBlock *)(c->base + c->used);
     b->size = size;
     c->used += size;
+    *owner = c;
     return b;
 }
 
@@ -95,6 +113,7 @@ void *cl_codeheap_install(const uint8_t *code, uint32_t len)
 {
     uint32_t size;
     CHBlock *b;
+    CHChunk *c = NULL;
     uint8_t *entry = NULL;
 
     if (code == NULL || len == 0 || len > 0x7FFFFFF0u - CH_ALIGN) return NULL;
@@ -102,12 +121,12 @@ void *cl_codeheap_install(const uint8_t *code, uint32_t len)
     if (ch_lock == NULL) return NULL;
     platform_mutex_lock(ch_lock);
     platform_jit_write_begin();
-    b = ch_take(size);
+    b = ch_take(size, &c);
     if (b != NULL) {
         b->magic = CH_MAGIC;
         b->next = NULL;
-        entry = (uint8_t *)(b + 1);
-        memcpy(entry, code, len);
+        memcpy(b + 1, code, len);
+        entry = c->exec + ((uint8_t *)(b + 1) - c->base);
         ch_live += b->size;
     }
     platform_jit_write_end();
@@ -117,14 +136,16 @@ void *cl_codeheap_install(const uint8_t *code, uint32_t len)
     return entry;
 }
 
-static int ch_owns(const void *p)
+/* The block whose code starts at ENTRY (executable view), as a writable-
+ * view pointer, or NULL when ENTRY is not inside a used part of a chunk. */
+static CHBlock *ch_block_of(const void *entry)
 {
     const CHChunk *c;
     for (c = ch_chunks; c != NULL; c = c->next)
-        if ((const uint8_t *)p >= c->base + sizeof(CHBlock) &&
-            (const uint8_t *)p < c->base + c->used)
-            return 1;
-    return 0;
+        if ((const uint8_t *)entry >= c->exec + sizeof(CHBlock) &&
+            (const uint8_t *)entry < c->exec + c->used)
+            return (CHBlock *)(c->base + ((const uint8_t *)entry - c->exec)) - 1;
+    return NULL;
 }
 
 void cl_codeheap_free(void *entry)
@@ -132,8 +153,8 @@ void cl_codeheap_free(void *entry)
     CHBlock *b;
     if (entry == NULL || ch_lock == NULL) return;
     platform_mutex_lock(ch_lock);
-    b = (CHBlock *)entry - 1;
-    if (ch_owns(entry) && b->magic == CH_MAGIC) {
+    b = ch_block_of(entry);
+    if (b != NULL && b->magic == CH_MAGIC) {
         platform_jit_write_begin();
         b->magic = 0;
         b->next = ch_free;
@@ -149,7 +170,7 @@ void cl_codeheap_shutdown(void)
     CHChunk *c = ch_chunks;
     while (c != NULL) {
         CHChunk *next = c->next;
-        platform_jit_unmap(c->base, c->size);
+        platform_jit_unmap(c->exec, c->base, c->size);
         platform_free(c);
         c = next;
     }

@@ -1,8 +1,9 @@
 /* codeheap.h — executable memory for the AArch64 JIT.
  *
  * Apple Silicon pages are 16 KB, so one mapping per compiled function would
- * waste most of each page.  Functions are carved instead from 1 MB MAP_JIT
- * chunks (platform_jit_map), first fit from a free list, 16-byte aligned,
+ * waste most of each page.  Functions are carved instead from 1 MB chunks
+ * (platform_jit_map: MAP_JIT on macOS, a memfd mapped writable and
+ * executable at two addresses on Linux), first fit from a free list, 16-byte aligned,
  * under one mutex because threads compile concurrently.  A block bigger than
  * a chunk gets a chunk of its own.  Every chunk is unmapped by
  * cl_codeheap_shutdown.  See specs/native-backend-a64.md, "Executable memory".

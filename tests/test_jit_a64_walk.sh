@@ -21,7 +21,7 @@
 #      under the classic collector), and native frames in the backtrace and
 #      FRAME-LOCALS.
 #
-# A build without the backend (x86-64, Linux, Windows, `make host JIT=0`)
+# A build without the backend (x86-64, Windows, `make host JIT=0`)
 # skips them all.  Also run by `make test-gc-stress` (CLAMIGA_GC_STRESS=1).
 # Run: sh tests/test_jit_a64_walk.sh [path-to-clamiga]
 

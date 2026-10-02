@@ -13,7 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu-24.04-arm and macos-latest (Apple silicon) build the
+        # AArch64 JIT (specs/native-backend-a64.md); ubuntu-latest is x86-64.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
 
     steps:
       - name: Checkout

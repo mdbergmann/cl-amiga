@@ -43,10 +43,11 @@ PTHREAD_FLAGS = -pthread
 endif
 endif
 
-# The AArch64 template JIT (specs/native-backend-a64.md): arm64 macOS hosts
-# build it by default; `make host JIT=0` builds the interpreter only.
+# The AArch64 template JIT (specs/native-backend-a64.md): arm64 macOS and
+# arm64 Linux hosts build it by default; `make host JIT=0` builds the
+# interpreter only.
 JIT ?= 1
-ifeq ($(UNAME_S)-$(UNAME_M)-$(JIT),Darwin-arm64-1)
+ifneq ($(filter Darwin-arm64-1 Linux-aarch64-1 Linux-arm64-1,$(UNAME_S)-$(UNAME_M)-$(JIT)),)
 JIT_A64 := 1
 JIT_DEF := -DJIT_A64
 endif
@@ -131,7 +132,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
 # Portable JIT pieces (no m68k codegen — those live only in
 # Makefile.cross).  Compiled into every host build so unit tests can
 # exercise the code buffer and the AArch64 encoders anywhere; the AArch64
-# backend itself joins them on arm64 macOS (JIT_A64 above).
+# backend itself joins them on arm64 macOS and Linux (JIT_A64 above).
 JIT_SRC      = $(SRCDIR)/jit/codebuf.c \
                $(SRCDIR)/jit/asm_a64.c
 ifdef JIT_A64

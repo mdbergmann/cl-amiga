@@ -25,6 +25,9 @@
 #include <pthread.h>              /* pthread_jit_write_protect_np */
 #include <libkern/OSCacheControl.h> /* sys_icache_invalidate */
 #endif
+#if defined(JIT_A64) && defined(__linux__)
+#include <sys/syscall.h>          /* SYS_memfd_create */
+#endif
 #include <unistd.h>
 #include <errno.h>
 #include <termios.h>
@@ -2052,10 +2055,11 @@ void platform_cache_clear(void *addr, uint32_t len)
 }
 
 #ifdef JIT_A64
-#if !defined(__APPLE__) || !defined(__aarch64__)
-#error "JIT_A64 is implemented for arm64 macOS only (Linux: spec phase 4)"
+#if !defined(__aarch64__) || !(defined(__APPLE__) || defined(__linux__))
+#error "JIT_A64 is implemented for arm64 macOS and arm64 Linux only"
 #endif
-void *platform_jit_map(uint32_t bytes)
+#ifdef __APPLE__
+void *platform_jit_map(uint32_t bytes, void **writable)
 {
     /* MAP_JIT: the one way to get writable+executable memory under the
      * macOS arm64 code-signing rules.  An unsigned or ad-hoc-signed build
@@ -2063,12 +2067,15 @@ void *platform_jit_map(uint32_t bytes)
      * com.apple.security.cs.allow-jit. */
     void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE | PROT_EXEC,
                    MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
-    return (p == MAP_FAILED) ? NULL : p;
+    if (p == MAP_FAILED) return NULL;
+    *writable = p;
+    return p;
 }
 
-void platform_jit_unmap(void *addr, uint32_t bytes)
+void platform_jit_unmap(void *exec, void *writable, uint32_t bytes)
 {
-    if (addr) munmap(addr, bytes);
+    (void)writable;   /* the same mapping */
+    if (exec) munmap(exec, bytes);
 }
 
 void platform_jit_write_begin(void)
@@ -2085,6 +2092,47 @@ void platform_jit_flush(void *addr, uint32_t len)
 {
     sys_icache_invalidate(addr, len);
 }
+#else /* __linux__ */
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
+void *platform_jit_map(uint32_t bytes, void **writable)
+{
+    /* One memfd mapped twice: code is written through the read+write view
+     * and runs from the read+execute view.  Flipping mprotect on one view
+     * instead is not safe while another thread executes from its pages,
+     * and kernels or policies that refuse W|X mappings accept this.  The
+     * fd is not needed once both views exist.  The raw syscall, because
+     * the memfd_create wrapper only came with glibc 2.27. */
+    void *rw, *rx;
+    int fd = (int)syscall(SYS_memfd_create, "clamiga-jit", MFD_CLOEXEC);
+    if (fd < 0) return NULL;
+    if (ftruncate(fd, (off_t)bytes) != 0) { close(fd); return NULL; }
+    rw = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (rw == MAP_FAILED) { close(fd); return NULL; }
+    rx = mmap(NULL, bytes, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+    close(fd);
+    if (rx == MAP_FAILED) { munmap(rw, bytes); return NULL; }
+    *writable = rw;
+    return rx;
+}
+
+void platform_jit_unmap(void *exec, void *writable, uint32_t bytes)
+{
+    if (exec) munmap(exec, bytes);
+    if (writable) munmap(writable, bytes);
+}
+
+void platform_jit_write_begin(void) {}
+void platform_jit_write_end(void) {}
+
+void platform_jit_flush(void *addr, uint32_t len)
+{
+    /* DC CVAU + IC IVAU over the executable view's addresses: the data
+     * written through the other view is the same physical memory. */
+    __builtin___clear_cache((char *)addr, (char *)addr + len);
+}
+#endif
 #endif /* JIT_A64 */
 
 /* =============================================================

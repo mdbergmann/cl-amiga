@@ -1151,7 +1151,7 @@ function at `speed 1` and `speed 3` and compare the listings (see [the peephole
 post-pass](#the-peephole-post-pass-in-practice) for why a warm FASL cache can
 make that comparison lie).
 
-**Native code — `(jitexpand form)`** (AmigaOS on 68020+, and arm64 macOS
+**Native code — `(jitexpand form)`** (AmigaOS on 68020+, and arm64 macOS/Linux
 hosts). Prints one line of m68k or AArch64 assembly per instruction, with the
 raw bytes alongside. The macro takes a
 `defun`, a `lambda`, or any expression — an expression is wrapped in a thunk
@@ -2170,7 +2170,7 @@ A function is compiled on its 8th call, or on its first when it contains a loop.
 
 The JIT is on by default. Pass `--no-jit` to keep functions bytecode-only (useful for A/B benchmarks or isolating a bug). At runtime, `(clamiga::%jit-set-active nil|t)` toggles the JIT around individual `defun`s; a function defined while it is off stays bytecode. Hosts without a backend (see below) compile the JIT out entirely, and its entry points become inline no-ops.
 
-**arm64 macOS hosts** build a second backend, a template JIT for AArch64 ([specs/native-backend-a64.md](specs/native-backend-a64.md)), with the same compile-when-hot policy and switches. Fixnum arithmetic and comparisons, `car`/`cdr`, structure slots and special variables run as inline machine code, everything else through the interpreter's own helpers, so results are the interpreter's: a fixnum loop runs about 14× faster than bytecode, calls about 3× ([docs/benchmarks.md](docs/benchmarks.md)). Only functions with `&optional` or `&rest` parameters stay bytecode. Native functions keep an ordinary call frame, so backtraces, error locations and `frame` show them like interpreted ones. `make host JIT=0` builds without it; `make test-jit-eager` runs the test suite with every function compiled. Its tests are `tests/test_jit_a64_walk.sh`, which also runs the behavioural checks of `tests/amiga/test-jit.lisp`.
+**arm64 macOS and Linux hosts** build a second backend, a template JIT for AArch64 ([specs/native-backend-a64.md](specs/native-backend-a64.md)), with the same compile-when-hot policy and switches. Fixnum arithmetic and comparisons, `car`/`cdr`, structure slots and special variables run as inline machine code, everything else through the interpreter's own helpers, so results are the interpreter's: a fixnum loop runs about 14× faster than bytecode, calls about 3× ([docs/benchmarks.md](docs/benchmarks.md)). Only functions with `&optional` or `&rest` parameters stay bytecode. Native functions keep an ordinary call frame, so backtraces, error locations and `frame` show them like interpreted ones. `make host JIT=0` builds without it; `make test-jit-eager` runs the test suite with every function compiled. Its tests are `tests/test_jit_a64_walk.sh`, which also runs the behavioural checks of `tests/amiga/test-jit.lisp`.
 
 To see the machine code for a definition — or to find out whether the JIT translated it at all — use `(jitexpand ...)`; see [Disassembly](#disassembly).
 
@@ -2221,7 +2221,7 @@ src/
     vm.c / compiler.c S-expr → bytecode compiler and stack VM
     mem.c             Arena allocator + mark-and-sweep / compacting GC
     fasl.c            FASL (compiled-file) reader/writer
-  jit/            JIT — bytecode→native translators (m68k; AArch64 on arm64 macOS)
+  jit/            JIT — bytecode→native translators (m68k; AArch64 on arm64 macOS/Linux)
     jit_common.c      When to compile (hot-call policy), switches, counters
     jit_m68k.c        m68k walker: bytecode → m68k machine code
     jit_a64.c         AArch64 walker: bytecode → AArch64 machine code

@@ -39,6 +39,60 @@ static void *install_return(uint32_t value, uint32_t padding_words)
     return entry;
 }
 
+#ifdef __linux__
+#include <stdio.h>
+#include <string.h>
+/* The permissions /proc/self/maps lists for the mapping that holds P
+ * ("r-xs", ...), or "" when no mapping does. */
+static const char *maps_perms(const void *p)
+{
+    static char perms[8];
+    char line[512];
+    FILE *f = fopen("/proc/self/maps", "r");
+    perms[0] = '\0';
+    if (f == NULL) return perms;
+    while (fgets(line, sizeof line, f) != NULL) {
+        unsigned long lo, hi;
+        char pr[8];
+        if (sscanf(line, "%lx-%lx %7s", &lo, &hi, pr) == 3 &&
+            (uintptr_t)p >= lo && (uintptr_t)p < hi) {
+            strcpy(perms, pr);
+            break;
+        }
+    }
+    fclose(f);
+    return perms;
+}
+#endif
+
+/* platform_jit_map hands out two views of the same bytes: written through
+ * the writable one, read back through the executable one.  macOS: one
+ * MAP_JIT mapping at one address.  Linux: a memfd mapped twice, and
+ * neither view is writable and executable at once. */
+TEST(writable_and_executable_views_alias)
+{
+    void *rw = NULL;
+    uint8_t *x = (uint8_t *)platform_jit_map(1u << 16, &rw);
+    ASSERT(x != NULL && rw != NULL);
+#ifdef __linux__
+    ASSERT(x != (uint8_t *)rw);
+    ASSERT(strcmp(maps_perms(x), "r-xs") == 0);
+    ASSERT(strcmp(maps_perms(rw), "rw-s") == 0);
+#else
+    ASSERT(x == (uint8_t *)rw);
+#endif
+    platform_jit_write_begin();
+    ((volatile uint32_t *)rw)[1] = 0x12345678u;
+    ((volatile uint32_t *)rw)[(1u << 14) - 1] = 0xCAFEF00Du;
+    platform_jit_write_end();
+    ASSERT_EQ_INT(((volatile uint32_t *)x)[1], 0x12345678u);
+    ASSERT_EQ_INT(((volatile uint32_t *)x)[(1u << 14) - 1], 0xCAFEF00Du);
+    platform_jit_unmap(x, rw, 1u << 16);
+#ifdef __linux__
+    ASSERT(maps_perms(x)[0] == '\0' && maps_perms(rw)[0] == '\0');
+#endif
+}
+
 TEST(installed_code_executes)
 {
     void *e1 = install_return(42, 0);
@@ -163,6 +217,7 @@ int main(void)
 {
     test_init();
     cl_codeheap_init();
+    RUN(writable_and_executable_views_alias);
     RUN(installed_code_executes);
     RUN(freed_block_is_reused_and_runs_new_code);
     RUN(large_free_block_is_split);

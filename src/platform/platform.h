@@ -743,13 +743,19 @@ void     platform_cache_clear(void *addr, uint32_t len);
 
 #ifdef JIT_A64
 /* Executable memory for the AArch64 JIT (specs/native-backend-a64.md),
- * used only through src/jit/codeheap.c.  On macOS the mapping is MAP_JIT:
- * a thread writes it between platform_jit_write_begin and _end (a
- * per-thread switch, so other threads keep executing it meanwhile), and
- * platform_jit_flush makes the written instructions visible to fetch --
- * on AArch64 the instruction and data caches are not coherent. */
-void    *platform_jit_map(uint32_t bytes);           /* NULL on failure */
-void     platform_jit_unmap(void *addr, uint32_t bytes);
+ * used only through src/jit/codeheap.c.  platform_jit_map returns the
+ * executable view of BYTES bytes and stores in *WRITABLE the address code
+ * is written through:
+ *   - macOS: one MAP_JIT mapping, so both are the same address; a thread
+ *     writes it between platform_jit_write_begin and _end (a per-thread
+ *     switch, so other threads keep executing it meanwhile).
+ *   - Linux: a memfd mapped twice, read+write and read+execute, so no page
+ *     is ever writable and executable at once; write_begin/_end are no-ops.
+ * platform_jit_flush (on the executable view) makes the written
+ * instructions visible to fetch -- on AArch64 the instruction and data
+ * caches are not coherent. */
+void    *platform_jit_map(uint32_t bytes, void **writable); /* NULL on failure */
+void     platform_jit_unmap(void *exec, void *writable, uint32_t bytes);
 void     platform_jit_write_begin(void);
 void     platform_jit_write_end(void);
 void     platform_jit_flush(void *addr, uint32_t len);
