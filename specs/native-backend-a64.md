@@ -1,6 +1,6 @@
 # Native Code Backend (AArch64)
 
-Status: phases 0 and 1 done on branch `feat/a64-jit` (2026-10-01; see
+Status: phases 0 and 1 on master, phase 2 done on branch `feat/a64-jit-p2` (2026-10-02; see
 each phase's status note).  Proposal from 2026-10-01; both
 prerequisites are on master: direct native-to-native calls
 (`specs/jit-direct-calls.md`, 27c74b00) and the loop poll
@@ -461,6 +461,47 @@ fast paths, `STRUCT_REF`/`STRUCT_SET`.  A 3-slot top-of-stack cache in
 w24-w26 removes most `LOAD`/`STORE`/`POP` memory traffic.  Each new
 template gets a gc-stress case that forces its slow path, i.e. a non-fixnum
 or an allocating helper.
+
+**Status (2026-10-02): done** on branch `feat/a64-jit-p2`.
+- Inline: `+ - *` and `< > <= >= =` on fixnums (the templates above;
+  `*` is `smull` with a 32-bit fit check, so it covers the whole fixnum
+  range, not only the interpreter's 15-bit operands), the fused `CMP_BR`,
+  `EQ`/`NOT`, `CAR`/`CDR` (NIL inline, a cons by its header),
+  `STRUCT_REF`/`STRUCT_SET` (header type and slot count checked; the store
+  keeps the interpreter's publication barrier, a `dmb ish` taken only
+  while `cl_thread_count > 1`), and `GLOAD`/`GSTORE` and the fused
+  `GLOAD_JNIL`/`GLOAD_EQ_JNIL` while the thread has no dynamic binding
+  (`tlv_entry_count == 0`, as in the interpreter's `VM_GLOBAL_VALUE`).
+  NIL as the symbol, an unbound value, `*PACKAGE*`'s store, `CHAR=`, `/`
+  and every non-fixnum go to the phase-1 helper.  x23 holds
+  `cl_arena_base`, loaded in the prologue (the frame is 80 bytes now).
+- Each fast path checks its operands before it changes anything, so a
+  failed check branches to an out-of-line slow path (after the body) with
+  the cache as it was: it moves the operands into w0-w2, flushes, calls
+  the helper, reloads the cache from `cl_vm.stack` (a collection may have
+  moved what it held), rewrites `cl_mv_count` if the fast path knew it to
+  be 1, and rejoins with the result in w0.
+- The cache lives in the caller-saved w13-w15, not w24-w26: it is never
+  live across a call (Rule 1), so callee-saved registers would only cost
+  saves.  Up to three values; a fourth push spills the deepest.  Labels,
+  branches and every opcode without a template see an empty cache; a
+  return needs no flush.  A helper call with a non-empty cache is a walker
+  bug and declines the function.
+- `cl_mv_count = 1` is elided while it is known to be 1 already (from one
+  such write to the next helper call or label).
+- Tests: `tests/test_jit_a64_walk.sh`, phase-2 section (also under
+  gc-stress): every template against its slow path -- fixnum boundaries
+  for `+ - *` (`most-negative-fixnum * -1`, 46341^2), ratios, floats,
+  complex, type errors, NIL/cons/struct/char under `CAR`, out-of-range
+  struct slots, special variables global, bound, unbound and `*PACKAGE*`,
+  a five-deep expression that spills, the values count, and struct writes
+  on four threads -- each with a heap value held in the cache while the
+  slow path allocates.  Dropping the cache reload after a slow-path call
+  makes the gc-stress binary fail already at boot.  `make test-jit-eager`
+  fails exactly the phase-1 introspection set.
+- Bench (M-series, bench-opt with the JIT left on, eager): see
+  `docs/benchmarks.md`, 2026-10-02.  The stop criterion (1.5x on `vm.*`)
+  is met: 3-14x.
 
 ### Phase 3: parity with the m68k walker
 - NLX frames (`BLOCK`, `CATCH`, `TAGBODY`, `UWPROT`, `HANDLER_CASE`) use

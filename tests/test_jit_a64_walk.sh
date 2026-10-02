@@ -1,7 +1,8 @@
 #!/bin/sh
-# The AArch64 walker, phase 1 (specs/native-backend-a64.md): functions run
-# as native code built from the interpreter's own helpers, so every result
-# must be the interpreter's.  Two parts:
+# The AArch64 walker (specs/native-backend-a64.md): functions run as native
+# code built from the interpreter's own helpers (phase 1) plus inline fast
+# paths and a top-of-stack register cache (phase 2), so every result must be
+# the interpreter's.  Two parts:
 #
 #   1. tests/amiga/test-jit.lisp -- the m68k JIT suite's behavioural checks
 #      -- run against this backend, eager (the file sets the hot threshold
@@ -11,6 +12,10 @@
 #      interpreter's multiple-value state, and a call-free native loop in
 #      one thread while another collects (the loop poll, spec "Rule 4" --
 #      without it the collection waits forever, so the run is bounded).
+#      Phase 2: every inline fast path against its slow path -- fixnum
+#      boundaries, other number types, type errors -- with a heap value
+#      held in the register cache while the slow path runs, which under
+#      CLAMIGA_GC_STRESS allocates and moves it.
 #
 # A build without the backend (x86-64, Linux, Windows, `make host JIT=0`)
 # skips both parts.  Also run by `make test-gc-stress` (CLAMIGA_GC_STRESS=1).
@@ -210,6 +215,101 @@ cat > "$WORK/walk.lisp" <<'EOF'
                               (lambda () (setf (svref out k) (list (w-churn *churn-n*) (w-fact 10))))))))
        (every (lambda (r) (equal r (list *churn-n* 3628800))) out)))
 
+;; --- Phase 2: the fast paths and the top-of-stack cache ---------------------
+;; X is a fresh heap object loaded before each operation, so it sits in the
+;; cache while the operation's slow path calls out (and, for a bignum, a
+;; ratio or a float, allocates: a moving collection under gc-stress).
+(defstruct p2s a b c)
+(defvar *p2-var* 10)
+(defvar *p2-unbound*)
+(defun p2-arith (x a b) (list x (+ a b) x (- a b) x (* a b) x))
+(defun p2-cmp (x a b) (list x (< a b) x (> a b) x (<= a b) x (>= a b) x (= a b)))
+(defun p2-br (a b)
+  (let ((n 0))
+    (when (< a b) (setq n (+ n 1)))
+    (when (> a b) (setq n (+ n 10)))
+    (when (<= a b) (setq n (+ n 100)))
+    (when (>= a b) (setq n (+ n 1000)))
+    (when (= a b) (setq n (+ n 10000)))
+    (unless (< a b) (setq n (+ n 100000)))
+    n))
+(defun p2-chr (a b) (if (char= a b) :same :diff))
+(defun p2-car (x l) (list x (car l) x (cdr l) x))
+(defun p2-st (x s v) (list x (p2s-a s) x (setf (p2s-c s) v) x (p2s-c s)))
+(defun p2-sref-bad (s) (clamiga::%struct-ref s 7))
+(defun p2-sset-bad (s v) (clamiga::%struct-set s 7 v))
+(defun p2-gread () *p2-var*)
+(defun p2-gwrite (v) (setq *p2-var* v) *p2-var*)
+(defun p2-gbr () (if *p2-var* :yes :no))
+(defun p2-geq (x) (if (eq x *p2-var*) :eq :ne))
+(defun p2-gub () *p2-unbound*)
+(defun p2-pkg (p) (setq *package* p) (package-name *package*))
+(defun p2-deep (a b c d e) (+ a (+ b (+ c (+ d (+ e (car (list a))))))))
+(defun p2-deep-heap (a b c d) (list a b c d (+ (length a) most-positive-fixnum) a b c d))
+(defun p2-eqnot (x y) (list x (eq x y) x (not x) (not nil) y))
+(defun p2-mv (a) (+ a 1))
+(chk "P2-NATIVE"
+     (mapcar #'native-p (list #'p2-arith #'p2-cmp #'p2-br #'p2-chr #'p2-car #'p2-st
+                              #'p2-sref-bad #'p2-sset-bad #'p2-gread #'p2-gwrite
+                              #'p2-gbr #'p2-geq #'p2-gub #'p2-pkg #'p2-deep
+                              #'p2-deep-heap #'p2-eqnot #'p2-mv)))
+(defun p2-k () (list "k"))
+(chk "P2-FIX" (p2-arith (p2-k) 3 4))
+(chk "P2-MAX" (p2-arith (p2-k) most-positive-fixnum 1))
+(chk "P2-MIN" (p2-arith (p2-k) most-negative-fixnum 1))
+(chk "P2-MIN-1" (p2-arith (p2-k) most-negative-fixnum -1))
+(chk "P2-SQ" (p2-arith (p2-k) 46341 46341))
+(chk "P2-SQ-FITS" (p2-arith (p2-k) 23170 -23170))
+(chk "P2-RATIO-FLOAT" (p2-arith (p2-k) 1/2 0.5))
+(chk "P2-ARITH-TE" (handler-case (p2-arith (p2-k) 'a 1) (type-error () :te)))
+(chk "P2-ARITH-TE2" (handler-case (p2-arith (p2-k) 1 "s") (type-error () :te)))
+(chk "P2-CMP" (list (p2-cmp (p2-k) 1 2) (p2-cmp (p2-k) 2 2) (p2-cmp (p2-k) -3 -4)))
+(chk "P2-CMP-MIXED" (list (p2-cmp (p2-k) 1 1.0) (p2-cmp (p2-k) 1/3 1) (p2-cmp (p2-k) (expt 2 40) 1)))
+(chk "P2-CMP-TE" (handler-case (p2-cmp (p2-k) 'a 1) (type-error () :te)))
+(chk "P2-CMP-COMPLEX" (handler-case (p2-cmp (p2-k) #c(1 2) 1) (type-error () :te)))
+(chk "P2-BR" (list (p2-br 1 2) (p2-br 2 1) (p2-br 3 3) (p2-br 1.5 2) (p2-br 2 3/2)
+                   (p2-br most-negative-fixnum most-positive-fixnum) (p2-br (expt 2 40) 0)))
+(chk "P2-BR-TE" (handler-case (p2-br 1 'b) (type-error () :te)))
+(chk "P2-CHR" (list (p2-chr #\a #\a) (p2-chr #\a #\b)
+                    (handler-case (p2-chr 1 #\a) (type-error () :te))))
+(chk "P2-CAR" (list (p2-car (p2-k) (cons 1 2)) (p2-car (p2-k) nil)))
+(chk "P2-CAR-TE" (list (handler-case (p2-car (p2-k) 5) (type-error () :te))
+                       (handler-case (p2-car (p2-k) (make-p2s)) (type-error () :te))
+                       (handler-case (p2-car (p2-k) #\a) (type-error () :te))))
+(chk "P2-STRUCT" (let ((s (make-p2s :a 'one))) (list (p2-st (p2-k) s (list 'v)) (p2s-c s))))
+(chk "P2-STRUCT-TE" (list (handler-case (p2-st (p2-k) (cons 1 2) 3) (type-error () :te))
+                          (handler-case (p2-st (p2-k) nil 3) (type-error () :te))
+                          (handler-case (p2-st (p2-k) 7 3) (type-error () :te))))
+(chk "P2-STRUCT-RANGE" (list (handler-case (p2-sref-bad (make-p2s)) (error () :range))
+                             (handler-case (p2-sset-bad (make-p2s) 1) (error () :range))))
+(chk "P2-GLOBAL" (progn (setq *p2-var* 10)
+                        (list (p2-gread) (p2-gbr) (p2-geq 10) (p2-geq 11)
+                              (let ((*p2-var* 20))
+                                (list (p2-gread) (p2-gwrite 30) (p2-gread) (p2-geq 30)))
+                              (p2-gread) (p2-gwrite nil) (p2-gbr) (p2-gwrite (list 1)))))
+(chk "P2-UNBOUND" (handler-case (p2-gub) (unbound-variable () :unbound)))
+(chk "P2-PACKAGE" (let ((*package* *package*))
+                    (list (p2-pkg (find-package :keyword)) (package-name *package*)
+                          (symbol-package (intern "P2-PKG-PROBE")))))
+(chk "P2-DEEP" (list (p2-deep 1 2 3 4 5) (p2-deep most-positive-fixnum 1 1 1 1)))
+(chk "P2-DEEP-HEAP" (p2-deep-heap "abc" (p2-k) (p2-k) (p2-k)))
+(chk "P2-EQNOT" (list (p2-eqnot 'a 'a) (p2-eqnot nil 1)))
+(chk "P2-MV" (list (multiple-value-list (progn (w-mv) (p2-mv 1)))
+                   (multiple-value-list (progn (w-mv) (p2-mv most-positive-fixnum)))
+                   (multiple-value-list (progn (w-mv) (p2-gread)))))
+;; A struct slot written on four threads at once (the publication barrier).
+(chk "P2-THREADS"
+     (let ((out (make-array 4 :initial-element nil)))
+       (mapc #'mp:join-thread
+             (loop for k below 4
+                   collect (let ((k k))
+                             (mp:make-thread
+                              (lambda ()
+                                (let ((s (make-p2s)))
+                                  (dotimes (i 2000) (p2-st (p2-k) s (list i)))
+                                  (setf (svref out k) (p2s-c s))))))))
+       (every (lambda (r) (equal r '(1999))) out)))
+
 (chk "DISASM" (with-output-to-string (*standard-output*) (clamiga::%jit-disassemble #'w-add)))
 (format t "DONE~%")
 EOF
@@ -247,7 +347,39 @@ check_contains "multiple values: kept, reset, forwarded" "MV ((1 2 3) (9) (4))" 
 check_contains "the spin loop is native" "SPIN-NATIVE T" "$out"
 check_contains "a native loop lets another thread collect" "LOOP-POLL T" "$out"
 check_contains "native code on four threads" "THREADS T" "$out"
-check_contains "the disassembler decodes the frame" "stp x29, x30, [sp, #-64]!" "$out"
+check_contains "the phase-2 shapes compile" \
+    "P2-NATIVE (T T T T T T T T T T T T T T T T T T)" "$out"
+check_contains "fixnum + - *" 'P2-FIX (("k") 7 ("k") -1 ("k") 12 ("k"))' "$out"
+check_contains "+ overflows at the top" 'P2-MAX (("k") 1073741824 ("k") 1073741822 ("k") 1073741823 ("k"))' "$out"
+check_contains "- overflows at the bottom, * reaches it" 'P2-MIN (("k") -1073741823 ("k") -1073741825 ("k") -1073741824 ("k"))' "$out"
+check_contains "* of the minimum by -1 overflows" 'P2-MIN-1 (("k") -1073741825 ("k") -1073741823 ("k") 1073741824 ("k"))' "$out"
+check_contains "a square past the fixnum range" 'P2-SQ (("k") 92682 ("k") 0 ("k") 2147488281 ("k"))' "$out"
+check_contains "a negative product inside it" 'P2-SQ-FITS (("k") 0 ("k") 46340 ("k") -536848900 ("k"))' "$out"
+check_contains "ratio and float arithmetic" 'P2-RATIO-FLOAT (("k") 1.0 ("k") 0.0 ("k") 0.25 ("k"))' "$out"
+check_contains "+ of a symbol signals" "P2-ARITH-TE :TE" "$out"
+check_contains "+ of a string signals" "P2-ARITH-TE2 :TE" "$out"
+check_contains "fixnum comparisons" 'P2-CMP ((("k") T ("k") NIL ("k") T ("k") NIL ("k") NIL) (("k") NIL ("k") NIL ("k") T ("k") T ("k") T) (("k") NIL ("k") T ("k") NIL ("k") T ("k") NIL))' "$out"
+check_contains "mixed comparisons" 'P2-CMP-MIXED ((("k") NIL ("k") NIL ("k") T ("k") T ("k") T) (("k") T ("k") NIL ("k") T ("k") NIL ("k") NIL) (("k") NIL ("k") T ("k") NIL ("k") T ("k") NIL))' "$out"
+check_contains "< of a symbol signals" "P2-CMP-TE :TE" "$out"
+check_contains "< of a complex signals" "P2-CMP-COMPLEX :TE" "$out"
+check_contains "fused compare-and-branch" "P2-BR (101 101010 111100 101 101010 101 101010)" "$out"
+check_contains "a fused < of a symbol signals" "P2-BR-TE :TE" "$out"
+check_contains "char= in a branch" "P2-CHR (:SAME :DIFF :TE)" "$out"
+check_contains "car and cdr of a cons and of NIL" 'P2-CAR ((("k") 1 ("k") 2 ("k")) (("k") NIL ("k") NIL ("k")))' "$out"
+check_contains "car of a fixnum, a struct, a char signals" "P2-CAR-TE (:TE :TE :TE)" "$out"
+check_contains "struct slot read and write" 'P2-STRUCT ((("k") ONE ("k") (V) ("k") (V)) (V))' "$out"
+check_contains "a struct accessor on a non-struct signals" "P2-STRUCT-TE (:TE :TE :TE)" "$out"
+check_contains "a slot index past the struct signals" "P2-STRUCT-RANGE (:RANGE :RANGE)" "$out"
+check_contains "special variables: global, bound, set" "P2-GLOBAL (10 :YES :EQ :NE (20 30 30 :EQ) 10 NIL :NO (1))" "$out"
+check_contains "an unbound variable signals" "P2-UNBOUND :UNBOUND" "$out"
+check_contains "setq of *package* switches the package" 'P2-PACKAGE ("KEYWORD" "KEYWORD" #<PACKAGE KEYWORD>)' "$out"
+check_contains "a deep expression spills the cache" "P2-DEEP (16 2147483650)" "$out"
+check_contains "heap values across a spill and a bignum" 'P2-DEEP-HEAP ("abc" ("k") ("k") ("k") 1073741826 "abc" ("k") ("k") ("k"))' "$out"
+check_contains "eq and not from the cache" "P2-EQNOT ((A T A NIL T A) (NIL NIL NIL T T 1))" "$out"
+check_contains "the fast and slow paths reset the values count" "P2-MV ((2) (1073741824) ((1)))" "$out"
+check_contains "struct writes on four threads" "P2-THREADS T" "$out"
+check_contains "the disassembler decodes the frame" "stp x29, x30, [sp, #-80]!" "$out"
+check_contains "the disassembler decodes a fast path" "tbz w9, #0," "$out"
 check_contains "the disassembler decodes a helper call" "blr x16" "$out"
 
 echo "$passed passed, $failed failed, $total total"

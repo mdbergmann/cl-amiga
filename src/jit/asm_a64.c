@@ -205,6 +205,7 @@ uint32_t a64_ret(void)      { return 0xD65F03C0u; }
 uint32_t a64_br (int rn)    { return 0xD61F0000u | (R5(rn) << 5); }
 uint32_t a64_blr(int rn)    { return 0xD63F0000u | (R5(rn) << 5); }
 uint32_t a64_nop(void)      { return 0xD503201Fu; }
+uint32_t a64_dmb_ish(void)  { return 0xD5033BBFu; }
 uint32_t a64_brk(uint32_t imm16)
 { return (imm16 > 0xFFFFu) ? A64_BAD : (0xD4200000u | (imm16 << 5)); }
 

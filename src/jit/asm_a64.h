@@ -103,6 +103,7 @@ uint32_t a64_ret(void);                  /* RET x30 */
 uint32_t a64_br (int rn);
 uint32_t a64_blr(int rn);
 uint32_t a64_nop(void);
+uint32_t a64_dmb_ish(void);              /* DMB ISH: a full inner-shareable barrier */
 uint32_t a64_brk(uint32_t imm16);
 /* PC-relative forms with the displacement in BYTES from this instruction
  * (a multiple of 4).  The label assembler below fills these in; they are

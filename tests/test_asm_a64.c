@@ -94,6 +94,7 @@ TEST(every_encoder_matches_clang)
     { "br x16", a64_br(16), 0xD61F0200U },
     { "blr x16", a64_blr(16), 0xD63F0200U },
     { "nop", a64_nop(), 0xD503201FU },
+    { "dmb ish", a64_dmb_ish(), 0xD5033BBFU },
     { "brk #0x3e8", a64_brk(0x3e8), 0xD4207D00U },
     { "b .+8", a64_b_rel(8), 0x14000002U },
     { "b .-4", a64_b_rel(-4), 0x17FFFFFFU },

@@ -1,13 +1,22 @@
 /* jit_a64.c — the AArch64 native backend (specs/native-backend-a64.md).
  *
- * Phase 1: a walker that cannot be wrong.  It runs the operand stack,
- * the locals and control flow natively and sends every other opcode to
- * the C helper behind it -- a shared one (runtime.c) where its semantics
- * are the interpreter's, else a VM-stack one (runtime_vmstack.c).
- * No inline fast paths and no register cache yet (phase 2); the opcodes
- * the walker does not know (the NLX frames, closures and upvalues,
- * dynamic binding, multiple values, &key/&optional/&rest prologues) keep
- * the function interpreted.
+ * The walker runs the operand stack, the locals and control flow natively
+ * and sends every opcode it has no template for to the C helper behind it
+ * -- a shared one (runtime.c) where its semantics are the interpreter's,
+ * else a VM-stack one (runtime_vmstack.c).  The opcodes it does not know
+ * at all (the NLX frames, closures and upvalues, dynamic binding,
+ * multiple values, &key/&optional/&rest prologues) keep the function
+ * interpreted.
+ *
+ * Phase 2 adds inline fast paths -- fixnum arithmetic and comparisons,
+ * CAR/CDR, struct slots, special-variable reads and writes -- each
+ * checking its operands before it changes anything, so a failed check
+ * jumps to an out-of-line call of the same helper phase 1 used (the slow
+ * path, emitted after the body) and rejoins with the result in w0.  And a
+ * top-of-stack cache: up to three operand-stack values live in w13-w15
+ * instead of cl_vm.stack, written out ("flushed") before every helper call,
+ * every branch and every label, so the frame is the interpreter's whenever
+ * C code can see it.
  *
  * Entry ABI (the spec's "Entry and frame layout"): one C signature for
  * every arity, the arguments left on cl_vm.stack where the caller pushed
@@ -27,12 +36,15 @@
  * Registers (callee-saved, so they survive every helper call):
  *     x19  the current CL_Thread *          x20  the operand-stack top
  *     x21  bp                               x22  bc->constants
- *     x27  cl_vm.stack (the thread's)       x28  scratch across a
- *                                                non-allocating call
- * x9-x12 and x16/x17 are scratch; x18 (reserved on Apple) is never used.
+ *     x23  cl_arena_base                    x27  cl_vm.stack (the thread's)
+ *     x28  scratch across a non-allocating call
+ * Caller-saved: w13-w15 the top-of-stack cache (never live across a call),
+ * w10/w11 the operands a fast path read from memory, w0 a fast path's
+ * result, x9, x12 and x16/x17 scratch.  x18 (reserved on Apple) is never
+ * used.
  *
- * GC ("Rule 1"): before every helper call the code writes cl_vm.sp from
- * x20, so every live value is below sp -- a root both collectors forward in
+ * GC ("Rule 1"): before every helper call the code flushes the cache and
+ * writes cl_vm.sp from x20, so every live value is below sp -- a root both collectors forward in
  * place -- and holds no CL_Obj in a register across the call.  Constants
  * are read from bc->constants at each use (that array never moves and the
  * collectors forward it, minor collections included), T through the
@@ -58,6 +70,7 @@
 #include "core/mem.h"        /* cl_call_gen_bump */
 #include "core/opcodes.h"
 #include "core/stream.h"     /* cl_write_cstring_to_stdout */
+#include "core/symbol.h"     /* SYM_STAR_PACKAGE */
 #include "core/thread.h"     /* cl_vm, cl_get_current_thread, CL_Thread */
 #include "core/vm.h"         /* cl_vm_apply_list */
 #include "platform/platform.h"
@@ -71,6 +84,7 @@ typedef CL_Obj (*a64_entry_t)(CL_Thread *thr, CL_Obj *bp, uint32_t nargs,
 #define R_TOP   20
 #define R_BP    21
 #define R_K     22
+#define R_ARENA 23
 #define R_STK   27
 #define R_KEEP  28
 
@@ -81,20 +95,38 @@ typedef CL_Obj (*a64_entry_t)(CL_Thread *thr, CL_Obj *bp, uint32_t nargs,
 #define OFF_VM_SP         ((uint32_t)offsetof(CL_Thread, vm.sp))
 #define OFF_MV_COUNT      ((uint32_t)offsetof(CL_Thread, mv_count))
 #define OFF_LOOP_CTR      ((uint32_t)offsetof(CL_Thread, jit_loop_ctr))
+#define OFF_TLV_COUNT     ((uint32_t)offsetof(CL_Thread, tlv_entry_count))
 typedef char a64_off_vm_stack_fits[(offsetof(CL_Thread, vm.stack) % 8 == 0 &&
                                     offsetof(CL_Thread, vm.stack) < 32760) ? 1 : -1];
 typedef char a64_off_words_fit[(offsetof(CL_Thread, vm.stack_size) % 4 == 0 &&
                                 offsetof(CL_Thread, vm.sp) % 4 == 0 &&
                                 offsetof(CL_Thread, mv_count) % 4 == 0 &&
-                                offsetof(CL_Thread, mv_count) < 16380) ? 1 : -1];
+                                offsetof(CL_Thread, mv_count) < 16380 &&
+                                offsetof(CL_Thread, tlv_entry_count) % 4 == 0 &&
+                                offsetof(CL_Thread, tlv_entry_count) < 16380) ? 1 : -1];
 typedef char a64_off_loop_ctr_fits[(offsetof(CL_Thread, jit_loop_ctr) % 2 == 0 &&
                                     offsetof(CL_Thread, jit_loop_ctr) < 8190) ? 1 : -1];
 typedef char a64_sp_is_int[(sizeof(((CL_Thread *)0)->vm.sp) == 4 &&
                             sizeof(((CL_Thread *)0)->mv_count) == 4 &&
-                            sizeof(((CL_Thread *)0)->jit_loop_ctr) == 2) ? 1 : -1];
+                            sizeof(((CL_Thread *)0)->jit_loop_ctr) == 2 &&
+                            sizeof(((CL_Thread *)0)->tlv_entry_count) == 4) ? 1 : -1];
 
-/* The frame the prologue pushes: x29/x30, x19-x22, x27/x28. */
-#define FRAME_BYTES 64
+/* Heap layouts the fast paths read (types.h). */
+#define OFF_CAR        ((uint32_t)offsetof(CL_Cons, car))
+#define OFF_CDR        ((uint32_t)offsetof(CL_Cons, cdr))
+#define OFF_SYM_VALUE  ((uint32_t)offsetof(CL_Symbol, value))
+#define OFF_ST_NSLOTS  ((uint32_t)offsetof(CL_Struct, n_slots))
+#define OFF_ST_SLOTS   ((uint32_t)offsetof(CL_Struct, slots))
+typedef char a64_heap_layout[(offsetof(CL_Cons, car) == 4 && offsetof(CL_Cons, cdr) == 8 &&
+                              offsetof(CL_Symbol, value) == 8 &&
+                              offsetof(CL_Struct, n_slots) == 8 &&
+                              offsetof(CL_Struct, slots) == 12 &&
+                              CL_HDR_TYPE_SHIFT == 24 && TYPE_CONS == 0 &&
+                              CL_UNBOUND == (CL_Obj)0xFFFFFFF6u) ? 1 : -1];
+
+/* The frame the prologue pushes: x29/x30, x19-x22, x23 (x24 pads the pair),
+ * x27/x28. */
+#define FRAME_BYTES 80
 
 /* Walker limits: the operand encodings below assume them. */
 #define A64_MAX_LOCALS 1000
@@ -140,12 +172,50 @@ static void drop_native(CL_Bytecode *bc)
 
 /* --- Emitter state ------------------------------------------------------ */
 
+/* The top-of-stack cache.  The top NC values of the operand stack live in
+ * registers CR[0] (the deepest of them) .. CR[NC-1] (TOS) instead of at
+ * x20 and above; x20 points past the last value in memory.  Which register
+ * holds which entry is compile-time state only. */
+#define NCACHE 3
+static const int cache_regs[NCACHE] = { 13, 14, 15 };
+
+typedef struct {
+    int nc;
+    int cr[NCACHE];
+} VState;
+
+/* A slow path's arguments: a register, an immediate, or a constant. */
+#define SA_NONE  0
+#define SA_REG   1
+#define SA_IMM   2
+#define SA_CONST 3
+typedef struct {
+    uint8_t  kind;
+    uint32_t val;
+} SArg;
+
+/* An out-of-line slow path: FN called with ARGS from the cache state IN
+ * (the state the fast path branched away from), then IN restored -- the
+ * cached values reloaded from cl_vm.stack, since a collection may have
+ * moved them -- and back to JOIN with the helper's result in w0. */
+typedef struct {
+    A64Label    entry, join;
+    const void *fn;
+    SArg        args[3];
+    VState      in;
+    int         mv1;          /* cl_mv_count was known to be 1 at the branch */
+} Slow;
+
 typedef struct {
     A64Asm    a;
     CodeBuf   cb;
     uint64_t *lit_val;        /* 64-bit literals (helper and data addresses) */
     A64Label *lit_label;
     uint32_t  n_lits, cap_lits;
+    Slow     *slow;
+    uint32_t  n_slow, cap_slow;
+    VState    vs;             /* the cache at the point being emitted */
+    int       mv1;            /* cl_mv_count is known to be 1 here */
     int       oom;
 } Gen;
 
@@ -223,16 +293,18 @@ static void emit_sync_sp(Gen *g)
     E(a64_str_uoff(4, 9, R_THR, OFF_VM_SP));
 }
 
-/* Call the C function FN with the arguments already in x0-x7. */
+/* Call the C function FN with the arguments already in x0-x7.  The cache
+ * must be empty (vs_flush): Rule 1.  The helper may write cl_mv_count. */
 static void emit_call(Gen *g, const void *fn)
 {
+    if (g->vs.nc != 0) g->a.bad = 1;        /* a walker bug: decline */
     emit_sync_sp(g);
     emit_ldr_lit64(g, 16, fn);
     E(a64_blr(16));
+    g->mv1 = 0;
 }
 
 static void emit_push(Gen *g, int r)   { E(a64_str_post(4, r, R_TOP, 4)); }
-static void emit_pop(Gen *g, int r)    { E(a64_ldr_pre(4, r, R_TOP, -4)); }
 /* The K-th value from the top (1 = TOS), not popped. */
 static void emit_peek(Gen *g, int r, uint32_t k)
 {
@@ -275,11 +347,19 @@ static void emit_load_t(Gen *g, int r)
     emit_ldr_lit64(g, r, &CL_T);
     E(a64_ldr_uoff(4, r, r, 0));
 }
-/* cl_mv_count = 1: the interpreter's write after a single-valued opcode. */
-static void emit_mv1(Gen *g)
+/* cl_mv_count = 1: the interpreter's write after a single-valued opcode.
+ * Elided while the count is known to be 1 already: from one such write to
+ * the next helper call or label (the only things that can change it). */
+static void emit_mv1_store(Gen *g)
 {
     E(a64_movz(0, 9, 1, 0));
     E(a64_str_uoff(4, 9, R_THR, OFF_MV_COUNT));
+}
+static void emit_mv1(Gen *g)
+{
+    if (g->mv1) return;
+    emit_mv1_store(g);
+    g->mv1 = 1;
 }
 /* The loop poll (spec "Rule 4"): count CL_Thread.jit_loop_ctr down and, on
  * the borrow, run cl_jit_runtime_loop_poll (safepoint, interrupt, Ctrl-C),
@@ -293,6 +373,178 @@ static void emit_loop_poll(Gen *g)
     a64_bcond(&g->a, A64_HS, skip);
     emit_call(g, (const void *)&cl_jit_runtime_loop_poll);
     a64_bind(&g->a, skip);
+}
+
+/* --- The top-of-stack cache ------------------------------------------ */
+
+/* Write the deepest cached values to memory until KEEP are left cached. */
+static void vs_spill(Gen *g, int keep)
+{
+    int n = g->vs.nc - keep, i;
+    if (n <= 0) return;
+    for (i = 0; i < n; i++) E(a64_str_post(4, g->vs.cr[i], R_TOP, 4));
+    for (i = 0; i < keep; i++) g->vs.cr[i] = g->vs.cr[i + n];
+    g->vs.nc = keep;
+}
+/* Every cached value to memory: the frame is the interpreter's again. */
+static void vs_flush(Gen *g) { vs_spill(g, 0); }
+
+/* The register holding the K-th value from the top (1 = TOS), loading it
+ * into SCRATCH when it is in memory.  Changes no state. */
+static int vs_reg(Gen *g, uint32_t k, int scratch)
+{
+    if (k <= (uint32_t)g->vs.nc) return g->vs.cr[g->vs.nc - (int)k];
+    emit_peek(g, scratch, k - (uint32_t)g->vs.nc);
+    return scratch;
+}
+
+/* Drop the top N values, cached ones first. */
+static void vs_pop(Gen *g, uint32_t n)
+{
+    uint32_t m = n < (uint32_t)g->vs.nc ? n : (uint32_t)g->vs.nc;
+    g->vs.nc -= (int)m;
+    emit_drop(g, n - m);
+}
+
+/* A new TOS: the cache register to write it into (spilling the deepest
+ * entry when all three are taken).  The caller writes it next.  A register
+ * vs_pop just freed may be returned, so read the operands first or write
+ * the result last. */
+static int vs_push(Gen *g)
+{
+    int i, j, r = -1;
+    if (g->vs.nc == NCACHE) vs_spill(g, NCACHE - 1);
+    for (i = 0; i < NCACHE && r < 0; i++) {
+        r = cache_regs[i];
+        for (j = 0; j < g->vs.nc; j++)
+            if (g->vs.cr[j] == r) { r = -1; break; }
+    }
+    g->vs.cr[g->vs.nc++] = r;
+    return r;
+}
+static void vs_push_reg(Gen *g, int src)
+{
+    int r = vs_push(g);
+    if (r != src) E(a64_mov_reg(0, r, src));
+}
+
+/* Reload the cache of state IN from memory, where a flush left it. */
+static void vs_reload(Gen *g, const VState *in)
+{
+    int i;
+    for (i = 0; i < in->nc; i++)
+        E(a64_ldur(4, in->cr[i], R_TOP, -4 * (in->nc - i)));
+    emit_drop(g, (uint32_t)in->nc);
+    g->vs = *in;
+}
+
+/* --- Slow paths ---------------------------------------------------------- */
+
+static SArg sa_reg(int r)        { SArg a; a.kind = SA_REG; a.val = (uint32_t)r; return a; }
+static SArg sa_imm(uint32_t v)   { SArg a; a.kind = SA_IMM; a.val = v; return a; }
+static SArg sa_const(uint32_t k) { SArg a; a.kind = SA_CONST; a.val = k; return a; }
+static SArg sa_none(void)        { SArg a; a.kind = SA_NONE; a.val = 0; return a; }
+
+/* Register a slow path calling FN(A0, A1, A2) from the current state; the
+ * fast path branches to the returned record's entry and binds its join. */
+static Slow *slow_new(Gen *g, const void *fn, SArg a0, SArg a1, SArg a2)
+{
+    Slow *s;
+    if (g->n_slow == g->cap_slow) {
+        uint32_t i, cap = g->cap_slow ? g->cap_slow * 2 : 16;
+        Slow *ns = (Slow *)platform_alloc((unsigned long)cap * sizeof(Slow));
+        if (ns == NULL) { g->oom = 1; return NULL; }
+        for (i = 0; i < g->n_slow; i++) ns[i] = g->slow[i];
+        if (g->slow) platform_free(g->slow);
+        g->slow = ns;
+        g->cap_slow = cap;
+    }
+    s = &g->slow[g->n_slow++];
+    s->entry = a64_label_new(&g->a);
+    s->join = a64_label_new(&g->a);
+    s->fn = fn;
+    s->args[0] = a0; s->args[1] = a1; s->args[2] = a2;
+    s->in = g->vs;
+    s->mv1 = g->mv1;
+    return s;
+}
+
+/* The slow paths, after the body.  An argument register is never w0-w2
+ * (operands live in w10/w11 and w13-w15), so the moves cannot clobber one
+ * another. */
+static void emit_slow_paths(Gen *g)
+{
+    uint32_t i;
+    int k;
+    for (i = 0; i < g->n_slow && !g->a.bad && !g->oom; i++) {
+        Slow s = g->slow[i];          /* by value: no growth here, but cheap */
+        a64_bind(&g->a, s.entry);
+        for (k = 0; k < 3; k++) {
+            switch (s.args[k].kind) {
+            case SA_REG:   E(a64_mov_reg(0, k, (int)s.args[k].val)); break;
+            case SA_IMM:   a64_mov_imm(&g->a, 0, k, s.args[k].val); break;
+            case SA_CONST: emit_load_const(g, k, s.args[k].val); break;
+            default: break;
+            }
+        }
+        g->vs = s.in;
+        vs_flush(g);
+        emit_call(g, s.fn);
+        vs_reload(g, &s.in);
+        if (s.mv1) emit_mv1_store(g);
+        a64_b(&g->a, s.join);
+    }
+    g->vs.nc = 0;
+}
+
+/* Both W registers fixnums, else to the slow path. */
+static void emit_check_fixnums(Gen *g, int ra, int rb, A64Label slow)
+{
+    E(a64_and_reg(0, 9, ra, rb));
+    a64_tbz(&g->a, 9, 0, slow);
+}
+
+/* RA a heap object (low two bits clear) of header type TYPE, else to SLOW;
+ * xBASE = its address.  NIL (0) goes to IF_NIL. */
+static void emit_check_heap_type(Gen *g, int ra, uint32_t type, int base,
+                                 A64Label if_nil, A64Label slow)
+{
+    a64_cbz(&g->a, 0, ra, if_nil);
+    E(a64_lsl_imm(0, 9, ra, 30));
+    a64_cbnz(&g->a, 0, 9, slow);
+    E(a64_add_uxtw(base, R_ARENA, ra, 0));
+    E(a64_ldr_uoff(4, 9, base, 0));
+    E(a64_lsr_imm(0, 9, 9, CL_HDR_TYPE_SHIFT));
+    if (type == 0) {
+        a64_cbnz(&g->a, 0, 9, slow);
+    } else {
+        E(a64_cmp_imm(0, 9, type));
+        a64_bcond(&g->a, A64_NE, slow);
+    }
+}
+
+/* RA a structure with a slot IDX, else to SLOW; x12 = its address. */
+static void emit_check_struct(Gen *g, int ra, uint32_t idx, A64Label slow)
+{
+    emit_check_heap_type(g, ra, TYPE_STRUCT, 12, slow, slow);
+    E(a64_ldr_uoff(4, 9, 12, OFF_ST_NSLOTS));
+    E(a64_cmp_imm(0, 9, idx));
+    a64_bcond(&g->a, A64_LS, slow);              /* n_slots <= idx */
+}
+
+/* w0 = the value of the special variable bc->constants[K], else to SLOW:
+ * a dynamic binding on this thread, an unbound value, or NIL as the
+ * symbol (whose cell is SYM_NIL's) -- the helper's cases. */
+static void emit_symbol_value(Gen *g, const CL_Bytecode *bc, uint32_t k, A64Label slow)
+{
+    if (bc->constants[k] == CL_NIL) { a64_b(&g->a, slow); return; }
+    E(a64_ldr_uoff(4, 9, R_THR, OFF_TLV_COUNT));
+    a64_cbnz(&g->a, 0, 9, slow);
+    emit_load_const(g, 12, k);
+    E(a64_add_uxtw(12, R_ARENA, 12, 0));
+    E(a64_ldr_uoff(4, 0, 12, OFF_SYM_VALUE));
+    E(a64_adds_imm(0, A64_ZR, 0, 0u - (uint32_t)CL_UNBOUND));   /* cmn w0, #10 */
+    a64_bcond(&g->a, A64_EQ, slow);
 }
 
 /* Binary helper op: w0 = second, w1 = TOS (both still on the stack, so
@@ -364,6 +616,28 @@ static int op_operand_len(uint8_t op)
         return 6;
     default:
         return -1;
+    }
+}
+
+/* The opcodes with a cache-aware template.  Every other one starts from
+ * an empty cache. */
+static int op_cached(uint8_t op)
+{
+    switch (op) {
+    case OP_NIL: case OP_T: case OP_CONST: case OP_LOAD: case OP_STORE:
+    case OP_POP: case OP_DUP: case OP_STORE_POP: case OP_LOAD_LOAD:
+    case OP_LOAD_CONST: case OP_LOAD_STORE_POP: case OP_POP_LOAD:
+    case OP_LOAD_MV_RESET: case OP_MV_RESET: case OP_LOAD_RET: case OP_RET:
+    case OP_ADD: case OP_SUB: case OP_MUL:
+    case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
+    case OP_EQ: case OP_NOT: case OP_CAR: case OP_CDR:
+    case OP_GLOAD: case OP_GSTORE:
+    case OP_STRUCT_REF: case OP_LOAD_STRUCT_REF: case OP_STRUCT_SET:
+    case OP_JMP: case OP_JNIL: case OP_JTRUE: case OP_LOAD_JNIL: case OP_EQ_JNIL:
+    case OP_GLOAD_JNIL: case OP_GLOAD_EQ_JNIL: case OP_CMP_BR:
+        return 1;
+    default:
+        return 0;
     }
 }
 
@@ -522,6 +796,8 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
     a64_asm_init(&g->a, &g->cb);
     g->lit_val = NULL; g->lit_label = NULL;
     g->n_lits = g->cap_lits = 0; g->oom = 0;
+    g->slow = NULL; g->n_slow = g->cap_slow = 0;
+    g->vs.nc = 0; g->mv1 = 0;
     for (i = 0; i <= bc->code_len; i++)
         ip_lab[i] = tgt[i] ? a64_label_new(&g->a) : 0;
     l_body = a64_label_new(&g->a);
@@ -538,11 +814,14 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
     E(a64_mov_sp(A64_FP, A64_SP));
     E(a64_stp_off(19, 20, A64_SP, 16));
     E(a64_stp_off(21, 22, A64_SP, 32));
-    E(a64_stp_off(27, 28, A64_SP, 48));
+    E(a64_stp_off(23, 24, A64_SP, 48));
+    E(a64_stp_off(27, 28, A64_SP, 64));
     E(a64_mov_reg(1, R_THR, 0));
     E(a64_mov_reg(1, R_BP, 1));
     E(a64_ldr_uoff(8, R_STK, R_THR, OFF_VM_STACK));
     emit_ldr_lit64(g, R_K, bc->constants);
+    emit_ldr_lit64(g, R_ARENA, (const void *)&cl_arena_base);
+    E(a64_ldr_uoff(8, R_ARENA, R_ARENA, 0));
     a64_b(&g->a, l_check);
     {
         A64Label l_back = a64_label_new(&g->a);
@@ -559,6 +838,10 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
             const uint8_t *o;
             uint32_t insn = ip;
             if (tgt[ip]) {
+                /* A label: the frame in memory on every edge into it. */
+                if (fell) vs_flush(g);
+                g->vs.nc = 0;
+                g->mv1 = 0;
                 if (fell) {
                     if (d.at[ip] != DEPTH_UNSET && d.at[ip] != d.cur) { d.bad = 1; break; }
                     d.at[ip] = d.cur;
@@ -577,61 +860,56 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
             o = bc->code + ip + 1;
             ip += 1 + (uint32_t)op_operand_len(op);
 
+            /* An opcode without a cache-aware template runs its phase-1
+             * code, which addresses the operand stack in memory. */
+            if (!op_cached(op)) vs_flush(g);
+
             switch (op) {
             case OP_NIL:
-                E(a64_str_post(4, A64_ZR, R_TOP, 4));
+                E(a64_movz(0, vs_push(g), 0, 0));
                 depth_add(&d, 1);
                 emit_mv1(g);
                 break;
             case OP_T:
-                emit_load_t(g, 9);
-                emit_push(g, 9);
+                emit_load_t(g, vs_push(g));
                 depth_add(&d, 1);
                 emit_mv1(g);
                 break;
             case OP_CONST:
-                emit_load_const(g, 9, read_u16_be(o));
-                emit_push(g, 9);
+                emit_load_const(g, vs_push(g), read_u16_be(o));
                 depth_add(&d, 1);
                 emit_mv1(g);
                 break;
             case OP_LOAD:
-                emit_load_local(g, 9, o[0]);
-                emit_push(g, 9);
+                emit_load_local(g, vs_push(g), o[0]);
                 depth_add(&d, 1);
                 break;
             case OP_STORE:
                 depth_need(&d, 1);
-                emit_peek(g, 9, 1);
-                emit_store_local(g, 9, o[0]);
+                emit_store_local(g, vs_reg(g, 1, 9), o[0]);
                 break;
             case OP_POP:
                 depth_add(&d, -1);
-                emit_drop(g, 1);
+                vs_pop(g, 1);
                 break;
             case OP_DUP:
                 depth_need(&d, 1);
-                emit_peek(g, 9, 1);
-                emit_push(g, 9);
+                vs_push_reg(g, vs_reg(g, 1, 9));
                 depth_add(&d, 1);
                 break;
             case OP_STORE_POP:
                 depth_add(&d, -1);
-                emit_pop(g, 9);
-                emit_store_local(g, 9, o[0]);
+                emit_store_local(g, vs_reg(g, 1, 9), o[0]);
+                vs_pop(g, 1);
                 break;
             case OP_LOAD_LOAD:
-                emit_load_local(g, 9, o[0]);
-                emit_push(g, 9);
-                emit_load_local(g, 9, o[1]);
-                emit_push(g, 9);
+                emit_load_local(g, vs_push(g), o[0]);
+                emit_load_local(g, vs_push(g), o[1]);
                 depth_add(&d, 2);
                 break;
             case OP_LOAD_CONST:
-                emit_load_local(g, 9, o[0]);
-                emit_push(g, 9);
-                emit_load_const(g, 9, read_u16_be(o + 1));
-                emit_push(g, 9);
+                emit_load_local(g, vs_push(g), o[0]);
+                emit_load_const(g, vs_push(g), read_u16_be(o + 1));
                 depth_add(&d, 2);
                 emit_mv1(g);
                 break;
@@ -641,12 +919,11 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 break;
             case OP_POP_LOAD:
                 depth_need(&d, 1);
-                emit_load_local(g, 9, o[0]);
-                emit_poke(g, 9, 1);
+                vs_pop(g, 1);
+                emit_load_local(g, vs_push(g), o[0]);
                 break;
             case OP_LOAD_MV_RESET:
-                emit_load_local(g, 9, o[0]);
-                emit_push(g, 9);
+                emit_load_local(g, vs_push(g), o[0]);
                 depth_add(&d, 1);
                 emit_mv1(g);
                 break;
@@ -654,43 +931,93 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 emit_mv1(g);
                 break;
 
+            /* A return needs no flush: the frame is discarded. */
             case OP_LOAD_RET:
                 emit_load_local(g, 0, o[0]);
                 a64_b(&g->a, l_epilogue);
+                g->vs.nc = 0;
                 fell = 0;
                 break;
             case OP_RET:
                 /* The interpreter returns NIL from an empty operand stack. */
                 if (d.cur > 0) {
-                    emit_pop(g, 0);
+                    int r = vs_reg(g, 1, 0);
+                    if (r != 0) E(a64_mov_reg(0, 0, r));
                     depth_add(&d, -1);
                 } else {
                     E(a64_movz(0, 0, 0, 0));
                 }
                 a64_b(&g->a, l_epilogue);
+                g->vs.nc = 0;
                 fell = 0;
                 break;
 
-            /* Arithmetic and the numeric comparisons: the helpers are the
-             * interpreter's slow paths, whose fixnum arms give the fast
-             * paths' results. */
-            case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV:
+            /* Arithmetic and the numeric comparisons: fixnums inline (a
+             * tagged fixnum is 2n+1, so a 32-bit overflow is exactly a
+             * result outside the fixnum range, and tagged order is numeric
+             * order), anything else -- or an overflow -- to the helper, the
+             * interpreter's slow path. */
+            case OP_ADD: case OP_SUB: case OP_MUL:
             case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ: {
                 const void *fn =
                     op == OP_ADD ? (const void *)&cl_jit_runtime_add :
                     op == OP_SUB ? (const void *)&cl_jit_runtime_sub :
                     op == OP_MUL ? (const void *)&cl_jit_runtime_mul :
-                    op == OP_DIV ? (const void *)&cl_jit_runtime_div :
                     op == OP_LT  ? (const void *)&cl_jit_runtime_lt :
                     op == OP_GT  ? (const void *)&cl_jit_runtime_gt :
                     op == OP_LE  ? (const void *)&cl_jit_runtime_le :
                     op == OP_GE  ? (const void *)&cl_jit_runtime_ge :
                                    (const void *)&cl_jit_runtime_numeq;
+                int ra, rb;
+                Slow *sl;
+                A64Label slow, join;
                 depth_need(&d, 2);
-                emit_binary_helper(g, fn, 1);
+                ra = vs_reg(g, 2, 10);
+                rb = vs_reg(g, 1, 11);
+                sl = slow_new(g, fn, sa_reg(ra), sa_reg(rb), sa_none());
+                if (sl == NULL) break;
+                slow = sl->entry; join = sl->join;
+                emit_check_fixnums(g, ra, rb, slow);
+                switch (op) {
+                case OP_ADD:        /* (2a+1) + (2b+1) - 1 */
+                    E(a64_sub_imm(0, 9, rb, 1));
+                    E(a64_adds_reg(0, 0, ra, 9));
+                    a64_bcond(&g->a, A64_VS, slow);
+                    break;
+                case OP_SUB:        /* (2a+1) - (2b+1) + 1 */
+                    E(a64_subs_reg(0, 0, ra, rb));
+                    a64_bcond(&g->a, A64_VS, slow);
+                    E(a64_add_imm(0, 0, 0, 1));
+                    break;
+                case OP_MUL:        /* a * 2b in 64 bits, + 1 if it fits 32 */
+                    E(a64_asr_imm(0, 9, ra, 1));
+                    E(a64_sub_imm(0, 12, rb, 1));
+                    E(a64_smull(0, 9, 12));
+                    E(a64_cmp_sxtw(0, 0));
+                    a64_bcond(&g->a, A64_NE, slow);
+                    E(a64_add_imm(0, 0, 0, 1));
+                    break;
+                default: {
+                    A64Cond c = op == OP_LT ? A64_LT : op == OP_GT ? A64_GT :
+                                op == OP_LE ? A64_LE : op == OP_GE ? A64_GE : A64_EQ;
+                    E(a64_cmp_reg(0, ra, rb));
+                    emit_load_t(g, 0);
+                    E(a64_csel(0, 0, 0, A64_ZR, c));
+                    break;
+                }
+                }
+                a64_bind(&g->a, join);
+                vs_pop(g, 2);
+                vs_push_reg(g, 0);
                 depth_add(&d, -1);
+                emit_mv1(g);
                 break;
             }
+            case OP_DIV:
+                depth_need(&d, 2);
+                emit_binary_helper(g, (const void *)&cl_jit_runtime_div, 1);
+                depth_add(&d, -1);
+                break;
             case OP_CHAREQ:
                 depth_need(&d, 2);
                 emit_binary_helper(g, (const void *)&cl_jit_runtime_chareq, 1);
@@ -711,32 +1038,52 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 depth_add(&d, -1);
                 break;
 
-            case OP_EQ: case OP_NOT:
+            case OP_EQ: case OP_NOT: {
+                int r;
                 if (op == OP_EQ) {
+                    int ra, rb;
                     depth_add(&d, -1);
-                    emit_peek(g, 10, 2);
-                    emit_peek(g, 11, 1);
-                    emit_drop(g, 2);
-                    E(a64_cmp_reg(0, 10, 11));
+                    ra = vs_reg(g, 2, 10);
+                    rb = vs_reg(g, 1, 11);
+                    vs_pop(g, 2);
+                    E(a64_cmp_reg(0, ra, rb));
                 } else {
+                    int ra;
                     depth_need(&d, 1);
-                    emit_pop(g, 10);
-                    E(a64_cmp_imm(0, 10, 0));
+                    ra = vs_reg(g, 1, 10);
+                    vs_pop(g, 1);
+                    E(a64_cmp_imm(0, ra, 0));
                 }
-                emit_load_t(g, 9);
-                E(a64_csel(0, 9, 9, A64_ZR, A64_EQ));
-                emit_push(g, 9);
+                /* The flags survive the loads of T. */
+                r = vs_push(g);
+                emit_load_t(g, r);
+                E(a64_csel(0, r, r, A64_ZR, A64_EQ));
                 emit_mv1(g);
                 break;
+            }
 
-            case OP_CAR: case OP_CDR:
+            case OP_CAR: case OP_CDR: {
+                /* NIL gives NIL, a cons its field, anything else the
+                 * helper's type error. */
+                int ra;
+                Slow *sl;
+                A64Label slow, join;
                 depth_need(&d, 1);
-                emit_peek(g, 0, 1);
-                emit_call(g, op == OP_CAR ? (const void *)&cl_jit_runtime_car
-                                          : (const void *)&cl_jit_runtime_cdr);
-                emit_poke(g, 0, 1);
+                ra = vs_reg(g, 1, 10);
+                sl = slow_new(g, op == OP_CAR ? (const void *)&cl_jit_runtime_car
+                                              : (const void *)&cl_jit_runtime_cdr,
+                              sa_reg(ra), sa_none(), sa_none());
+                if (sl == NULL) break;
+                slow = sl->entry; join = sl->join;
+                E(a64_mov_reg(0, 0, ra));
+                emit_check_heap_type(g, ra, TYPE_CONS, 12, join, slow);
+                E(a64_ldr_uoff(4, 0, 12, op == OP_CAR ? OFF_CAR : OFF_CDR));
+                a64_bind(&g->a, join);
+                vs_pop(g, 1);
+                vs_push_reg(g, 0);
                 emit_mv1(g);
                 break;
+            }
             case OP_CONS:
                 depth_need(&d, 2);
                 emit_sub_x(g, 0, R_TOP, 8);
@@ -759,19 +1106,48 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 break;
             }
 
-            case OP_GLOAD:
-                emit_load_const(g, 0, read_u16_be(o));
-                emit_call(g, (const void *)&cl_jit_runtime_gload);
-                emit_push(g, 0);
+            /* A special variable: with no dynamic binding on this thread
+             * (tlv_entry_count 0) the value is the symbol's own cell, as
+             * in the interpreter's VM_GLOBAL_VALUE.  NIL as the symbol, an
+             * unbound value and *PACKAGE*'s store go to the helper. */
+            case OP_GLOAD: {
+                uint16_t k = read_u16_be(o);
+                Slow *sl = slow_new(g, (const void *)&cl_jit_runtime_gload,
+                                    sa_const(k), sa_none(), sa_none());
+                if (sl == NULL) break;
+                emit_symbol_value(g, bc, k, sl->entry);
+                a64_bind(&g->a, sl->join);
+                vs_push_reg(g, 0);
                 depth_add(&d, 1);
                 emit_mv1(g);
                 break;
-            case OP_GSTORE: case OP_FSTORE:
+            }
+            case OP_GSTORE: {
+                uint16_t k = read_u16_be(o);
+                int rv;
+                Slow *sl;
+                depth_need(&d, 1);
+                rv = vs_reg(g, 1, 10);
+                sl = slow_new(g, (const void *)&cl_jit_runtime_gstore,
+                              sa_const(k), sa_reg(rv), sa_none());
+                if (sl == NULL) break;
+                if (bc->constants[k] == CL_NIL || bc->constants[k] == SYM_STAR_PACKAGE) {
+                    a64_b(&g->a, sl->entry);
+                } else {
+                    E(a64_ldr_uoff(4, 9, R_THR, OFF_TLV_COUNT));
+                    a64_cbnz(&g->a, 0, 9, sl->entry);
+                    emit_load_const(g, 12, k);
+                    E(a64_add_uxtw(12, R_ARENA, 12, 0));
+                    E(a64_str_uoff(4, rv, 12, OFF_SYM_VALUE));
+                }
+                a64_bind(&g->a, sl->join);
+                break;
+            }
+            case OP_FSTORE:
                 depth_need(&d, 1);
                 emit_load_const(g, 0, read_u16_be(o));
                 emit_peek(g, 1, 1);
-                emit_call(g, op == OP_GSTORE ? (const void *)&cl_jit_runtime_gstore
-                                             : (const void *)&cl_jit_runtime_fstore);
+                emit_call(g, (const void *)&cl_jit_runtime_fstore);
                 break;
             case OP_FLOAD:
                 emit_load_const(g, 0, read_u16_be(o));
@@ -782,30 +1158,58 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 break;
 
             case OP_LOAD_STRUCT_REF:
-                emit_load_local(g, 9, o[0]);
-                emit_push(g, 9);
+                emit_load_local(g, vs_push(g), o[0]);
                 depth_add(&d, 1);
                 o += 1;
                 /* FALLTHROUGH */
-            case OP_STRUCT_REF:
+            case OP_STRUCT_REF: {
+                uint32_t idx = o[0];
+                int ra;
+                Slow *sl;
                 depth_need(&d, 1);
-                emit_peek(g, 0, 1);
-                E(a64_movz(0, 1, o[0], 0));
-                emit_call(g, (const void *)&cl_jit_runtime_struct_ref);
-                emit_poke(g, 0, 1);
+                ra = vs_reg(g, 1, 10);
+                sl = slow_new(g, (const void *)&cl_jit_runtime_struct_ref,
+                              sa_reg(ra), sa_imm(idx), sa_none());
+                if (sl == NULL) break;
+                emit_check_struct(g, ra, idx, sl->entry);
+                E(a64_ldr_uoff(4, 0, 12, OFF_ST_SLOTS + 4 * idx));
+                a64_bind(&g->a, sl->join);
+                vs_pop(g, 1);
+                vs_push_reg(g, 0);
                 emit_mv1(g);
                 break;
-            case OP_STRUCT_SET:
+            }
+            case OP_STRUCT_SET: {
+                uint32_t idx = o[0];
+                int ra, rv;
+                Slow *sl;
+                A64Label l_st;
                 depth_need(&d, 2);
-                emit_peek(g, 0, 2);
-                E(a64_movz(0, 1, o[0], 0));
-                emit_peek(g, 2, 1);
-                emit_call(g, (const void *)&cl_jit_runtime_struct_set);
-                emit_drop(g, 2);
-                emit_push(g, 0);
+                ra = vs_reg(g, 2, 10);
+                rv = vs_reg(g, 1, 11);
+                sl = slow_new(g, (const void *)&cl_jit_runtime_struct_set,
+                              sa_reg(ra), sa_imm(idx), sa_reg(rv));
+                if (sl == NULL) break;
+                emit_check_struct(g, ra, idx, sl->entry);
+                /* The interpreter's publication barrier: with peer threads,
+                 * VAL's initializing stores before the slot that publishes
+                 * it (vm.c, OP_STRUCT_SET). */
+                l_st = a64_label_new(&g->a);
+                emit_ldr_lit64(g, 9, (const void *)&cl_thread_count);
+                E(a64_ldr_uoff(4, 9, 9, 0));
+                E(a64_cmp_imm(0, 9, 1));
+                a64_bcond(&g->a, A64_LS, l_st);
+                E(a64_dmb_ish());
+                a64_bind(&g->a, l_st);
+                E(a64_str_uoff(4, rv, 12, OFF_ST_SLOTS + 4 * idx));
+                E(a64_mov_reg(0, 0, rv));
+                a64_bind(&g->a, sl->join);
+                vs_pop(g, 2);
+                vs_push_reg(g, 0);
                 depth_add(&d, -1);
                 emit_mv1(g);
                 break;
+            }
             case OP_ASET:
                 depth_need(&d, 3);
                 emit_peek(g, 0, 3);
@@ -954,77 +1358,108 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 break;
             }
 
-            /* --- Branches ------------------------------------------- */
-            case OP_JMP:
+            /* --- Branches ------------------------------------------------
+             * Every edge leaves with the cache flushed: a label's code
+             * expects the frame in memory.  The tested value is read (and
+             * popped) first; the flush only stores the values below it. */
+            case OP_JMP: {
+                int32_t t = landing_ip(read_i32_be(o), ip, bc->code_len);
+                vs_flush(g);
+                depth_edge(&d, t, insn);
+                a64_b(&g->a, ip_lab[t]);
+                fell = 0;
+                break;
+            }
             case OP_JNIL:
             case OP_JTRUE: {
                 int32_t t = landing_ip(read_i32_be(o), ip, bc->code_len);
-                if (op != OP_JMP) {
-                    depth_add(&d, -1);
-                    emit_pop(g, 9);
-                }
+                int ra;
+                depth_add(&d, -1);
+                ra = vs_reg(g, 1, 10);
+                vs_pop(g, 1);
+                vs_flush(g);
                 depth_edge(&d, t, insn);
-                if (op == OP_JMP) {
-                    a64_b(&g->a, ip_lab[t]);
-                    fell = 0;
-                } else if (op == OP_JNIL) {
-                    a64_cbz(&g->a, 0, 9, ip_lab[t]);
-                } else {
-                    a64_cbnz(&g->a, 0, 9, ip_lab[t]);
-                }
+                if (op == OP_JNIL) a64_cbz(&g->a, 0, ra, ip_lab[t]);
+                else a64_cbnz(&g->a, 0, ra, ip_lab[t]);
                 break;
             }
             case OP_LOAD_JNIL: {
                 int32_t t = landing_ip(read_i32_be(o + 1), ip, bc->code_len);
-                emit_load_local(g, 9, o[0]);
+                vs_flush(g);
+                emit_load_local(g, 10, o[0]);
                 depth_edge(&d, t, insn);
-                a64_cbz(&g->a, 0, 9, ip_lab[t]);
+                a64_cbz(&g->a, 0, 10, ip_lab[t]);
                 break;
             }
             case OP_EQ_JNIL: {
                 int32_t t = landing_ip(read_i32_be(o), ip, bc->code_len);
+                int ra, rb;
                 depth_add(&d, -2);
-                emit_peek(g, 10, 2);
-                emit_peek(g, 11, 1);
-                emit_drop(g, 2);
+                ra = vs_reg(g, 2, 10);
+                rb = vs_reg(g, 1, 11);
+                vs_pop(g, 2);
+                vs_flush(g);
                 emit_mv1(g);
                 depth_edge(&d, t, insn);
-                E(a64_cmp_reg(0, 10, 11));
+                E(a64_cmp_reg(0, ra, rb));
                 a64_bcond(&g->a, A64_NE, ip_lab[t]);
                 break;
             }
             case OP_GLOAD_JNIL:
             case OP_GLOAD_EQ_JNIL: {
+                uint16_t k = read_u16_be(o);
                 int32_t t = landing_ip(read_i32_be(o + 2), ip, bc->code_len);
-                emit_load_const(g, 0, read_u16_be(o));
-                emit_call(g, (const void *)&cl_jit_runtime_gload);
-                emit_mv1(g);
+                Slow *sl = slow_new(g, (const void *)&cl_jit_runtime_gload,
+                                    sa_const(k), sa_none(), sa_none());
+                if (sl == NULL) break;
+                emit_symbol_value(g, bc, k, sl->entry);
+                a64_bind(&g->a, sl->join);
                 if (op == OP_GLOAD_JNIL) {
+                    vs_flush(g);
+                    emit_mv1(g);
                     depth_edge(&d, t, insn);
                     a64_cbz(&g->a, 0, 0, ip_lab[t]);
                 } else {
+                    int ra;
                     depth_add(&d, -1);
-                    emit_pop(g, 10);
+                    ra = vs_reg(g, 1, 10);
+                    vs_pop(g, 1);
+                    vs_flush(g);
+                    emit_mv1(g);
                     depth_edge(&d, t, insn);
-                    E(a64_cmp_reg(0, 10, 0));
+                    E(a64_cmp_reg(0, ra, 0));
                     a64_bcond(&g->a, A64_NE, ip_lab[t]);
                 }
                 break;
             }
             case OP_CMP_BR: {
-                /* The comparison through cl_vm_compare_kind -- the
-                 * interpreter's slow arm, which decides fixnums (and
-                 * characters) the way its fast arm does -- then the branch
-                 * on T/NIL. */
+                /* Fixnums inline; anything else (and CHAR=, always) through
+                 * cl_vm_compare_kind, the interpreter's slow arm.  Either
+                 * way w0 is nonzero when the comparison holds. */
                 uint8_t kind = o[0];
+                uint32_t cmp = (uint32_t)(kind & CL_CMP_BR_CMP_MASK);
                 int32_t t = landing_ip(read_i32_be(o + 1), ip, bc->code_len);
+                int ra, rb;
+                Slow *sl;
                 depth_need(&d, 2);
+                ra = vs_reg(g, 2, 10);
+                rb = vs_reg(g, 1, 11);
+                sl = slow_new(g, (const void *)&cl_jit_runtime_cmp_kind,
+                              sa_reg(ra), sa_reg(rb), sa_imm(cmp));
+                if (sl == NULL) break;
+                if (cmp == CL_CMP_BR_CHAREQ) {
+                    a64_b(&g->a, sl->entry);
+                } else {
+                    A64Cond c = cmp == CL_CMP_BR_LT ? A64_LT : cmp == CL_CMP_BR_GT ? A64_GT :
+                                cmp == CL_CMP_BR_LE ? A64_LE : cmp == CL_CMP_BR_GE ? A64_GE : A64_EQ;
+                    emit_check_fixnums(g, ra, rb, sl->entry);
+                    E(a64_cmp_reg(0, ra, rb));
+                    E(a64_cset(0, 0, c));
+                }
+                a64_bind(&g->a, sl->join);
+                vs_pop(g, 2);
+                vs_flush(g);
                 emit_mv1(g);
-                emit_peek(g, 0, 2);
-                emit_peek(g, 1, 1);
-                E(a64_movz(0, 2, (uint32_t)(kind & CL_CMP_BR_CMP_MASK), 0));
-                emit_call(g, (const void *)&cl_jit_runtime_cmp_kind);
-                emit_drop(g, 2);
                 depth_add(&d, -2);
                 depth_edge(&d, t, insn);
                 if (kind & CL_CMP_BR_IF_TRUE)
@@ -1043,6 +1478,8 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
         if (fell) d.bad = 1;
         if (d.bad || g->a.bad || g->oom) goto fail;
 
+        emit_slow_paths(g);
+
         /* The overflow check: bp + locals + func slot + deepest operand
          * stack must fit the VM stack (the interpreter's push check). */
         a64_bind(&g->a, l_check);
@@ -1059,7 +1496,8 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
 
         /* The epilogue: the result is in w0. */
         a64_bind(&g->a, l_epilogue);
-        E(a64_ldp_off(27, 28, A64_SP, 48));
+        E(a64_ldp_off(27, 28, A64_SP, 64));
+        E(a64_ldp_off(23, 24, A64_SP, 48));
         E(a64_ldp_off(21, 22, A64_SP, 32));
         E(a64_ldp_off(19, 20, A64_SP, 16));
         E(a64_ldp_post(A64_FP, A64_LR, A64_SP, FRAME_BYTES));
@@ -1076,6 +1514,7 @@ fail:
     cb_free(&g->cb);
     code = NULL;
 lits:
+    if (g->slow) platform_free(g->slow);
     if (g->lit_val) platform_free(g->lit_val);
     if (g->lit_label) platform_free(g->lit_label);
 out:
@@ -1282,6 +1721,12 @@ static void disasm_word(uint32_t w, uint32_t off, char *out, size_t n)
     else if ((w & 0x7E000000u) == 0x34000000u)
         snprintf(out, n, "%s %s, %ld", (w & 0x01000000u) ? "cbnz" : "cbz",
                  rn(a, sf, rd, 0), (long)off + 4L * sext((w >> 5) & 0x7FFFFu, 19));
+    else if ((w & 0x7E000000u) == 0x36000000u)
+        snprintf(out, n, "%s %s, #%u, %ld", (w & 0x01000000u) ? "tbnz" : "tbz",
+                 rn(a, (int)(w >> 31), rd, 0), ((w >> 26) & 0x20u) | ((w >> 19) & 0x1Fu),
+                 (long)off + 4L * sext((w >> 5) & 0x3FFFu, 14));
+    else if (w == a64_dmb_ish())
+        snprintf(out, n, "dmb ish");
     else if ((w & 0xFFFFFC1Fu) == 0xD63F0000u)
         snprintf(out, n, "blr x%u", r1);
     else if ((w & 0xFFFFFC1Fu) == 0xD61F0000u)
@@ -1363,7 +1808,21 @@ static void disasm_word(uint32_t w, uint32_t off, char *out, size_t n)
         else
             snprintf(out, n, "lsl %s, %s, #%u", rn(a, sf, rd, 0), rn(b, sf, r1, 0),
                      top - imms);
-    } else if ((w & 0x7FE00C00u) == 0x1A800000u)
+    } else if ((w & 0x7FE00C00u) == 0x1A800400u && r1 == 31 && r2 == 31)
+        snprintf(out, n, "cset %s, %s", rn(a, sf, rd, 0),
+                 a64_cond_names[((w >> 12) & 15u) ^ 1u]);
+    else if ((w & 0x7F200000u) == 0x0A000000u)
+        snprintf(out, n, "and %s, %s, %s", rn(a, sf, rd, 0), rn(b, sf, r1, 0),
+                 rn(c, sf, r2, 0));
+    else if ((w & 0xFFE0FC00u) == 0x9B207C00u)
+        snprintf(out, n, "smull %s, %s, %s", rn(a, 1, rd, 0), rn(b, 0, r1, 0),
+                 rn(c, 0, r2, 0));
+    else if ((w & 0xFFE0FC1Fu) == 0xEB20C01Fu)
+        snprintf(out, n, "cmp %s, %s, sxtw", rn(a, 1, r1, 1), rn(b, 0, r2, 0));
+    else if ((w & 0x7F800000u) == 0x13000000u && ((w >> 10) & 63u) == (sf ? 63u : 31u))
+        snprintf(out, n, "asr %s, %s, #%u", rn(a, sf, rd, 0), rn(b, sf, r1, 0),
+                 (w >> 16) & 63u);
+    else if ((w & 0x7FE00C00u) == 0x1A800000u)
         snprintf(out, n, "csel %s, %s, %s, %s", rn(a, sf, rd, 0), rn(b, sf, r1, 0),
                  rn(c, sf, r2, 0), a64_cond_names[(w >> 12) & 15u]);
     else

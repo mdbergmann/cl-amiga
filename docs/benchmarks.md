@@ -7,6 +7,52 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-10-02 — AArch64 JIT phase 2: a fixnum loop 14× the interpreter, call-return 3×
+
+**Context**: `specs/native-backend-a64.md`, phase 2: inline fast paths
+(fixnum `+ - *` and comparisons, `CAR`/`CDR`, struct slots, special
+variables) with out-of-line slow paths, and a three-register top-of-stack
+cache.  Phase 1 sent every opcode to its helper.
+
+**Environment**: Apple M-series, macOS, host build (`make host`).
+Interpreter = the phase-2 binary with `--no-jit`; phase 1 = master
+f20f45d2 built in a worktree; phase 2 = branch `feat/a64-jit-p2`.  Three
+interleaved rounds, best of each.
+
+**Command**: `trunk/bench-opt.lisp` forces the JIT off, so a copy with the
+`(clamiga::%jit-set-active nil)` line removed is loaded, eager:
+
+```
+sed 's/^(clamiga::%jit-set-active nil)$//' trunk/bench-opt.lisp > /tmp/bo-jit.lisp
+CLAMIGA_JIT_HOT=0 ./build/host/clamiga --heap 64M --no-userinit --non-interactive [--no-jit] --load /tmp/bo-jit.lisp
+```
+
+| Row (ms)                 | interpreter | phase 1 | phase 2 | phase 2 vs interp |
+|--------------------------|------------:|--------:|--------:|------------------:|
+| vm.fixnum-loop           | 43 | 17 |  3 | 14.3× |
+| vm.local-shuffle         | 21 |  7 |  2 | 10.5× |
+| vm.call-return           | 32 | 21 | 10 |  3.2× |
+| mt.call-x8               | 33 | 22 | 12 |  2.8× |
+| opt.const-fold           | 14 |  9 |  7 |  2.0× |
+| opt.dead-branch          | 23 | 15 | 12 |  1.9× |
+| safety1.svref-loop       | 25 | 11 |  3 |  8.3× |
+| safety1.call-args        | 32 | 23 | 17 |  1.9× |
+| set.intersection-large   | 44 |  8 |  6 |  7.3× |
+| set.union-large          | 64 | 12 | 10 |  6.4× |
+| alloc.cons-churn         | 22 | 10 |  5 |  4.4× |
+| alloc.mixed-churn        | 52 | 38 | 36 |  1.4× |
+
+The `kw.*`, `clos.*`, `struct.*`, `type.*`, `mt.dynbind-x8` and `compile.*`
+rows are unchanged within 1 ms: their time is in `&key` prologues,
+dynamic binding and generic dispatch, which the walker still declines
+(phase 3).  The spec's stop criterion -- 1.5× on the `vm.*` rows -- is met
+with 3-14×.
+
+`trunk/bench-jit-call.lisp` (`--heap 8M`), JIT ms per row, phase 1 → phase
+2: builtin LOGTEST 3 → 1, call native leaf 4 → 2, fixnum `case` 4 → 2,
+decode-key mix (native helper) 15 → 14.  No row is slower than the
+interpreter; the `&optional` leaf stays equal (8 ms, still interpreted).
+
 ## 2026-10-01 — JIT direct native-to-native calls: a call to a native leaf 6.2 → 0.9 us (FS-UAE 040)
 
 **Context**: `specs/jit-direct-calls.md`.  A call site in native code now
