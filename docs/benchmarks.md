@@ -7,6 +7,45 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-10-02 — AArch64 JIT direct calls: native-to-native calls 2.3×, call-return 6× the interpreter
+
+**Context**: `specs/native-backend-a64.md`, phase 5: a call site whose cell
+holds the current call generation and a native callee enters it directly,
+pushing the interpreter's frame inline, instead of going through
+`vmstack_dispatch` / `cl_jit_invoke`.
+
+**Environment**: Apple M-series, macOS, host build (`make host`), branch
+`feat/a64-direct-calls`.  One binary, direct calls on vs off
+(`CLAMIGA_JIT_DIRECT=0`), three interleaved rounds, medians.
+
+`trunk/bench-jit-call.lisp` with `(defparameter cl-user::*bjc-n* 2000000)`,
+ms per 2 M iterations:
+
+| Row                      | bytecode | direct off | direct on |
+|--------------------------|---------:|-----------:|----------:|
+| call native leaf         | 65 | 25 | 11 |
+| call same-state leaf     | 63 | 26 | 11 |
+| funcall native leaf      | 58 | 24 | 12 |
+| call bytecode leaf       | 64 | 53 | 52 |
+| call &optional leaf      | 80 | 71 | 70 |
+| builtin 2-arg (logtest)  | 68 | 17 | 18 |
+| builtin gethash          | 102 | 54 | 54 |
+| decode-key mix (native helper) | 273 | 153 | 148 |
+
+`trunk/bench-opt.lisp` (JIT on, eager; command as in the phase-2 entry):
+
+| Row (ms)          | interpreter | direct off | direct on |
+|-------------------|------------:|-----------:|----------:|
+| vm.call-return    | 32 | 13 |  5 |
+| mt.call-x8        | 34 | 13 |  6 |
+| safety1.call-args | 32 | 20 | 14 |
+| kw.call-8keys     | 63 | 27 | 23 |
+| clos.make-instance| 46 | 34 | 30 |
+
+Every other row within 1 ms.  Calls into builtins and interpreted
+functions miss on every call and are unchanged; `mt.call-x8` shows the
+per-thread miss counters add no cross-thread traffic.
+
 ## 2026-10-02 — AArch64 JIT phase 3: `&key` calls 2.2×, dynamic binding 3×, CLOS slot reads 2×
 
 **Context**: `specs/native-backend-a64.md`, phase 3: the NLX frames,

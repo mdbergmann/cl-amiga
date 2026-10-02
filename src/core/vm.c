@@ -1664,12 +1664,7 @@ CL_Obj cl_vm_call_builtin(CL_Thread *thr, CL_Function *func,
     return call_builtin(thr, func, args, nargs);
 }
 
-#if defined(CL_ASAN_BUILD) || defined(__SANITIZE_ADDRESS__) || \
-    (defined(__has_feature) && __has_feature(address_sanitizer))
-#define C_STACK_LIMIT (64 * 1024 * 1024)  /* ASAN frames are huge — bump cap */
-#else
-#define C_STACK_LIMIT (3 * 1024 * 1024)  /* 3MB of 8MB, leave 5MB margin */
-#endif
+#define C_STACK_LIMIT CL_C_STACK_LIMIT   /* vm.h */
 
 /* Deep-recursion guard for the reader and compiler: they push GC roots
  * once per nesting level, and cl_gc_push_root abort()s the process at the

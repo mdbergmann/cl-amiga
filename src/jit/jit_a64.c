@@ -145,6 +145,51 @@ typedef char a64_heap_layout[(offsetof(CL_Cons, car) == 4 && offsetof(CL_Cons, c
                               CL_HDR_TYPE_SHIFT == 24 && TYPE_CONS == 0 &&
                               CL_UNBOUND == (CL_Obj)0xFFFFFFF6u) ? 1 : -1];
 
+/* What a direct call's hit path reads and writes (emit_direct_call): the
+ * thread's C-stack base, frame stack and NLX depth, the callee's bytecode,
+ * and the CL_Frame it pushes.  Thread fields past the scaled-offset range
+ * go through emit_thr_ldst. */
+#define OFF_C_STACK_BASE  ((uint32_t)offsetof(CL_Thread, c_stack_base))
+#define OFF_VM_FRAMES     ((uint32_t)offsetof(CL_Thread, vm.frames))
+#define OFF_VM_FRAME_SIZE ((uint32_t)offsetof(CL_Thread, vm.frame_size))
+#define OFF_VM_FP         ((uint32_t)offsetof(CL_Thread, vm.fp))
+#define OFF_NLX_TOP       ((uint32_t)offsetof(CL_Thread, nlx_top))
+#define OFF_TAIL_PENDING  ((uint32_t)offsetof(CL_Thread, jit_tail_pending))
+#define OFF_CL_BYTECODE   ((uint32_t)offsetof(CL_Closure, bytecode))
+#define OFF_BC_CODE       ((uint32_t)offsetof(CL_Bytecode, code))
+#define OFF_BC_CONSTANTS  ((uint32_t)offsetof(CL_Bytecode, constants))
+#define OFF_BC_NLOCALS    ((uint32_t)offsetof(CL_Bytecode, n_locals))
+#define OFF_BC_NATIVE     ((uint32_t)offsetof(CL_Bytecode, native_code))
+#define OFF_F_BYTECODE    ((uint32_t)offsetof(CL_Frame, bytecode))
+#define OFF_F_CODE        ((uint32_t)offsetof(CL_Frame, code))
+#define OFF_F_CONSTANTS   ((uint32_t)offsetof(CL_Frame, constants))
+#define OFF_F_BP          ((uint32_t)offsetof(CL_Frame, bp))
+#define OFF_F_NLOCALS     ((uint32_t)offsetof(CL_Frame, n_locals))
+#define OFF_F_NARGS       ((uint32_t)offsetof(CL_Frame, nargs))
+#define OFF_F_FSLOT       ((uint32_t)offsetof(CL_Frame, fslot))
+#define OFF_F_NLX         ((uint32_t)offsetof(CL_Frame, nlx_level))
+typedef char a64_direct_layout[(sizeof(((CL_Thread *)0)->c_stack_base) == 8 &&
+                                sizeof(((CL_Thread *)0)->vm.frames) == 8 &&
+                                sizeof(((CL_Thread *)0)->vm.fp) == 4 &&
+                                sizeof(((CL_Thread *)0)->vm.frame_size) == 4 &&
+                                sizeof(((CL_Thread *)0)->nlx_top) == 4 &&
+                                sizeof(((CL_Thread *)0)->jit_tail_pending) == 4 &&
+                                offsetof(CL_Closure, bytecode) == 4 &&
+                                sizeof(((CL_Bytecode *)0)->code) == 8 &&
+                                sizeof(((CL_Bytecode *)0)->constants) == 8 &&
+                                sizeof(((CL_Bytecode *)0)->n_locals) == 2 &&
+                                sizeof(((CL_Bytecode *)0)->native_code) == 8 &&
+                                sizeof(((CL_Frame *)0)->bytecode) == 4 &&
+                                sizeof(((CL_Frame *)0)->code) == 8 &&
+                                sizeof(((CL_Frame *)0)->constants) == 8 &&
+                                sizeof(((CL_Frame *)0)->bp) == 4 &&
+                                sizeof(((CL_Frame *)0)->n_locals) == 4 &&
+                                sizeof(((CL_Frame *)0)->nargs) == 2 &&
+                                sizeof(((CL_Frame *)0)->fslot) == 1 &&
+                                sizeof(((CL_Frame *)0)->nlx_level) == 4 &&
+                                sizeof(CL_Frame) < 4096 &&
+                                TYPE_CLOSURE < 4096) ? 1 : -1];
+
 /* The frame the prologue pushes: x29/x30, x19-x23, x25, x27 and x28 (x24
  * and x26 pad their pairs). */
 #define FRAME_BYTES 96
@@ -166,6 +211,11 @@ void cl_jit_backend_init(void)
     v = platform_getenv("CLAMIGA_JIT_HOT", envbuf, sizeof(envbuf));
     if (v != NULL && v[0] >= '0' && v[0] <= '9')
         cl_jit_set_hot_threshold(atoi(v));
+    /* CLAMIGA_JIT_DIRECT=0: no direct native-to-native calls (A/B runs,
+     * bisection), as on m68k. */
+    v = platform_getenv("CLAMIGA_JIT_DIRECT", envbuf, sizeof(envbuf));
+    if (v != NULL && v[0] == '0')
+        cl_jit_set_direct_calls(0);
 }
 
 void cl_jit_backend_shutdown(void)
@@ -245,6 +295,8 @@ typedef struct {
     uint32_t  ip_known;       /* the frame's ip holds this ... */
     int       ip_valid;       /* ... on every path to here */
     int       oom;
+    uint64_t *sites;          /* the direct-call cells, one per call site */
+    uint32_t  n_sites, max_sites;
 } Gen;
 
 /* The label of the 64-bit literal V, appended after the code by
@@ -808,9 +860,10 @@ static int op_branch_pos(uint8_t op)
 /* Mark every branch target (and loop header) and validate the stream: every
  * opcode known, every operand inside the code, every constant index and
  * local slot in range, the symbol operands symbols.  0 = decline. */
-static int prescan(const CL_Bytecode *bc, uint8_t *tgt)
+static int prescan(const CL_Bytecode *bc, uint8_t *tgt, uint32_t *n_sites)
 {
     uint32_t ip = 0;
+    *n_sites = 0;
     while (ip < bc->code_len) {
         uint8_t op = bc->code[ip];
         int n = op_len(bc, ip), bpos;
@@ -819,6 +872,9 @@ static int prescan(const CL_Bytecode *bc, uint8_t *tgt)
         if (n < 0) return 0;
         end = ip + 1 + (uint32_t)n;
         if (end > bc->code_len) return 0;
+        if (op == OP_CALL || op == OP_CALL_GLOBAL ||
+            op == OP_LOAD_CALL_GLOBAL || op == OP_GLOAD_CALL_GLOBAL)
+            (*n_sites)++;   /* a direct-call cell each (emit_direct_call) */
         switch (op) {      /* operand validation */
         case OP_LOAD: case OP_STORE: case OP_STORE_POP: case OP_LOAD_MV_RESET:
         case OP_LOAD_RET: case OP_POP_LOAD: case OP_PUSH_LOCAL: case OP_POP_LOCAL:
@@ -960,9 +1016,151 @@ static void depth_landing(Depth *d, int32_t target, uint32_t from, int32_t depth
     d->cur = cur;
 }
 
+/* --- Direct calls (runtime_vmstack.c, "Direct native-to-native calls") --- */
+
+static CL_Obj a64_tail_finish(CL_Thread *t);
+
+/* A CL_Thread field of SIZE bytes at OFF into or from wRT/xRT, through x17
+ * when OFF is past the scaled-offset range. */
+static void emit_thr_ldst(Gen *g, int load, int size, int rt, uint32_t off)
+{
+    uint32_t w = load ? a64_ldr_uoff(size, rt, R_THR, off)
+                      : a64_str_uoff(size, rt, R_THR, off);
+    if (w != A64_BAD) { E(w); return; }
+    emit_add_x(g, 17, R_THR, off);
+    E(load ? a64_ldr_uoff(size, rt, 17, 0) : a64_str_uoff(size, rt, 17, 0));
+}
+
+/* A call site: OP_CALL (FUNCALL; the function value under the N arguments
+ * on the operand stack) when SYMREF_K < 0, else a _GLOBAL call of the
+ * function of constants[SYMREF_K].  The cache is flushed.  w0 = the value.
+ *
+ * The hit path, taken while the site's cell (one 64-bit word: gen | func <<
+ * 32) holds the current cl_call_gen -- and, for OP_CALL, the function the
+ * operand stack holds:
+ *   - the callee's bytecode from func (through a closure), its native code
+ *     (NULL once unhooked: a miss);
+ *   - the C stack above c_stack_base - CL_C_STACK_LIMIT (with a 64K margin
+ *     for the callee's helpers), and room in the frame stack -- else the
+ *     miss path, whose checks signal the interpreter's errors;
+ *   - the CL_Frame cl_jit_invoke would push (bp at the arguments, as the
+ *     interpreter's OP_CALL_GLOBAL leaves them), the native entry called
+ *     with the arguments where they lie, a pending tail-call handoff run by
+ *     a64_tail_finish, the frame popped.
+ * The miss path is the helper call every site made before direct calls,
+ * now passing the cell to fill. */
+static void emit_direct_call(Gen *g, uint32_t n, int32_t symref_k)
+{
+    A64Label l_miss = a64_label_new(&g->a);
+    A64Label l_join = a64_label_new(&g->a);
+    A64Label l_bc   = a64_label_new(&g->a);
+    A64Label l_tail = a64_label_new(&g->a);
+    A64Label l_pop  = a64_label_new(&g->a);
+    uint64_t *cell;
+
+    if (g->sites == NULL || g->n_sites >= g->max_sites) { g->a.bad = 1; return; }
+    cell = &g->sites[g->n_sites++];
+    emit_frame_ip(g);
+
+    emit_ldr_lit64(g, 12, cell);
+    E(a64_ldr_uoff(8, 9, 12, 0));                       /* gen | func << 32 */
+    emit_ldr_lit64(g, 11, (const void *)&cl_call_gen);
+    E(a64_ldr_uoff(4, 11, 11, 0));
+    E(a64_cmp_reg(0, 9, 11));
+    a64_bcond(&g->a, A64_NE, l_miss);
+    E(a64_lsr_imm(1, 10, 9, 32));                       /* w10 = func */
+    if (symref_k < 0) {
+        emit_peek(g, 11, n + 1);
+        E(a64_cmp_reg(0, 10, 11));
+        a64_bcond(&g->a, A64_NE, l_miss);
+    }
+    /* x12 = the callee's CL_Bytecode, x14 = its native code. */
+    E(a64_add_uxtw(12, R_ARENA, 10, 0));
+    E(a64_ldr_uoff(4, 11, 12, 0));
+    E(a64_lsr_imm(0, 11, 11, CL_HDR_TYPE_SHIFT));
+    E(a64_cmp_imm(0, 11, TYPE_CLOSURE));
+    a64_bcond(&g->a, A64_NE, l_bc);
+    E(a64_ldr_uoff(4, 11, 12, OFF_CL_BYTECODE));
+    E(a64_add_uxtw(12, R_ARENA, 11, 0));
+    a64_bind(&g->a, l_bc);
+    E(a64_ldr_uoff(8, 14, 12, OFF_BC_NATIVE));
+    a64_cbz(&g->a, 1, 14, l_miss);
+    /* The C-stack floor (c_stack_base NULL wraps it high: a miss). */
+    emit_thr_ldst(g, 1, 8, 15, OFF_C_STACK_BASE);
+    emit_sub_x(g, 15, 15, CL_C_STACK_LIMIT - 0x10000u);
+    E(a64_mov_sp(16, A64_SP));
+    E(a64_cmp_reg(1, 16, 15));
+    a64_bcond(&g->a, A64_LS, l_miss);
+    /* A free frame: x16 = &frames[fp], fp + 1. */
+    emit_thr_ldst(g, 1, 4, 15, OFF_VM_FP);
+    emit_thr_ldst(g, 1, 4, 16, OFF_VM_FRAME_SIZE);
+    E(a64_cmp_reg(0, 15, 16));
+    a64_bcond(&g->a, A64_GE, l_miss);
+    emit_thr_ldst(g, 1, 8, 16, OFF_VM_FRAMES);
+    E(a64_movz(0, 17, (uint32_t)sizeof(CL_Frame), 0));
+    E(a64_smull(17, 15, 17));
+    E(a64_add_reg(1, 16, 16, 17));
+    E(a64_add_imm(0, 15, 15, 1));
+    emit_thr_ldst(g, 0, 4, 15, OFF_VM_FP);
+    /* The frame, as cl_jit_invoke fills it. */
+    E(a64_str_uoff(4, 10, 16, OFF_F_BYTECODE));
+    E(a64_ldr_uoff(8, 17, 12, OFF_BC_CODE));
+    E(a64_str_uoff(8, 17, 16, OFF_F_CODE));
+    E(a64_ldr_uoff(8, 17, 12, OFF_BC_CONSTANTS));
+    E(a64_str_uoff(8, 17, 16, OFF_F_CONSTANTS));
+    E(a64_str_uoff(4, A64_ZR, 16, OFF_FRAME_IP));
+    E(a64_sub_reg(1, 17, R_TOP, R_STK));
+    E(a64_lsr_imm(1, 17, 17, 2));
+    E(a64_sub_imm(0, 17, 17, n));
+    E(a64_str_uoff(4, 17, 16, OFF_F_BP));
+    E(a64_ldr_uoff(2, 17, 12, OFF_BC_NLOCALS));
+    E(a64_str_uoff(4, 17, 16, OFF_F_NLOCALS));
+    E(a64_movz(0, 17, n, 0));
+    E(a64_str_uoff(2, 17, 16, OFF_F_NARGS));
+    emit_thr_ldst(g, 1, 4, 17, OFF_NLX_TOP);
+    E(a64_str_uoff(4, 17, 16, OFF_F_NLX));
+    E(a64_str_uoff(1, A64_ZR, 16, OFF_F_FSLOT));
+    /* entry(thr, bp, nargs, func, frame) */
+    E(a64_mov_reg(1, 0, R_THR));
+    emit_sub_x(g, 1, R_TOP, 4 * n);
+    E(a64_movz(0, 2, n, 0));
+    E(a64_mov_reg(0, 3, 10));
+    E(a64_mov_reg(1, 4, 16));
+    E(a64_blr(14));
+    emit_thr_ldst(g, 1, 4, 9, OFF_TAIL_PENDING);
+    a64_cbnz(&g->a, 0, 9, l_tail);
+    a64_bind(&g->a, l_pop);
+    emit_thr_ldst(g, 1, 4, 9, OFF_VM_FP);
+    E(a64_sub_imm(0, 9, 9, 1));
+    emit_thr_ldst(g, 0, 4, 9, OFF_VM_FP);
+    a64_b(&g->a, l_join);
+    a64_bind(&g->a, l_tail);
+    E(a64_mov_reg(1, 0, R_THR));
+    emit_ldr_lit64(g, 16, (const void *)&a64_tail_finish);
+    E(a64_blr(16));
+    a64_b(&g->a, l_pop);
+
+    /* The miss: the helper every site called before direct calls. */
+    a64_bind(&g->a, l_miss);
+    E(a64_mov_reg(1, 0, R_THR));
+    E(a64_mov_reg(1, 1, R_TOP));
+    E(a64_movz(0, 2, n, 0));
+    if (symref_k < 0) {
+        emit_ldr_lit64(g, 3, cell);
+        emit_call(g, (const void *)&cl_jit_vmstack_call);
+    } else {
+        emit_const_addr(g, 3, (uint32_t)symref_k);
+        emit_ldr_lit64(g, 4, cell);
+        emit_call(g, (const void *)&cl_jit_vmstack_call_global);
+    }
+    a64_bind(&g->a, l_join);
+    g->mv1 = 0;
+}
+
 /* The function's native code, or NULL to leave it interpreted.  *LEN_OUT
  * receives its length. */
-static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
+static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out,
+                     uint64_t **sites_out)
 {
     Gen gs, *g = &gs;
     uint8_t *tgt = NULL;
@@ -974,7 +1172,10 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
     A64Label l_body, l_epilogue, l_overflow, l_check;
     uint8_t *code = NULL;
     uint32_t len = 0;
+    uint32_t n_sites = 0;
 
+    *sites_out = NULL;
+    g->sites = NULL;
     /* The gate: required arguments, and &key (a prologue helper matches
      * the keywords) -- &rest and &optional need prologues the walker does
      * not have yet. */
@@ -1004,7 +1205,16 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
     d.at = (int32_t *)platform_alloc((unsigned long)(bc->code_len + 1) * sizeof(int32_t));
     if (tgt == NULL || ip_lab == NULL || d.at == NULL) goto out;
     for (i = 0; i <= bc->code_len; i++) { tgt[i] = 0; d.at[i] = DEPTH_UNSET; }
-    if (!prescan(bc, tgt)) goto out;
+    if (!prescan(bc, tgt, &n_sites)) goto out;
+    /* The direct-call cells, empty (gen 0): ordinary memory, written by
+     * the fill (C) while native code reads them. */
+    g->n_sites = 0;
+    g->max_sites = n_sites;
+    if (n_sites > 0) {
+        g->sites = (uint64_t *)platform_alloc((unsigned long)n_sites * sizeof(uint64_t));
+        if (g->sites == NULL) goto out;
+        for (i = 0; i < n_sites; i++) g->sites[i] = 0;
+    }
 
     cb_init(&g->cb, 256);
     a64_asm_init(&g->a, &g->cb);
@@ -1489,10 +1699,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
             case OP_CALL: {
                 uint32_t n = o[0];
                 depth_need(&d, (int32_t)n + 1);
-                E(a64_mov_reg(1, 0, R_THR));
-                E(a64_mov_reg(1, 1, R_TOP));
-                E(a64_movz(0, 2, n, 0));
-                emit_call(g, (const void *)&cl_jit_vmstack_call);
+                emit_direct_call(g, n, -1);
                 emit_drop(g, n + 1);
                 emit_push(g, 0);
                 depth_add(&d, -(int32_t)n);
@@ -1519,11 +1726,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 k = read_u16_be(o);
                 n = o[2];
                 depth_need(&d, (int32_t)n);
-                E(a64_mov_reg(1, 0, R_THR));
-                E(a64_mov_reg(1, 1, R_TOP));
-                E(a64_movz(0, 2, n, 0));
-                emit_const_addr(g, 3, k);
-                emit_call(g, (const void *)&cl_jit_vmstack_call_global);
+                emit_direct_call(g, n, (int32_t)k);
                 emit_drop(g, n);
                 emit_push(g, 0);
                 depth_add(&d, 1 - (int32_t)n);
@@ -1975,6 +2178,10 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
     if (g->oom || !a64_finish(&g->a)) goto fail;
     code = cb_finish(&g->cb, &len);
     a64_asm_free(&g->a);
+    if (code != NULL) {
+        *sites_out = g->sites;          /* the caller's now */
+        g->sites = NULL;
+    }
     goto lits;
 
 fail:
@@ -1986,6 +2193,7 @@ lits:
     if (g->lit_val) platform_free(g->lit_val);
     if (g->lit_label) platform_free(g->lit_label);
 out:
+    if (g->sites) platform_free(g->sites);
     if (tgt) platform_free(tgt);
     if (ip_lab) platform_free(ip_lab);
     if (d.at) platform_free(d.at);
@@ -2000,24 +2208,82 @@ void cl_jit_backend_compile(CL_Bytecode *bc, int replace)
 {
     uint8_t *code;
     uint32_t len = 0;
+    uint64_t *sites = NULL;
     void *entry;
 
     if (bc == NULL || !cl_jitc_active) return;
     if (replace) drop_native(bc);
     else if (bc->native_code) return;
 
-    code = walk(bc, &len);
+    code = walk(bc, &len, &sites);
     if (code == NULL) return;
-    if (!replace && bc->native_code) { platform_free(code); return; }
+    if (!replace && bc->native_code) {
+        platform_free(code);
+        if (sites) platform_free(sites);
+        return;
+    }
     entry = cl_codeheap_install(code, len);
     platform_free(code);
-    if (entry == NULL) return;
+    if (entry == NULL) {
+        if (sites) platform_free(sites);
+        return;
+    }
+    /* The direct-call cells ride in native_relocs, which this backend
+     * never needs for relocations (it bakes no heap object; the count
+     * stays 0): the sweep, drop_native and an image restore free it with
+     * the code. */
+    bc->native_relocs = (uint32_t *)sites;
+    bc->native_reloc_count = 0;
     /* The code is flushed; its bytes must be visible to a peer thread
      * before the pointer that leads there. */
     platform_memory_barrier();
     bc->native_code = (uint8_t *)entry;
     bc->native_len  = len;
     cl_jitc_native_bytes += len;
+}
+
+/* Tail calls between native functions (cl_jit_vmstack_tail): the
+ * callee's arguments at BP, the callee above them; enter it from the same
+ * base, in the frame SF (refilled when PUSHED: a real frame, not the
+ * scratch one), until no handoff is pending.  Nothing allocates between
+ * the handoff and the read. */
+static CL_Obj a64_tail_chain(CL_Thread *t, int bp, CL_Frame *sf, int pushed)
+{
+    CL_Obj result = CL_NIL;
+    while (t->jit_tail_pending) {
+        uint32_t n = t->jit_tail_pending - 1;
+        CL_Obj func = t->vm.stack[bp + (int)n];
+        CL_Bytecode *cbc;
+        t->jit_tail_pending = 0;
+        t->vm.sp = bp + (int)n + 1;
+        cbc = cl_jit_vmstack_native_callee(func, n);
+        if (cbc == NULL)              /* defensive: dispatch it as a call */
+            return cl_vm_apply(func, &t->vm.stack[bp], (int)n);
+        t->jit_invoke_count++;
+        t->jit_current_nargs = (int32_t)n;
+        if (pushed) {
+            sf->bytecode  = func;
+            sf->code      = cbc->code;
+            sf->constants = cbc->constants;
+            sf->n_locals  = cbc->n_locals;
+            sf->nargs     = (uint16_t)n;
+        }
+        sf->ip = 0;
+        result = ((a64_entry_t)cbc->native_code)(t, &t->vm.stack[bp], n, func, sf);
+    }
+    return result;
+}
+
+/* The tail-call handoff after a direct call (emit_direct_call): the
+ * callee's frame is the top one, its bp the base the handoff left the
+ * next callee's arguments at. */
+static CL_Obj a64_tail_finish(CL_Thread *t)
+{
+    CL_Frame *sf = &t->vm.frames[t->vm.fp - 1];
+    int32_t prev_nargs = t->jit_current_nargs;
+    CL_Obj result = a64_tail_chain(t, (int)sf->bp, sf, 1);
+    t->jit_current_nargs = prev_nargs;
+    return result;
 }
 
 CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
@@ -2060,33 +2326,8 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
 
     result = ((a64_entry_t)bc->native_code)(t, &t->vm.stack[bp],
                                             (uint32_t)nargs, func_obj, sf);
-
-    /* Tail calls between native functions (cl_jit_vmstack_tail): the
-     * callee's arguments at bp, the callee above them; enter it from the
-     * same base.  Nothing allocates between the handoff and the read. */
-    while (t->jit_tail_pending) {
-        uint32_t n = t->jit_tail_pending - 1;
-        CL_Obj func = t->vm.stack[bp + (int)n];
-        CL_Bytecode *cbc;
-        t->jit_tail_pending = 0;
-        t->vm.sp = bp + (int)n + 1;
-        cbc = cl_jit_vmstack_native_callee(func, n);
-        if (cbc == NULL) {             /* defensive: dispatch it as a call */
-            result = cl_vm_apply(func, &t->vm.stack[bp], (int)n);
-            break;
-        }
-        t->jit_invoke_count++;
-        t->jit_current_nargs = (int32_t)n;
-        if (pushed_frame) {
-            sf->bytecode  = func;
-            sf->code      = cbc->code;
-            sf->constants = cbc->constants;
-            sf->n_locals  = cbc->n_locals;
-            sf->nargs     = (uint16_t)n;
-        }
-        sf->ip = 0;
-        result = ((a64_entry_t)cbc->native_code)(t, &t->vm.stack[bp], n, func, sf);
-    }
+    if (t->jit_tail_pending)
+        result = a64_tail_chain(t, bp, sf, pushed_frame);
 
     /* The body wrote sp above its frame at every helper call; the caller
      * pops the arguments from where it pushed them. */
@@ -2126,22 +2367,6 @@ int cl_jit_emit_stub(CL_Bytecode *bc)
     bc->native_len  = len;
     cl_jitc_native_bytes += len;
     return 1;
-}
-
-/* Native-to-native direct calls (specs/jit-direct-calls.md) do not exist
- * on AArch64 yet: there is no call site to switch, so the switch reads NIL
- * whatever it is set to, and every counter stays zero. */
-void cl_jit_set_direct_calls(int on)
-{
-    (void)on;
-}
-
-int cl_jit_direct_calls_enabled(void) { return 0; }
-
-void cl_jit_direct_call_stats(uint32_t *out)
-{
-    int i;
-    for (i = 0; i < CL_JIT_DS_COUNT; i++) out[i] = 0;
 }
 
 /* --- Disassembler -----------------------------------------------------

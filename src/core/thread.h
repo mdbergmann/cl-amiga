@@ -355,6 +355,11 @@ typedef struct CL_Thread_s {
      * from the same frame base instead of nesting a C call, so mutual tail
      * recursion runs in constant space as in the interpreter.  0 = none. */
     uint32_t jit_tail_pending;
+    /* The direct-call counters (CL_JIT_DS_*, jit.h; %JIT-DIRECT-CALL-STATS
+     * reads the calling thread's).  Written on the miss path, which every
+     * call to a builtin takes -- per-thread for the same reason as
+     * jit_invoke_count. */
+    uint32_t jit_ds[6];
 #endif
 
     /* ---- VM extras ---- */

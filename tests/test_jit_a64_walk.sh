@@ -681,5 +681,257 @@ check_contains "the backtrace's functions are native" "BT-NATIVE (T T)" "$out"
 check_contains "a native frame at the line of its error" "0: P3-BT-INNER ($WORK/bt.lisp:2)" "$out"
 check_contains "a suspended native caller at its call's line" "1: P3-BT-OUTER ($WORK/bt.lisp:5)" "$out"
 
+# --- Part 4: direct native-to-native calls ------------------------------------
+# A call site whose cell holds the current call generation and a native callee
+# enters it directly (runtime_vmstack.c, "Direct native-to-native calls").
+# Every value must be the helper path's: the script runs twice, direct calls
+# on and off (CLAMIGA_JIT_DIRECT=0), and every line but the counters (STAT-)
+# must agree.  Each check calls its site at least twice: the first call
+# misses and fills, the second hits.
+cat > "$WORK/p4.lisp" <<'EOF'
+(clamiga::%jit-set-hot-threshold 0)
+(defparameter *churn-n* (if (ext:getenv "CLAMIGA_GC_STRESS") 20 2000))
+(defmacro chk (name form)
+  `(format t "~A ~S~%" ,name
+           (handler-case ,form (error (c) (list :error (princ-to-string c))))))
+(defun native-p (f) (not (null (clamiga::%jit-dump-bytes f))))
+(defun ds (k) (getf (clamiga::%jit-direct-call-stats) k))
+(defun p4-k () (list "k"))
+
+;; --- A hit: one fill, then no more misses ---------------------------------
+(defun p4-leaf (a b) (+ a b))
+(defun p4-caller (n) (let ((s 0)) (dotimes (i n s) (setq s (p4-leaf s 1)))))
+(chk "P4-NATIVE" (mapcar #'native-p (list #'p4-leaf #'p4-caller)))
+(chk "P4-HIT" (p4-caller 1000))
+(defun p4-measure ()
+  (let* ((s0 (clamiga::%jit-direct-call-stats))
+         (r (p4-caller 1000))
+         (s1 (clamiga::%jit-direct-call-stats)))
+    (list r (- (getf s1 :fills) (getf s0 :fills))
+          (- (getf s1 :misses) (getf s0 :misses)))))
+;; The second run: the p4-caller site hits; only the second stats call -- a
+;; builtin, which every call misses -- counts a miss.
+(p4-measure)
+(format t "STAT-HIT ~S~%" (p4-measure))
+
+;; --- Redefinition through every public path -------------------------------
+(defun p4-red () 1)
+(defun p4-red-caller () (list (p4-red)))
+(chk "P4-REDEF"
+     (list (p4-red-caller) (p4-red-caller)
+           (progn (setf (fdefinition 'p4-red) (lambda () 2)) (p4-red-caller))
+           (progn (setf (symbol-function 'p4-red) (lambda () 3)) (p4-red-caller))
+           (progn (eval '(defun p4-red () 4)) (p4-red-caller))
+           (progn (fmakunbound 'p4-red)
+                  (handler-case (p4-red-caller)
+                    (undefined-function (e) (list :undefined (cell-error-name e)))))))
+;; A redefinition with another arity: the call's error is the helper path's.
+(defun p4-ar (a) a)
+(defun p4-ar-caller () (list (p4-ar 1)))
+(chk "P4-ARITY" (list (p4-ar-caller) (p4-ar-caller)
+                      (progn (eval '(defun p4-ar (a b) (+ a b)))
+                             (handler-case (p4-ar-caller)
+                               (error (c) (subseq (princ-to-string c) 0 27))))))
+
+;; --- FUNCALL: the site's func must be the operand's -------------------------
+(defun p4-fc (f x) (list (funcall f x)))
+(defun p4-mk (n) (lambda (x) (+ x n)))
+(chk "P4-FUNCALL"
+     (let ((a (lambda (x) (+ x 1))) (b (lambda (x) (* x 10))) (r nil))
+       (dotimes (i 6) (push (p4-fc (if (evenp i) a b) i) r))
+       (nreverse r)))
+;; Closures over one template: same code, different upvalues.
+(chk "P4-CLOSURES"
+     (let ((fs (list (p4-mk 1) (p4-mk 100))) (r nil))
+       (dotimes (i 4) (push (p4-fc (nth (mod i 2) fs) i) r))
+       (nreverse r)))
+;; A global function that is a closure, replaced by another one.
+(defun p4-gcl-caller (x) (list (p4-gcl x)))
+(chk "P4-GLOBAL-CLOSURE"
+     (progn (setf (fdefinition 'p4-gcl) (p4-mk 5))
+            (list (p4-gcl-caller 1) (p4-gcl-caller 2)
+                  (progn (setf (fdefinition 'p4-gcl) (p4-mk 7)) (p4-gcl-caller 1)))))
+
+;; --- Collections between calls: the cell's func must never be stale --------
+(defun p4-gc-caller (n)
+  (let ((s 0) (keep nil))
+    (dotimes (i n)
+      (setq s (+ s (p4-leaf i 1)))
+      (push (p4-k) keep)
+      (when (zerop (mod i 97)) (gc)))
+    (list s (length keep))))
+(chk "P4-GC" (p4-gc-caller 300))
+;; ABA: a closure called through a site, dropped, collected, and a new one of
+;; the same size at the same site.
+(defun p4-aba ()
+  (let ((r nil))
+    (dotimes (i 12)
+      (let ((f (p4-mk i)))
+        (push (car (p4-fc f 0)) r)
+        (push (car (p4-fc f 0)) r))
+      (gc))
+    (nreverse r)))
+(chk "P4-ABA" (p4-aba))
+
+;; --- TRACE after the site filled, UNTRACE after --------------------------
+(defun p4-tr (x) (* x 2))
+(defun p4-tr-caller (x) (list (p4-tr x)))
+(chk "P4-TRACE"
+     (let* ((a (list (p4-tr-caller 1) (p4-tr-caller 2)))
+            (b nil)
+            (out (with-output-to-string (*trace-output*)
+                   (trace p4-tr)
+                   (setq b (p4-tr-caller 3))
+                   (untrace p4-tr)))
+            (c nil)
+            (quiet (with-output-to-string (*trace-output*)
+                     (setq c (p4-tr-caller 4)))))
+       (list (append a (list b c)) (not (null (search "P4-TR" (string-upcase out))))
+             (length quiet))))
+
+;; --- Multiple values through a filled site ---------------------------------
+(defun p4-mv (n) (values n (p4-k) (* n 2)))
+(defun p4-none () (values))
+(defun p4-mv-caller (n) (list (multiple-value-list (p4-mv n))
+                              (multiple-value-list (p4-none))
+                              (nth-value 2 (p4-mv n))))
+(chk "P4-MV" (list (p4-mv-caller 1) (p4-mv-caller 2)))
+
+;; --- &key callees: the same entry ABI, the callee's own prologue -----------
+(defun p4-kw (a &key (b 2) (c nil cp)) (list a b c cp))
+(defun p4-kw-caller (x) (list (p4-kw x) (p4-kw x :b 5) (p4-kw x :c (p4-k) :b 6)))
+(defun p4-kw-bad (x) (p4-kw x :nope 1))
+(defun p4-kw-bad-caller (x) (list (p4-kw-bad x)))
+(chk "P4-KW" (list (p4-kw-caller 1) (p4-kw-caller 2)))
+(chk "P4-KW-ERROR" (list (handler-case (p4-kw-bad-caller 1) (error (c) (princ-to-string c)))
+                         (handler-case (p4-kw-bad-caller 1) (error (c) (princ-to-string c)))))
+
+;; --- The callee hands a tail call on (a64_tail_finish): 3000 calls, more
+;; than the frame stack holds, so a frame left pushed overflows it ---------
+(defun p4-t2 (x) (+ x 1))
+(defun p4-t1 (x) (p4-t2 x))
+(defun p4-tc (n) (let ((s 0)) (dotimes (i n s) (setq s (+ s (p4-t1 i))))))
+(chk "P4-TAIL-HANDOFF" (p4-tc 3000))
+;; Errors out of a direct callee, 3000 times: the frame is popped by the unwind.
+(defun p4-err (x) (if (oddp x) (error "odd ~A" x) x))
+(defun p4-err-caller (n)
+  (let ((k 0) (msg nil))
+    (dotimes (i n (list k msg))
+      (handler-case (progn (p4-err i) (incf k))
+        (error (c) (setq msg (princ-to-string c)))))))
+(chk "P4-ERRORS" (p4-err-caller 3000))
+;; Deep direct recursion, and past the frame stack.
+(defun p4-deep (n) (if (= n 0) 0 (+ 1 (p4-deep (- n 1)))))
+(chk "P4-DEEP" (list (p4-deep 10) (p4-deep 900)))
+(chk "P4-DEEP-LIMIT" (p4-deep 100000))
+(chk "P4-AFTER-LIMIT" (p4-deep 10))
+
+;; --- The interpreter's frames: backtrace and FRAME-LOCALS on a hit ---------
+(defun p4-bi () (ext:backtrace 4))
+(defun p4-bm (q) (list q (p4-bi)))
+(defun p4-bo () (cadr (p4-bm 7)))
+(chk "P4-BACKTRACE" (progn (p4-bo) (mapcar #'second (p4-bo))))
+(defun p4-fl-inner () (ext:frame-locals 1))
+(defun p4-fl-outer (a b) (let ((c (+ a b))) (list (p4-fl-inner) c)))
+(chk "P4-FRAME-LOCALS" (progn (p4-fl-outer 1 2) (p4-fl-outer 3 4)))
+
+;; --- Frames off: no fills (the hit path pushes a frame), same values -------
+(defun p4-two-leaves () (list (p4-leaf 1 2) (p4-leaf 3 4)))
+(chk "P4-FRAMES-OFF"
+     (progn (clamiga::%jit-set-frames nil)
+            (prog1 (list (p4-caller 100) (p4-two-leaves) (p4-two-leaves))
+              (clamiga::%jit-set-frames t))))
+;; The kill switch: values identical, no fills.
+(clamiga::%jit-set-direct-calls nil)
+(let ((f0 (ds :fills)))
+  (chk "P4-KILL" (list (p4-caller 100) (p4-fc #'1+ 1) (p4-kw-caller 3)))
+  (format t "STAT-KILL-FILLS ~S~%" (- (ds :fills) f0)))
+(clamiga::%jit-set-direct-calls (not (ext:getenv "CLAMIGA_JIT_DIRECT_OFF")))
+
+;; --- Threads: per-thread counters; a collector thread while one calls ------
+(chk "P4-THREAD-STATS"
+     ;; The builtin read directly: a call to DS would fill its own site first.
+     (mp:join-thread (mp:make-thread
+                      (lambda () (list (getf (clamiga::%jit-direct-call-stats) :fills)
+                                       (p4-caller 10))))))
+(chk "P4-STW"
+     (let* ((done nil)
+            (gcer (mp:make-thread
+                   (lambda () (loop until done do (make-list 200) (gc)))))
+            (r (loop repeat 200 collect (p4-caller 100))))
+       (setq done t)
+       (mp:join-thread gcer)
+       (list (length r) (every (lambda (x) (= x 100)) r))))
+(chk "P4-INTERRUPT"
+     (let* ((stop nil) (hit nil)
+            (th (mp:make-thread (lambda () (loop until stop do (p4-caller 100))))))
+       (sleep 0.05)
+       (mp:interrupt-thread th (lambda () (setq hit t)))
+       (loop repeat 200 until hit do (sleep 0.01))
+       (setq stop t)
+       (mp:join-thread th)
+       hit))
+(format t "DONE~%")
+EOF
+out=$(run "$WORK/p4.lisp")
+check_contains "the direct-call script ran to the end" "DONE" "$out"
+check_contains "caller and callee are native" "P4-NATIVE (T T)" "$out"
+check_contains "a native caller calls a native leaf" "P4-HIT 1000" "$out"
+if [ -n "$CLAMIGA_GC_STRESS" ]; then
+    # Every allocation collects and bumps the generation: the first stats
+    # call's own plist invalidates both sites on the path (P4-MEASURE's call
+    # of P4-CALLER, P4-CALLER's of P4-LEAF), each refilled once -- then the
+    # 1000 calls hit.
+    check_contains "a filled site hits (GC stress: one refill per site)" "STAT-HIT (1000 2 3)" "$out"
+else
+    check_contains "a filled site hits: no fill and no miss in 1000 calls" "STAT-HIT (1000 0 1)" "$out"
+fi
+check_contains "redefinition: setf fdefinition, setf symbol-function, defun, fmakunbound" \
+    "P4-REDEF ((1) (1) (2) (3) (4) (:UNDEFINED P4-RED))" "$out"
+check_contains "a callee redefined with another arity signals" \
+    'P4-ARITY ((1) (1) "Too few arguments to P4-AR ")' "$out"
+check_contains "funcall of two functions through one site" \
+    "P4-FUNCALL ((1) (10) (3) (30) (5) (50))" "$out"
+check_contains "closures over one template through one site" "P4-CLOSURES ((1) (101) (3) (103))" "$out"
+check_contains "a global closure, replaced" "P4-GLOBAL-CLOSURE ((6) (7) (8))" "$out"
+check_contains "collections between calls" "P4-GC (45150 300)" "$out"
+check_contains "a collected closure's successor at the same site" \
+    "P4-ABA (0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11)" "$out"
+check_contains "trace after a fill reaches the trace, untrace stops it" \
+    "P4-TRACE (((2) (4) (6) (8)) T 0)" "$out"
+check_contains "multiple values and (values) through a site" \
+    'P4-MV (((1 ("k") 2) NIL 2) ((2 ("k") 4) NIL 4))' "$out"
+check_contains "&key callees called directly" \
+    'P4-KW (((1 2 NIL NIL) (1 5 NIL NIL) (1 6 ("k") T)) ((2 2 NIL NIL) (2 5 NIL NIL) (2 6 ("k") T)))' "$out"
+check_contains "a keyword error from a direct callee" \
+    'P4-KW-ERROR ("Unknown keyword argument: NOPE" "Unknown keyword argument: NOPE")' "$out"
+check_contains "a tail-call handoff after a direct call pops its frame" "P4-TAIL-HANDOFF 4501500" "$out"
+check_contains "errors out of direct callees pop their frames" 'P4-ERRORS (1500 "odd 2999")' "$out"
+check_contains "direct recursion" "P4-DEEP (10 900)" "$out"
+check_contains "direct recursion reaches the frame limit" 'P4-DEEP-LIMIT (:ERROR "Call stack overflow")' "$out"
+check_contains "and runs afterwards" "P4-AFTER-LIMIT 10" "$out"
+check_contains "the backtrace through hits" "P4-BACKTRACE (P4-BI P4-BM P4-BO" "$out"
+check_contains "FRAME-LOCALS of a direct caller" \
+    'P4-FRAME-LOCALS (((#:ARG0 . 3) (#:ARG1 . 4) (#:LOCAL2) (#:LOCAL3 . 7)) 7)' "$out"
+check_contains "frames off: the same values" "P4-FRAMES-OFF (100 (3 7) (3 7))" "$out"
+check_contains "the kill switch: the same values" \
+    "P4-KILL (100 (2) ((3 2 NIL NIL) (3 5 NIL NIL) (3 6 (\"k\") T)))" "$out"
+check_contains "the kill switch: no fills" "STAT-KILL-FILLS 0" "$out"
+check_contains "the counters are the calling thread's" "P4-THREAD-STATS (0 10)" "$out"
+check_contains "a collector thread while direct calls run" "P4-STW (200 T)" "$out"
+check_contains "an interrupt reaches a thread looping on direct calls" "P4-INTERRUPT T" "$out"
+# The same script with direct calls off: every line but the counters.
+offout=$(CLAMIGA_JIT_DIRECT=0 CLAMIGA_JIT_DIRECT_OFF=1 run "$WORK/p4.lisp")
+total=$((total + 1))
+echo "$out" | grep -v '^STAT-' > "$WORK/p4-on.txt"
+echo "$offout" | grep -v '^STAT-' > "$WORK/p4-off.txt"
+if cmp -s "$WORK/p4-on.txt" "$WORK/p4-off.txt"; then
+    echo "  ok  direct calls on and off give the same results"; passed=$((passed + 1))
+else
+    echo "  FAIL  direct calls on and off differ"
+    diff "$WORK/p4-on.txt" "$WORK/p4-off.txt" | head -20
+    failed=$((failed + 1))
+fi
+
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

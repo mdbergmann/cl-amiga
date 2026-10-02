@@ -593,11 +593,56 @@ Status (done, 2026-10-02):
   gates pass on the arm64 Mac.
 - CI: `ubuntu-24.04-arm` added to the host-test matrix.
 
+### Phase 5: direct calls
+Native-to-native calls without the C helper path, after the m68k walker's
+design (`specs/jit-direct-calls.md`): every `OP_CALL`/`OP_CALL_GLOBAL` site
+(and the fused heads) owns a cell guarded by `cl_call_gen`; a hit enters
+the callee's native code directly, a miss takes the helper path as before
+and fills the cell.  The `cl_call_gen` bumps, the setter funnel and its
+lint are the m68k work, unchanged.
+
+What differs from m68k:
+- **The cell is one 64-bit word**, `gen | func << 32`, written in one store
+  and read in one load.  The m68k three-word cell (gen, func, entry) relies
+  on a single CPU; on a multi-core host a reader could pair one fill's
+  func with another's entry.  Nothing else is cached: the hit re-derives
+  the callee's bytecode from func (through a closure) and reads its
+  `native_code`, NULL -> miss.
+- **The hit path pushes the CL_Frame** `cl_jit_invoke` would (frames are on
+  by default here), checks the C stack against `c_stack_base -
+  CL_C_STACK_LIMIT` (64 K margin) and the frame stack's room -- either
+  failing is a miss, whose helper signals the interpreter's errors -- and
+  hands a pending tail call (`jit_tail_pending`) to `a64_tail_finish`.
+- **`&key` callees fill too**: the AArch64 entry ABI is one signature for
+  every lambda list, and the callee's own prologue matches the keywords.
+- **The counters are per thread** (`CL_Thread.jit_ds`;
+  `%JIT-DIRECT-CALL-STATS` reads the caller's): the miss path runs on every
+  call to a builtin, so a process-wide counter is the shared cache line the
+  hot-path rule forbids.
+- Fill refuses while frames are off (`%JIT-SET-FRAMES NIL`), anything is
+  traced, or the kill switch (`%JIT-SET-DIRECT-CALLS`,
+  `CLAMIGA_JIT_DIRECT=0`) is off.
+- The cells are ordinary memory hung on `bc->native_relocs` (this backend
+  bakes no heap object, so the count stays 0), freed with the code by the
+  sweep, `drop_native` and image restore.
+
+Tests: `tests/test_jit_a64_walk.sh` part 4 -- hits, redefinition through
+every public path, FUNCALL and closures through one site, collections and
+ABA between calls, TRACE after a fill, multiple values, `&key`, tail-call
+handoffs and errors out of direct callees (3000 each: a frame left pushed
+overflows the frame stack), the frame limit, backtrace and FRAME-LOCALS
+through hits, frames off, the kill switch, per-thread counters, a collector
+thread, an interrupt -- and the whole script again with direct calls off,
+every line but the counters identical.  Dropping the FUNCALL guard, the
+generation check or the frame pop each fails it.
+
+Bench (Apple M-series, interleaved, medians; `docs/benchmarks.md`
+2026-10-02): `bench-jit-call` native leaf 25 -> 11 ms per 2 M calls,
+FUNCALL 24 -> 12; bench-opt `vm.call-return` 13 -> 5 ms (6.4x the
+interpreter), `mt.call-x8` 13 -> 6, `call-args` 20 -> 14,
+`kw.call-8keys` 27 -> 23; no row slower.
+
 ### Later
-- Direct native-to-native calls through call-site cells guarded by
-  `cl_call_gen`, as the m68k walker does them (`specs/jit-direct-calls.md`).
-  The cell, the miss path and every `cl_call_gen` bump are portable; only
-  the hit path is new code.
 - `&optional`/`&rest` prologues in the walker, on both CPUs.
 
 ## Measuring

@@ -10,10 +10,12 @@
 
 /* Its operand stack is cl_vm.stack, so these take pointers into it.
  *   stack_overflow - the prologue's frame does not fit: "VM stack overflow".
- *   call           - OP_CALL/OP_TAILCALL, the callee under the NARGS
- *                    arguments below TOP.
+ *   call           - OP_CALL, the callee under the NARGS arguments below
+ *                    TOP.
  *   call_global    - the _GLOBAL calls, the callee the function of *SYMREF
  *                    (a word of bc->constants).
+ *                    Both take the call site's cell (the miss path of its
+ *                    direct-call hit path; runtime_vmstack.c), or NULL.
  *   is_self        - the self tail call's guard (same bytecode, nothing traced).
  *   tail           - any other tail call (constant space between natives).
  *   cons/list/push_local - the interpreter's cl_cons_rooted forms. */
@@ -23,9 +25,10 @@ __attribute__((noreturn))
 void   cl_jit_vmstack_stack_overflow(void);
 struct CL_Thread_s;
 CL_Obj cl_jit_vmstack_call(struct CL_Thread_s *thr, CL_Obj *top,
-                               uint32_t nargs);
+                           uint32_t nargs, uint64_t *site);
 CL_Obj cl_jit_vmstack_call_global(struct CL_Thread_s *thr, CL_Obj *top,
-                                      uint32_t nargs, const CL_Obj *symref);
+                                  uint32_t nargs, const CL_Obj *symref,
+                                  uint64_t *site);
 int    cl_jit_vmstack_is_self(CL_Obj func, CL_Obj entered);
 /* A non-self tail call: to a native callee, a frame-reusing handoff to
  * cl_jit_invoke (CL_Thread.jit_tail_pending); to anything else, a call. */

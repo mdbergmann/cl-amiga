@@ -395,7 +395,10 @@ typedef struct {
      * into the generated code.  platform_alloc'd, parallel to
      * native_code; NULL when the function baked no heap immediates.
      * Not FASL-serialized — rebuilt by cl_jit_compile on load, exactly
-     * like native_code.  See specs/native-backend.md "GC interaction". */
+     * like native_code.  See specs/native-backend.md "GC interaction".
+     * The AArch64 backend bakes no heap object, so it keeps its direct-call
+     * cells here instead (uint64_t per call site, native_reloc_count 0):
+     * freed with the code by the same paths. */
     uint32_t *native_relocs;
     uint16_t native_reloc_count;
     /* Original source lambda-list (the params form as written, including

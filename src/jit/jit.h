@@ -27,8 +27,10 @@
 #define CL_JIT_HOT_DEFAULT  8
 #define CL_JIT_HOT_MAX      126    /* the count lives in 7 bits */
 
-/* Native-to-native direct calls (specs/jit-direct-calls.md): the counters of
- * the call-site miss path, in this order, for %JIT-DIRECT-CALL-STATS. */
+/* Native-to-native direct calls (specs/jit-direct-calls.md; AArch64:
+ * specs/native-backend-a64.md, "Direct calls"): the counters of the
+ * call-site miss path, in this order, for %JIT-DIRECT-CALL-STATS --
+ * process-wide on m68k, the calling thread's on AArch64. */
 enum {
     CL_JIT_DS_FILLS, CL_JIT_DS_MISSES, CL_JIT_DS_REFUSED_TRACE,
     CL_JIT_DS_REFUSED_SHADOW, CL_JIT_DS_REFUSED_ABI,
@@ -58,7 +60,8 @@ void   cl_jit_shutdown(void);
  * Toggling bumps cl_call_gen. */
 void   cl_jit_set_direct_calls(int on);
 int    cl_jit_direct_calls_enabled(void);
-/* Copy the CL_JIT_DS_* counters into OUT[CL_JIT_DS_COUNT]. */
+/* Copy the CL_JIT_DS_* counters into OUT[CL_JIT_DS_COUNT] (AArch64: the
+ * calling thread's). */
 void   cl_jit_direct_call_stats(uint32_t *out);
 
 /* Optionally translate this bytecode to native code. May leave

@@ -386,6 +386,19 @@ CL_Obj cl_vm_pop(void);
 int cl_vm_compare_kind(CL_Obj a, CL_Obj b, int cmp);
 
 /* C stack overflow detection */
+/* The C stack cl_check_c_stack lets a thread use, measured from its
+ * c_stack_base (host; AmigaOS checks the task's real bounds first).  The
+ * AArch64 JIT's direct calls compare against it inline. */
+#if defined(CL_ASAN_BUILD) || defined(__SANITIZE_ADDRESS__)
+#define CL_C_STACK_LIMIT (64 * 1024 * 1024)  /* ASAN frames are huge — bump cap */
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)       /* clang's spelling */
+#define CL_C_STACK_LIMIT (64 * 1024 * 1024)
+#endif
+#endif
+#ifndef CL_C_STACK_LIMIT
+#define CL_C_STACK_LIMIT (3 * 1024 * 1024)   /* 3MB of 8MB, leave 5MB margin */
+#endif
 void cl_check_c_stack(const char *context);
 /* cl_check_c_stack + GC-root-stack headroom; for per-nesting-level
  * recursion entry points (reader, compiler) only — see vm.c. */

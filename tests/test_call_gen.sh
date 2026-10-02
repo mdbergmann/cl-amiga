@@ -86,9 +86,16 @@ cat > "$WORK/gen.lisp" <<EOF
   (setf stop t)
   (ignore-errors (mp:join-thread th)))
 (let ((st (clamiga::%jit-direct-call-stats)))
-  ;; No direct-call sites on the host (none without a JIT, none yet in the
-  ;; AArch64 one): every counter 0, the sites never enabled.
+  ;; Without a JIT backend there are no direct-call sites: every counter
+  ;; 0, the sites never enabled.  The AArch64 backend has them (on by
+  ;; default; the counters are the calling thread's integers).
   (format t "STATS-KEYS ~S~%" (loop for (k v) on st by #'cddr collect k))
+  (format t "HAS-DIRECT ~A~%" (if (getf st :enabled) "YES" "NO"))
+  (format t "STATS-INTEGERS ~A~%"
+          (if (every (lambda (k) (typep (getf st k) '(integer 0)))
+                     '(:fills :misses :refused-trace :refused-shadow
+                       :refused-abi :refused-not-native))
+              "YES" "NO"))
   (format t "STATS-ZERO ~A~%"
           (if (every #'zerop (list (getf st :fills) (getf st :misses)
                                    (getf st :refused-trace) (getf st :refused-shadow)
@@ -128,9 +135,17 @@ check_contains "MP:INTERRUPT-THREAD bumps" "INTERRUPT MOVED" "$out"
 check_contains "MP:DESTROY-THREAD bumps" "DESTROY MOVED" "$out"
 check_contains "%JIT-DIRECT-CALL-STATS is a plist of every counter" \
     "STATS-KEYS (:FILLS :MISSES :REFUSED-TRACE :REFUSED-SHADOW :REFUSED-ABI :REFUSED-NOT-NATIVE :GEN :ENABLED)" "$out"
-check_contains "no direct-call sites on host: every counter is 0" "STATS-ZERO YES" "$out"
 check_contains ":GEN is a call generation, not ahead of the current one" "STATS-GEN YES" "$out"
-check_contains "no direct-call sites on host: %JIT-SET-DIRECT-CALLS stays NIL" "DIRECT (NIL NIL)" "$out"
+check_contains "every counter is a non-negative integer" "STATS-INTEGERS YES" "$out"
+case "$out" in
+    *"HAS-DIRECT YES"*)
+        check_contains "direct calls (AArch64): %JIT-SET-DIRECT-CALLS switches them" \
+            "DIRECT (T NIL)" "$out" ;;
+    *)
+        check_contains "no direct-call sites on host: every counter is 0" "STATS-ZERO YES" "$out"
+        check_contains "no direct-call sites on host: %JIT-SET-DIRECT-CALLS stays NIL" \
+            "DIRECT (NIL NIL)" "$out" ;;
+esac
 
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
