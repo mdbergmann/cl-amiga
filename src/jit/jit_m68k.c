@@ -1,4 +1,4 @@
-/* jit.c — orchestration for the m68k template JIT.
+/* jit_m68k.c — orchestration for the m68k template JIT.
  *
  * Two codegen paths layered front-to-back:
  *
@@ -51,6 +51,7 @@
 #include "jit/asm_m68k.h"
 #include "jit/codegen_m68k.h"
 #include "jit/runtime.h"
+#include "jit/runtime_m68k.h"
 #include "jit/jit_backend.h"
 #include "core/opcodes.h"
 #include "core/stream.h"
@@ -240,7 +241,7 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
  *
  * Returns 1 and stores the source slot j in *slot_out on match.
  * (CL_JIT_PASSTHROUGH_MAX_ARITY lives in jit.h: the call-site fill rule
- * in runtime.c applies it too.) */
+ * in runtime_m68k.c applies it too.) */
 
 static int matches_passthrough(const CL_Bytecode *bc, uint8_t *slot_out)
 {
@@ -1386,7 +1387,7 @@ static void emit_loop_poll(CodeBuf *cb)
  *         lea     cell(pc),a1
  *         move.l  (a1)+,d0            ; gen     -- all three words are read
  *         move.l  (a1)+,d1            ; func       before gen is compared,
- *         movea.l (a1),a0             ; entry      see runtime.c
+ *         movea.l (a1),a0             ; entry      see runtime_m68k.c
  *         cmp.l   cl_call_gen,d0
  *         bne.w   .miss
  *       [ cmp.l   4n(a7),d1           ; OP_CALL: the same function value?
@@ -3974,7 +3975,7 @@ void cl_jit_backend_compile(CL_Bytecode *bc, int replace)
          * bytecode (re-JIT after redefinition / repeated FASL load).  A
          * call site may cache the old entry: invalidate them all.  Unhook
          * BEFORE the bump, so a site fill that reads the new generation
-         * can no longer see the old pointer (runtime.c, the fill rule). */
+         * can no longer see the old pointer (runtime_m68k.c, the fill rule). */
         void *old_code = bc->native_code;
         if (bc->native_relocs) { platform_free(bc->native_relocs); }
         bc->native_code   = NULL;

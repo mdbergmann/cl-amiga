@@ -11649,7 +11649,7 @@ TEST(eval_map_family_over_16_seqs_errors)
 TEST(vm_call_builtin_on_stack_args)
 {
     /* cl_vm_call_builtin is the m68k JIT's direct entry to a C builtin
-     * (jit_dispatch, src/jit/runtime.c): the arguments already sit on the
+     * (jit_dispatch, src/jit/runtime_m68k.c): the arguments already sit on the
      * VM stack.  Same result and MV state as OP_CALL, same arity
      * diagnostic; the caller restores sp. */
     CL_Thread *thr = cl_get_current_thread();

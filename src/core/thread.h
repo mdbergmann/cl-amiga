@@ -349,7 +349,7 @@ typedef struct CL_Thread_s {
      * hot-path rule in CLAUDE.md forbids.  The single-CPU m68k backend keeps
      * its global (jit_common.c). */
     uint32_t jit_invoke_count;
-    /* A native non-self tail call to native code (cl_jit_runtime_a64_tail)
+    /* A native non-self tail call to native code (cl_jit_vmstack_tail)
      * leaves its callee's arguments at the frame base, the callee above
      * them, and this set to nargs + 1; cl_jit_invoke then enters the callee
      * from the same frame base instead of nesting a C call, so mutual tail

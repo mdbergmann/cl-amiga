@@ -2,8 +2,8 @@
  *
  * Phase 1: a walker that cannot be wrong.  It runs the operand stack,
  * the locals and control flow natively and sends every other opcode to
- * the C helper behind it (src/jit/runtime.c) -- the m68k walker's helper
- * where its semantics are the interpreter's, else an AArch64 one there.
+ * the C helper behind it -- a shared one (runtime.c) where its semantics
+ * are the interpreter's, else a VM-stack one (runtime_vmstack.c).
  * No inline fast paths and no register cache yet (phase 2); the opcodes
  * the walker does not know (the NLX frames, closures and upvalues,
  * dynamic binding, multiple values, &key/&optional/&rest prologues) keep
@@ -54,6 +54,7 @@
 #include "jit/codebuf.h"
 #include "jit/codeheap.h"
 #include "jit/runtime.h"
+#include "jit/runtime_vmstack.h"
 #include "core/mem.h"        /* cl_call_gen_bump */
 #include "core/opcodes.h"
 #include "core/stream.h"     /* cl_write_cstring_to_stdout */
@@ -122,7 +123,7 @@ void cl_jit_free_native(void *code)
 }
 
 /* Drop BC's native code and invalidate every call site that might cache
- * it: unhook first, then bump, then free (the order jit.c uses). */
+ * it: unhook first, then bump, then free (the order jit_m68k.c uses). */
 static void drop_native(CL_Bytecode *bc)
 {
     void *old = bc->native_code;
@@ -739,7 +740,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
             case OP_CONS:
                 depth_need(&d, 2);
                 emit_sub_x(g, 0, R_TOP, 8);
-                emit_call(g, (const void *)&cl_jit_runtime_a64_cons);
+                emit_call(g, (const void *)&cl_jit_vmstack_cons);
                 emit_drop(g, 2);
                 emit_push(g, 0);
                 depth_add(&d, -1);
@@ -750,7 +751,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 depth_need(&d, (int32_t)n);
                 emit_sub_x(g, 0, R_TOP, 4 * n);
                 E(a64_movz(0, 1, n, 0));
-                emit_call(g, (const void *)&cl_jit_runtime_a64_list);
+                emit_call(g, (const void *)&cl_jit_vmstack_list);
                 emit_drop(g, n);
                 emit_push(g, 0);
                 depth_add(&d, 1 - (int32_t)n);
@@ -837,7 +838,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 depth_need(&d, 1);
                 emit_sub_x(g, 0, R_TOP, 4);
                 emit_add_x(g, 1, R_BP, 4u * o[0]);
-                emit_call(g, (const void *)&cl_jit_runtime_a64_push_local);
+                emit_call(g, (const void *)&cl_jit_vmstack_push_local);
                 emit_poke(g, 0, 1);
                 emit_mv1(g);
                 break;
@@ -856,7 +857,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 E(a64_mov_reg(1, 0, R_THR));
                 E(a64_mov_reg(1, 1, R_TOP));
                 E(a64_movz(0, 2, n, 0));
-                emit_call(g, (const void *)&cl_jit_runtime_a64_call);
+                emit_call(g, (const void *)&cl_jit_vmstack_call);
                 emit_drop(g, n + 1);
                 emit_push(g, 0);
                 depth_add(&d, -(int32_t)n);
@@ -887,7 +888,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 E(a64_mov_reg(1, 1, R_TOP));
                 E(a64_movz(0, 2, n, 0));
                 emit_const_addr(g, 3, k);
-                emit_call(g, (const void *)&cl_jit_runtime_a64_call_global);
+                emit_call(g, (const void *)&cl_jit_vmstack_call_global);
                 emit_drop(g, n);
                 emit_push(g, 0);
                 depth_add(&d, 1 - (int32_t)n);
@@ -921,7 +922,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                     /* The callee is held across a non-allocating guard. */
                     E(a64_mov_reg(0, R_KEEP, 0));
                     emit_load_local(g, 1, n_locals);
-                    emit_call(g, (const void *)&cl_jit_runtime_a64_is_self);
+                    emit_call(g, (const void *)&cl_jit_vmstack_is_self);
                     a64_cbz(&g->a, 0, 0, l_not);
                     emit_sub_x(g, 10, R_TOP, 4 * n);
                     for (i = 0; i < n; i++) {
@@ -944,7 +945,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
                 E(a64_mov_reg(1, 3, R_BP));
                 if (global) emit_const_addr(g, 4, k);
                 else E(a64_mov_reg(1, 4, A64_ZR));
-                emit_call(g, (const void *)&cl_jit_runtime_a64_tail);
+                emit_call(g, (const void *)&cl_jit_vmstack_tail);
                 a64_b(&g->a, l_epilogue);
                 /* The code after it (the compiler's OP_RET) is dead unless
                  * a branch lands there; its depth is the call's result. */
@@ -1053,7 +1054,7 @@ static uint8_t *walk(const CL_Bytecode *bc, uint32_t *len_out)
         a64_b(&g->a, l_back);
 
         a64_bind(&g->a, l_overflow);
-        emit_ldr_lit64(g, 16, (const void *)&cl_jit_runtime_a64_stack_overflow);
+        emit_ldr_lit64(g, 16, (const void *)&cl_jit_vmstack_stack_overflow);
         E(a64_blr(16));                    /* never returns */
 
         /* The epilogue: the result is in w0. */
@@ -1127,7 +1128,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     t->jit_current_nargs = (int32_t)nargs;
     saved_sp = t->vm.sp;
 
-    /* The shadow frame of %JIT-SET-FRAMES, as in jit.c. */
+    /* The shadow frame of %JIT-SET-FRAMES, as in jit_m68k.c. */
     if (cl_jitc_shadow_frames && t->vm.fp < t->vm.frame_size) {
         CL_Frame *sf = &t->vm.frames[t->vm.fp++];
         sf->bytecode  = func_obj;
@@ -1146,7 +1147,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     result = ((a64_entry_t)bc->native_code)(t, &t->vm.stack[bp],
                                             (uint32_t)nargs, func_obj);
 
-    /* Tail calls between native functions (cl_jit_runtime_a64_tail): the
+    /* Tail calls between native functions (cl_jit_vmstack_tail): the
      * callee's arguments at bp, the callee above them; enter it from the
      * same base.  Nothing allocates between the handoff and the read. */
     while (t->jit_tail_pending) {
@@ -1155,7 +1156,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         CL_Bytecode *cbc;
         t->jit_tail_pending = 0;
         t->vm.sp = bp + (int)n + 1;
-        cbc = cl_jit_runtime_a64_native_callee(func, n);
+        cbc = cl_jit_vmstack_native_callee(func, n);
         if (cbc == NULL) {             /* defensive: dispatch it as a call */
             result = cl_vm_apply(func, &t->vm.stack[bp], (int)n);
             break;

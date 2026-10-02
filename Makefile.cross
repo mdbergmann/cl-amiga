@@ -159,10 +159,11 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/string_utils.c
 JIT_SRC      = $(SRCDIR)/jit/codebuf.c \
                $(SRCDIR)/jit/jit_common.c \
-               $(SRCDIR)/jit/jit.c \
+               $(SRCDIR)/jit/jit_m68k.c \
                $(SRCDIR)/jit/codegen_m68k.c \
                $(SRCDIR)/jit/asm_m68k.c \
-               $(SRCDIR)/jit/runtime.c
+               $(SRCDIR)/jit/runtime.c \
+               $(SRCDIR)/jit/runtime_m68k.c
 JIT_ASM      = $(SRCDIR)/jit/jit_enter_m68k.s
 MAIN_SRC     = $(SRCDIR)/main.c
 

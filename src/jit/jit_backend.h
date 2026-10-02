@@ -2,7 +2,7 @@
  *
  * jit_common.c owns everything that does not depend on the CPU: the hot-call
  * policy (specs/lazy-jit.md), the on/off switches and the counters.  A
- * backend (jit.c for m68k, jit_a64.c for AArch64) supplies the code
+ * backend (jit_m68k.c for m68k, jit_a64.c for AArch64) supplies the code
  * generator and the entry into native code, and reads/updates the shared
  * state below.  Internal to src/jit/; the rest of the runtime uses jit.h.
  */

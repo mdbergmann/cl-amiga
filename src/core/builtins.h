@@ -127,7 +127,7 @@ CL_Obj cl_amiga_call_via_base_sym(CL_Obj base_sym, int16_t offset,
                                   CL_Obj *args);
 
 /* Those four checks alone: the base address of BASE_SYM's library, never
- * 0 (the JIT's library call, jit/runtime.c, uses it too). */
+ * 0 (the JIT's library call, jit/runtime_m68k.c, uses it too). */
 uint32_t cl_amiga_library_base_address(CL_Obj base_sym);
 
 /* Foreign-callback boundary (builtins_ffi.c; thread.h "Foreign-callback

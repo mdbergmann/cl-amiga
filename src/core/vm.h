@@ -331,8 +331,8 @@ CL_Obj cl_vm_apply_list(CL_Obj func, CL_Obj arglist);
 struct CL_Thread_s;
 /* Call a C builtin whose arguments already sit on the VM stack (rooted),
  * exactly as cl_vm_run's OP_CALL does it: arity check, per-thread crash
- * diagnostics, MV bookkeeping, no frame.  The m68k JIT's direct call path
- * (jit/runtime.c) uses it; every other caller goes through cl_vm_apply. */
+ * diagnostics, MV bookkeeping, no frame.  The JIT's call paths
+ * (jit/runtime_m68k.c, jit/runtime_vmstack.c) use it; every other caller goes through cl_vm_apply. */
 CL_Obj cl_vm_call_builtin(struct CL_Thread_s *thr, CL_Function *func,
                           CL_Obj *args, int nargs);
 /* Call a bytecode/closure callee through a stub OP_CALL frame (the tail of

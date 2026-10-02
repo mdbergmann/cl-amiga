@@ -1250,7 +1250,7 @@ static CL_Obj bi_proclaim(CL_Obj *args, int n)
 static CL_Obj trace_list = CL_NIL;
 
 /* Symbols currently traced, process-wide (cl_trace_count is per thread).
- * A JIT call site never fills while it is nonzero (runtime.c): a site
+ * A JIT call site never fills while it is nonzero (runtime_m68k.c): a site
  * filled by an untracing thread would let a tracing one skip the trace.
  * Changed only under the tables write lock, and always before the
  * cl_call_gen bump that invalidates the filled sites. */

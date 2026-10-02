@@ -365,7 +365,7 @@ typedef struct {
     uint8_t n_optional; /* Number of &optional params */
     uint8_t flags;      /* bit 0: has_key, bit 1: allow_other_keys */
     uint8_t n_keys;     /* Number of &key params */
-    /* Lazy-JIT state, CL_BC_JIT_* below (m68k JIT: jit.c cl_jit_note_call).
+    /* Lazy-JIT state, CL_BC_JIT_* below (m68k JIT: jit_m68k.c cl_jit_note_call).
      * Occupies what was padding -- sizeof(CL_Bytecode) is unchanged on
      * every target, which image.c's layout hash depends on.  Only the
      * CL_BC_JIT_SPEED hint is FASL-serialized (bit 7 of the flags byte on

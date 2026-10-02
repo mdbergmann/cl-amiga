@@ -283,14 +283,25 @@ void  platform_jit_flush(void *addr, uint32_t len); /* I-cache maintenance    */
 ## Code layout in the tree
 
 ```
-src/jit/jit_common.c     new: hot policy, on/off switches, stats, invoke
-                         bookkeeping -- moved out of jit.c
-src/jit/jit.c            the m68k walker and its compile driver (stays)
-src/jit/jit_walk_a64.c   new: the AArch64 walker and its compile driver
-src/jit/asm_a64.{c,h}    new: encoders + label/fixup
-src/jit/codeheap.{c,h}   new: executable-memory allocator (AArch64 only)
-src/jit/runtime.c        unchanged, shared
+src/jit/jit_common.c        hot policy, on/off switches, stats, invoke
+                            bookkeeping -- moved out of the m68k walker
+src/jit/jit_m68k.c          the m68k walker and its compile driver
+src/jit/jit_a64.c           the AArch64 walker and its compile driver
+src/jit/asm_a64.{c,h}       encoders + label/fixup
+src/jit/codeheap.{c,h}      executable-memory allocator (AArch64 only)
+src/jit/runtime.{c,h}       helpers every backend shares (CPU-neutral slow
+                            paths: arithmetic, cells, globals, structs, ...)
+src/jit/runtime_m68k.{c,h}  the m68k walker's own: its operand stack is the
+                            m68k stack (call sites, inline-setjmp NLX frames,
+                            the &key prologue, OP_AMIGA_CALL)
+src/jit/runtime_vmstack.{c,h}  a walker whose frame lives in cl_vm.stack
+                            (cl_jit_vmstack_*: calls, tail calls, CONS/LIST)
 ```
+
+The helpers are split by frame design, not by CPU (after phase 1, before
+phase 2): a PPC or x86-64 walker built like the AArch64 one reuses
+`runtime.c` and `runtime_vmstack.c` and adds only its walker and encoders.
+Phase 0 and 1 below still say `jit.c` -- the m68k walker's name then.
 
 - `jit.h` guards become `#if defined(JIT_M68K) || defined(JIT_A64)`.
 - The `Makefile` defines `JIT_A64` when `uname -m` is `arm64`/`aarch64`
@@ -384,8 +395,8 @@ Done in phase 1:
   `EQ`/`NOT`, `CAR`/`CDR`/`CONS`/`LIST`/`RPLACA`/`RPLACD`, the global and
   function cells, struct slots, `ASET`/`AREF`, `ASSERT_TYPE`, and the
   string-scan opcodes.  Each runs the helper the m68k walker calls, or an
-  AArch64 one in `runtime.c` that takes pointers into `cl_vm.stack`
-  (`cl_jit_runtime_a64_*`), and writes `cl_mv_count` where the interpreter
+  AArch64 one (now `runtime_vmstack.c`) that takes pointers into `cl_vm.stack`
+  (`cl_jit_vmstack_*`), and writes `cl_mv_count` where the interpreter
   does.  `EQ`, `NOT` and the branches are inline.  Everything else declines:
   the NLX frames, dynamic binding, `PROGV`, the multiple-value opcodes,
   closures and upvalues, `&key`/`&optional`/`&rest`, handlers and restarts.
@@ -393,7 +404,7 @@ Done in phase 1:
   with its target's declines the function, and the deepest point sizes the
   prologue's overflow check (bytecode carries no max-stack field).
 - A self tail call reuses the frame behind a runtime guard
-  (`cl_jit_runtime_a64_is_self`: same bytecode, nothing traced), storing the
+  (`cl_jit_vmstack_is_self`: same bytecode, nothing traced), storing the
   callee as the frame's function.  Any other tail call to a native callee is
   handed to `cl_jit_invoke` (`CL_Thread.jit_tail_pending`): the arguments
   are moved to the frame base and the callee entered from there, so mutual
@@ -491,15 +502,6 @@ bench-opt, the backend is not worth its maintenance cost, and it stops
 there.
 
 ## Open questions
-
-- **Source layout once more CPUs come** (PPC, x86-64).  `jit.c` is the m68k
-  backend and could become `jit_m68k.c`; `runtime.c` mixes helpers every
-  backend shares, the m68k walker's own (inline-setjmp NLX frames,
-  direct-call sites, `OP_AMIGA_CALL`), and the helpers for a VM-stack frame
-  (`cl_jit_runtime_a64_*`), which a PPC or x86-64 walker built like this one
-  would reuse.  A split by frame design rather than by CPU --
-  `runtime.c` / `runtime_m68k.c` / `runtime_vmstack.c` -- is a refactor of
-  its own, after phase 1.
 
 - Is a full minor pass over the pool list cheap enough, or should pools
   of old bytecodes be skipped unless a constant was young at install?

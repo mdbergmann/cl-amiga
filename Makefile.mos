@@ -130,7 +130,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/string_utils.c
 
 # Portable JIT pieces only (code-buffer mechanics).  The m68k codegen
-# (jit.c, codegen_m68k.c, asm_m68k.c, runtime.c) is deliberately excluded.
+# (jit_m68k.c, codegen_m68k.c, asm_m68k.c, runtime*.c) is deliberately excluded.
 JIT_SRC      = $(SRCDIR)/jit/codebuf.c
 
 MAIN_SRC     = $(SRCDIR)/main.c

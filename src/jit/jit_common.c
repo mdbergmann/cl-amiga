@@ -3,7 +3,7 @@
  * When to compile (the hot-call policy, specs/lazy-jit.md), the on/off
  * switches and the counters are the same for every backend; what to emit
  * and how to enter it are not (jit_backend.h).  Built whenever a backend
- * is: JIT_M68K (jit.c) or JIT_A64 (jit_a64.c).
+ * is: JIT_M68K (jit_m68k.c) or JIT_A64 (jit_a64.c).
  */
 
 #include "jit/jit.h"

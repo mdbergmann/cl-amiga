@@ -710,7 +710,7 @@ static void amiga_defun(const char *name, CL_CFunc func, int min, int max)
 
 /* The library base a call through BASE_SYM goes to, or a clear error.  The
  * one check both library-call paths make (this file's for the VM and the
- * stubs, jit/runtime.c's for native code): a call through base 0 is a
+ * stubs, jit/runtime_m68k.c's for native code): a call through base 0 is a
  * jump to address -LVO, which crashes the machine instead of signalling.
  * A NULL base is what a heap-image restore leaves in a variable that was
  * not declared with AMIGA.FFI:DEFINE-LIBRARY-VARIABLE (every foreign

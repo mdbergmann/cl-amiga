@@ -2223,11 +2223,13 @@ src/
     fasl.c            FASL (compiled-file) reader/writer
   jit/            JIT — bytecode→native translators (m68k; AArch64 on arm64 macOS)
     jit_common.c      When to compile (hot-call policy), switches, counters
-    jit.c             m68k walker: bytecode → m68k machine code
+    jit_m68k.c        m68k walker: bytecode → m68k machine code
     jit_a64.c         AArch64 walker: bytecode → AArch64 machine code
     asm_m68k.c / asm_a64.c  Instruction encoders
     codebuf.c         Code buffer; codeheap.c executable memory (AArch64)
-    runtime.c         JIT runtime helpers (calls, NLX, GC safepoints)
+    runtime.c         JIT runtime helpers every backend shares (slow paths)
+    runtime_m68k.c    The m68k walker's helpers (calls, NLX frames)
+    runtime_vmstack.c Helpers for walkers whose frame lives in the VM stack
   platform/       OS abstraction (platform.h)
     platform_posix.c / platform_amiga.c          Files, I/O, time, sockets
     platform_thread_posix.c / _amiga.c           Threads, locks, atomics, TLS

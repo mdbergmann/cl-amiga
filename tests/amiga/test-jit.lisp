@@ -2119,7 +2119,7 @@
 #+m68k (check "walker-hc-loop-compiled" t (not (null (clamiga::%jit-dump-bytes #'walker-hc-loop))))
 (check "walker-hc-loop-no-leak" 150 (walker-hc-loop 300))
 
-;; --- The direct call path (jit_dispatch, src/jit/runtime.c).  A JIT'd
+;; --- The direct call path (jit_dispatch, src/jit/runtime_m68k.c).  A JIT'd
 ;; caller reaches C builtins, FFI stubs and native callees straight from its
 ;; operand stack; only interpreted callees, generic functions, arity
 ;; mismatches and traced functions still take the cl_vm_apply trampoline
@@ -2222,7 +2222,7 @@
       (list (> (clamiga::%get-gc-count) g0) r))))
 
 ;; Regression: jit_dispatch's native-callee fast path (the TYPE_BYTECODE /
-;; TYPE_CLOSURE arm above, src/jit/runtime.c) used to resolve the callee's
+;; TYPE_CLOSURE arm above, src/jit/runtime_m68k.c) used to resolve the callee's
 ;; raw CL_Bytecode* before polling thr->gc_requested / calling
 ;; cl_gc_safepoint(), then dereference that same stale pointer afterwards.
 ;; A peer thread's concurrent EXT:GC-COMPACT runs exactly inside that poll
@@ -2369,7 +2369,7 @@
 ;; a landing restores both: a nested entry on a foreign stack parks the
 ;; floor, and a THROW / error / MUFFLE-WARNING out of it must hand back the
 ;; outer one (tests/test_nlx_jit_restore.c parks it; here the landings of
-;; native code -- src/jit/runtime.c, which the host never builds -- are run
+;; native code -- src/jit/runtime_m68k.c, which the host never builds -- are run
 ;; inside one outermost native call and must restore the floor exactly).
 (defun jfu-thrower (n)
   (if (= n 0) (throw 'jfu :thrown) (car (list (jfu-thrower (- n 1))))))
@@ -2943,7 +2943,7 @@
 ; (cl_vm_apply's stub OP_CALL, which counts like any interpreted call)
 ; therefore counts nothing -- a loop LAMBDA there would compile on its
 ; first call.  Two threads that reach the threshold together may both try
-; (jit.c), hence at most 2.
+; (jit_m68k.c), hence at most 2.
 (defun hot-race-declined (x &optional y) (or x y))
 (defun hot-race-worker ()
   (declare (optimize (speed 3)))

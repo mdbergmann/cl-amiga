@@ -27,7 +27,7 @@
 | callee-saved register.  dbf counts a word, which is plenty: the walker
 | caps positional arity far below 32K.
 |
-| cl_jit_invoke (src/jit/jit.c) is the only caller.  Not built on MorphOS
+| cl_jit_invoke (src/jit/jit_m68k.c) is the only caller.  Not built on MorphOS
 | (PPC has no JIT).
 
 	.text

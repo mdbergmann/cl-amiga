@@ -716,7 +716,7 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
  * array), so it survives a longjmp past this C frame.  ARGS holds the
  * arguments in call order, or -- REVERSED non-zero -- args[i] is argument
  * nargs-1-i, which is how the m68k JIT's operand stack lays them out
- * (jit_dispatch, src/jit/runtime.c, enters here for an interpreted callee
+ * (jit_dispatch, src/jit/runtime_m68k.c, enters here for an interpreted callee
  * without copying them first).  The one-byte OP_CALL operand caps this path
  * at 255 arguments; cl_vm_apply_list runs the inline OP_APPLY for more.
  * The C-stack guard is cl_vm_run's own, on entry, before any bytecode runs. */
