@@ -1,7 +1,7 @@
 # Native Code Backend (AArch64)
 
-Status: phases 0 and 1 on master, phase 2 done on branch `feat/a64-jit-p2` (2026-10-02; see
-each phase's status note).  Proposal from 2026-10-01; both
+Status: phases 0 and 1 on master, phase 2 on branch `feat/a64-jit-p2`, phase 3 on
+`feat/a64-jit-p3` (2026-10-02; see each phase's status note).  Proposal from 2026-10-01; both
 prerequisites are on master: direct native-to-native calls
 (`specs/jit-direct-calls.md`, 27c74b00) and the loop poll
 (`specs/native-backend.md`, "Status (2026-10-01, native loops poll)",
@@ -104,7 +104,8 @@ JIT frames.
 | locals base `bp` (`cl_vm.stack + bp`) | A6 frame  | x21 |
 | literal pool (heap constants)         | baked immediates | x22 |
 | arena base                            | A5        | x23 |
-| top-of-stack cache (phase 2)          | D5-D7     | w24-w26 |
+| top-of-stack cache (phase 2)          | D5-D7     | w24-w26 (built: w13-w15) |
+| the function's `CL_Frame` (phase 3)   | -         | x25 |
 | result / first helper argument        | D0        | w0 / x0 |
 | scratch                               | D1-D3     | x9-x15 |
 | far-call veneer                       | -         | x16, x17 |
@@ -514,6 +515,58 @@ or an allocating helper.
 - Target: the m68k walker's opcode list, minus `OP_AMIGA_CALL`.
 - Shadow frames (`%JIT-SET-FRAMES`) work unchanged and now show every
   local, since the locals are on the VM stack.
+
+**Status (2026-10-02): done** on branch `feat/a64-jit-p3`.
+- The NLX helpers, the value-save stack and the handler/restart bindings
+  moved from `runtime_m68k.c` to `runtime_nlx.{c,h}` unchanged (`RESTART_PUSH`
+  and the m68k `&key` prologue stay: their arguments are m68k-stack words);
+  both walkers call them.  The m68k objects are otherwise the same code.
+- The AArch64 walker now takes every opcode of the m68k walker but
+  `OP_AMIGA_CALL` and `OP_ARGC` (only `&optional`/`&rest` prologues emit it,
+  and those functions still decline): the five NLX frames, `DYNBIND`/
+  `DYNUNBIND`, `PROGV_BIND`/`_UNBIND`, `MV_LOAD`/`MV_TO_LIST`/`NTH_VALUE`/
+  `MV_SAVE`/`MV_RESTORE`, `CLOSURE`, `UPVAL`, the cell opcodes, the handler
+  and restart bindings, and `&key` functions.
+  - NLX: `*_alloc` returns `&nlx->buf`, the native code calls `_setjmp` on it
+    itself (`blr`), `cbz` to the commit; the longjmp arm calls
+    `*_post_longjmp`, reloads x20 from `cl_vm.sp`, pushes what the transfer
+    brought and branches to the landing (HANDLER-CASE: to the matched
+    clause's `OP_JMP` in the table).  The walker's depth check covers the
+    landings: each gets the push's depth plus the arm's value.
+  - `UPVAL`, `CELL_REF` and `CELL_SET_LOCAL` are inline and use the cache;
+    the closure template and `RESTART_PUSH`'s name are passed as addresses
+    of `bc->constants` words and read after the allocation
+    (`cl_jit_vmstack_make_closure`, `_restart_push`), the captures staged on
+    the VM stack.
+  - `&key`: `cl_jit_vmstack_kw_prologue` runs first and builds the whole
+    frame (the keyword pairs sit where the other locals go), with the
+    interpreter's matcher and errors.  A self tail call stays off for `&key`.
+- Frames: `cl_jit_invoke` pushes the native function's `CL_Frame` (bp,
+  `n_locals`, the function) and passes it as a fifth entry argument (x25);
+  before each helper call the code writes the opcode's ip into it (elided
+  while unchanged), as the interpreter does before a call.  So
+  `EXT:BACKTRACE`, the call-site diagnostics and `FRAME` see a native frame
+  as an interpreted one.  On by default here; `%JIT-SET-FRAMES NIL` turns the
+  push off (the ip then goes into a scratch frame).  A native call now
+  counts against the 1024 frames and overflows with the interpreter's "Call
+  stack overflow".  An arity error raised from the stub frame of a native
+  call names the frame under the stub as the caller (`frame_site_brief`).
+- Tests: `tests/test_jit_a64_walk.sh` part 3 (also under gc-stress, and once
+  more with `CLAMIGA_GENGC=0`): each frame kind both ways through native
+  frames with values held across, nested cleanups and a throw from one,
+  handler-case/-bind, restarts, special bindings restored by an error and a
+  throw, PROGV unbound and `*PACKAGE*`, multiple values, closures over
+  locals, upvalues and a template that moves, every `&key` case and error,
+  four threads, `FRAME-LOCALS`, and the backtrace lines.  Dropping the
+  frame-ip store, the CATCH tag pop, or reading the closure template before
+  the allocation (classic collector) each fails it.
+- `make test-jit-eager`: the phase-1 introspection set passes now; the only
+  remaining differences were the two expectations of this backend's own test
+  (frame size, recursion depth).
+- Bench (bench-opt, JIT on, eager, medians of three; `docs/benchmarks.md`,
+  2026-10-02): phase 2 -> 3, `kw.call-8keys` 58 -> 26 ms, `mt.dynbind-x8`
+  34 -> 11, the `clos.slot-value`/`struct.*` rows 2-4x; every other row
+  within 2 ms of phase 2.  Frames on or off is within noise.
 
 ### Phase 4: Linux arm64
 - Memfd double mapping, `JIT_A64` on Linux.

@@ -2170,7 +2170,7 @@ A function is compiled on its 8th call, or on its first when it contains a loop.
 
 The JIT is on by default. Pass `--no-jit` to keep functions bytecode-only (useful for A/B benchmarks or isolating a bug). At runtime, `(clamiga::%jit-set-active nil|t)` toggles the JIT around individual `defun`s; a function defined while it is off stays bytecode. Hosts without a backend (see below) compile the JIT out entirely, and its entry points become inline no-ops.
 
-**arm64 macOS hosts** build a second backend, a template JIT for AArch64 ([specs/native-backend-a64.md](specs/native-backend-a64.md)), with the same compile-when-hot policy and switches. It is early work: functions run natively but every operation still goes through the interpreter's own helpers, so results are the interpreter's; with the opcode dispatch gone, call-heavy code already runs up to about 3× faster (`trunk/bench-jit-call.lisp`). Functions using non-local exits, closures, dynamic binding, multiple-value forms or `&optional`/`&rest`/`&key` parameters stay bytecode. `make host JIT=0` builds without it; `make test-jit-eager` runs the test suite with every function compiled. Its tests are `tests/test_jit_a64_walk.sh`, which also runs the behavioural checks of `tests/amiga/test-jit.lisp`.
+**arm64 macOS hosts** build a second backend, a template JIT for AArch64 ([specs/native-backend-a64.md](specs/native-backend-a64.md)), with the same compile-when-hot policy and switches. Fixnum arithmetic and comparisons, `car`/`cdr`, structure slots and special variables run as inline machine code, everything else through the interpreter's own helpers, so results are the interpreter's: a fixnum loop runs about 14× faster than bytecode, calls about 3× ([docs/benchmarks.md](docs/benchmarks.md)). Only functions with `&optional` or `&rest` parameters stay bytecode. Native functions keep an ordinary call frame, so backtraces, error locations and `frame` show them like interpreted ones. `make host JIT=0` builds without it; `make test-jit-eager` runs the test suite with every function compiled. Its tests are `tests/test_jit_a64_walk.sh`, which also runs the behavioural checks of `tests/amiga/test-jit.lisp`.
 
 To see the machine code for a definition — or to find out whether the JIT translated it at all — use `(jitexpand ...)`; see [Disassembly](#disassembly).
 
@@ -2228,7 +2228,8 @@ src/
     asm_m68k.c / asm_a64.c  Instruction encoders
     codebuf.c         Code buffer; codeheap.c executable memory (AArch64)
     runtime.c         JIT runtime helpers every backend shares (slow paths)
-    runtime_m68k.c    The m68k walker's helpers (calls, NLX frames)
+    runtime_nlx.c     NLX frames, handler/restart bindings (both walkers)
+    runtime_m68k.c    The m68k walker's helpers (calls, &key prologue)
     runtime_vmstack.c Helpers for walkers whose frame lives in the VM stack
   platform/       OS abstraction (platform.h)
     platform_posix.c / platform_amiga.c          Files, I/O, time, sockets

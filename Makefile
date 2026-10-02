@@ -139,6 +139,7 @@ JIT_SRC     += $(SRCDIR)/jit/jit_common.c \
                $(SRCDIR)/jit/jit_a64.c \
                $(SRCDIR)/jit/codeheap.c \
                $(SRCDIR)/jit/runtime.c \
+               $(SRCDIR)/jit/runtime_nlx.c \
                $(SRCDIR)/jit/runtime_vmstack.c
 endif
 MAIN_SRC     = $(SRCDIR)/main.c

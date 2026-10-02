@@ -961,7 +961,15 @@ static CL_Bytecode *get_frame_bytecode(CL_Frame *f)
  * a frame whose bytecode is not readable. */
 static const char *frame_site_brief(CL_Frame *f, uint32_t ip, char *buf, int n)
 {
-    CL_Bytecode *bc = f ? get_frame_bytecode(f) : NULL;
+    CL_Bytecode *bc;
+    /* A stub frame (cl_vm_apply, cl_vm_call_bytecode) is not the caller:
+     * the frame under it made the call -- a native function's, its ip at
+     * the call (jit_a64.c), or an interpreted one that called a builtin. */
+    if (f && f->code == f->stub_code && f > &cl_vm.frames[0]) {
+        f = f - 1;
+        ip = f->ip;
+    }
+    bc = f ? get_frame_bytecode(f) : NULL;
     if (!bc) { snprintf(buf, n, "?"); return buf; }
     snprintf(buf, n, "%s (%s:%d)",
              (!CL_NULL_P(bc->name) && CL_SYMBOL_P(bc->name))

@@ -36,6 +36,14 @@ CL_Bytecode *cl_jit_vmstack_native_callee(CL_Obj func, uint32_t nargs);
 CL_Obj cl_jit_vmstack_cons(CL_Obj *pair);
 CL_Obj cl_jit_vmstack_list(CL_Obj *base, uint32_t n);
 CL_Obj cl_jit_vmstack_push_local(CL_Obj *item, CL_Obj *slot);
+/* Phase 3: the &key prologue (the arguments at BP, the function value FUNC,
+ * before the frame is set up); OP_CLOSURE (the template a word of
+ * bc->constants, the captures on the VM stack); OP_RESTART_PUSH (the name a
+ * word of bc->constants, the five operands at OPS). */
+void   cl_jit_vmstack_kw_prologue(uint32_t nargs, CL_Obj *bp, CL_Obj func);
+CL_Obj cl_jit_vmstack_make_closure(const CL_Obj *tmpl_ref, uint32_t n,
+                                   CL_Obj *values);
+void   cl_jit_vmstack_restart_push(const CL_Obj *name_ref, CL_Obj *ops);
 #endif /* JIT_A64 */
 
 #endif /* CL_JIT_RUNTIME_VMSTACK_H */

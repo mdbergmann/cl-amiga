@@ -7,6 +7,35 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-10-02 — AArch64 JIT phase 3: `&key` calls 2.2×, dynamic binding 3×, CLOS slot reads 2×
+
+**Context**: `specs/native-backend-a64.md`, phase 3: the NLX frames,
+dynamic binding, multiple values, closures and `&key` functions compile,
+and every native call pushes its `CL_Frame` (backtraces and line
+attribution see native frames).
+
+**Environment**: Apple M-series, macOS, host build (`make host`).
+Interpreter = the phase-3 binary with `--no-jit`; phase 2 = 92940e5b built
+in a worktree; phase 3 = branch `feat/a64-jit-p3`.  Three interleaved
+rounds, medians.  Command as in the phase-2 entry below.
+
+| Row (ms)                 | interpreter | phase 2 | phase 3 | phase 3 vs interp |
+|--------------------------|------------:|--------:|--------:|------------------:|
+| mt.dynbind-x8            | 35 | 34 | 11 | 3.2× |
+| kw.call-8keys            | 58 | 58 | 26 | 2.2× |
+| clos.make-instance       | 33 | 39 | 32 | 1.0× |
+| clos.slot-value          |  8 |  8 |  4 | 2.0× |
+| clos.accessor-write      |  6 |  6 |  3 | 2.0× |
+| clos.slot-value-deep     |  8 |  8 |  4 | 2.0× |
+| struct.slot-value        |  8 |  8 |  4 | 2.0× |
+| struct.accessor          |  4 |  4 |  1 | 4.0× |
+| vm.call-return           | 31 | 11 | 11 | 2.8× |
+| vm.fixnum-loop           | 42 |  3 |  3 | 14×  |
+
+The other rows are within 2 ms of phase 2.  The frame push costs nothing
+measurable: phase 3 with `%JIT-SET-FRAMES NIL` gives the same rows
+(call-return 13 vs 11 ms with frames, noise).
+
 ## 2026-10-02 — AArch64 JIT phase 2: a fixnum loop 14× the interpreter, call-return 3×
 
 **Context**: `specs/native-backend-a64.md`, phase 2: inline fast paths

@@ -52,6 +52,7 @@
 #include "jit/codegen_m68k.h"
 #include "jit/runtime.h"
 #include "jit/runtime_m68k.h"
+#include "jit/runtime_nlx.h"
 #include "jit/jit_backend.h"
 #include "core/opcodes.h"
 #include "core/stream.h"

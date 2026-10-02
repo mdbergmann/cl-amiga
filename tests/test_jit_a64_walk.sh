@@ -2,7 +2,7 @@
 # The AArch64 walker (specs/native-backend-a64.md): functions run as native
 # code built from the interpreter's own helpers (phase 1) plus inline fast
 # paths and a top-of-stack register cache (phase 2), so every result must be
-# the interpreter's.  Two parts:
+# the interpreter's.  Three parts:
 #
 #   1. tests/amiga/test-jit.lisp -- the m68k JIT suite's behavioural checks
 #      -- run against this backend, eager (the file sets the hot threshold
@@ -16,9 +16,13 @@
 #      boundaries, other number types, type errors -- with a heap value
 #      held in the register cache while the slow path runs, which under
 #      CLAMIGA_GC_STRESS allocates and moves it.
+#   3. Phase 3: the NLX frames, dynamic binding, multiple values, closures
+#      and &key functions, each against the interpreter's results (also
+#      under the classic collector), and native frames in the backtrace and
+#      FRAME-LOCALS.
 #
 # A build without the backend (x86-64, Linux, Windows, `make host JIT=0`)
-# skips both parts.  Also run by `make test-gc-stress` (CLAMIGA_GC_STRESS=1).
+# skips them all.  Also run by `make test-gc-stress` (CLAMIGA_GC_STRESS=1).
 # Run: sh tests/test_jit_a64_walk.sh [path-to-clamiga]
 
 CLAMIGA="${1:-build/host/clamiga}"
@@ -158,7 +162,10 @@ cat > "$WORK/walk.lisp" <<'EOF'
 
 ;; The native call stack: a deep non-tail recursion, a self tail call that
 ;; runs in one frame, and a runaway recursion that signals and recovers.
-(chk "DEEP" (w-deep 2000))
+(chk "DEEP" (w-deep 900))
+;; Each native call has its CL_Frame, as an interpreted one: the same
+;; 1024-frame limit, and the interpreter's error.
+(chk "DEEP-LIMIT" (handler-case (w-deep 2000) (error (e) (princ-to-string e))))
 (chk "SELF-TAIL" (w-count 1000000 0))
 ;; Mutual tail calls between native functions hand the callee to
 ;; cl_jit_invoke instead of nesting a C call: constant space.
@@ -330,7 +337,8 @@ check_contains "apply and funcall, 300 spread arguments" "APPLY (6 300 10 7)" "$
 check_contains "a special variable read and set" "GLOBAL 12" "$out"
 check_contains "a tail call to another function returns its value" "TAIL-OTHER 42" "$out"
 check_contains "THE passes a fixnum" "TYPE 5" "$out"
-check_contains "deep native recursion" "DEEP 2000" "$out"
+check_contains "deep native recursion" "DEEP 900" "$out"
+check_contains "native frames share the interpreter's frame limit" 'DEEP-LIMIT "Call stack overflow"' "$out"
 check_contains "a self tail call reuses its frame" "SELF-TAIL 1000000" "$out"
 check_contains "mutual native tail calls run in constant space" "MUTUAL-TAIL (T :EVEN :ODD)" "$out"
 check_contains "runaway native recursion signals" "RUNAWAY :OVERFLOWED" "$out"
@@ -378,9 +386,300 @@ check_contains "heap values across a spill and a bignum" 'P2-DEEP-HEAP ("abc" ("
 check_contains "eq and not from the cache" "P2-EQNOT ((A T A NIL T A) (NIL NIL NIL T T 1))" "$out"
 check_contains "the fast and slow paths reset the values count" "P2-MV ((2) (1073741824) ((1)))" "$out"
 check_contains "struct writes on four threads" "P2-THREADS T" "$out"
-check_contains "the disassembler decodes the frame" "stp x29, x30, [sp, #-80]!" "$out"
+check_contains "the disassembler decodes the frame" "stp x29, x30, [sp, #-96]!" "$out"
 check_contains "the disassembler decodes a fast path" "tbz w9, #0," "$out"
 check_contains "the disassembler decodes a helper call" "blr x16" "$out"
+
+# --- Part 3: phase 3 -- NLX frames, dynamic binding, multiple values,
+# closures, &key, native frames ------------------------------------------------
+# Every shape compiles (P3-NATIVE), and every result is the interpreter's:
+# transfers through native frames in both directions, values held across them
+# (each "k" is fresh, so under CLAMIGA_GC_STRESS every one moves), the errors
+# of the &key prologue and the helpers, and the same on four threads.
+cat > "$WORK/p3.lisp" <<'EOF'
+(clamiga::%jit-set-hot-threshold 0)
+(defmacro chk (name form)
+  `(format t "~A ~S~%" ,name
+           (handler-case ,form (error (c) (list :error (princ-to-string c))))))
+(defun native-p (f) (not (null (clamiga::%jit-dump-bytes f))))
+;; A fresh heap value: under CLAMIGA_GC_STRESS each one moves what is live.
+(defun p3-k () (list "k"))
+
+;; --- BLOCK / RETURN-FROM ---------------------------------------------------
+(defun p3-blk (x) (block b (when (> x 3) (return-from b (list :big x))) (list :small x)))
+;; RETURN-FROM out of a closure: an NLX through the closure's frame.
+(defun p3-blk-fn (f) (funcall f))
+(defun p3-blk-nlx (x)
+  (let ((k (p3-k)))
+    (list k (block b (p3-blk-fn (lambda () (return-from b (list x (p3-k))))) :not-here) k)))
+;; Multiple values travel with RETURN-FROM, also through an UNWIND-PROTECT.
+(defun p3-blk-mv () (multiple-value-list (block b (return-from b (values 1 (p3-k) 3)))))
+(defvar *p3-log* nil)
+(defun p3-blk-uwp ()
+  (multiple-value-list
+   (block b (unwind-protect (p3-blk-fn (lambda () (return-from b (values :a (p3-k)))))
+              (push :cleanup *p3-log*)))))
+
+;; --- CATCH / THROW --------------------------------------------------------
+(defun p3-throw (tag v) (throw tag v))
+(defun p3-catch (tag) (let ((k (p3-k))) (list k (catch tag (p3-throw tag (p3-k)) :no) k)))
+(defun p3-catch-inner () (catch :inner (p3-throw :outer :through)))
+(defun p3-catch-outer () (catch :outer (p3-catch-inner) :no))
+(defun p3-catch-mv () (multiple-value-list (catch :m (throw :m (values 7 8 9)))))
+(defun p3-catch-normal () (catch :n (p3-k)))
+
+;; --- TAGBODY / GO across closures --------------------------------------
+(defun p3-tb (n)
+  (let ((i 0) (acc nil))
+    (tagbody
+     top
+       (when (>= i n) (go out))
+       (push i acc)
+       (incf i)
+       (p3-blk-fn (lambda () (go top)))
+     out)
+    acc))
+(defun p3-tb-uwp ()
+  (let ((log nil))
+    (tagbody
+       (unwind-protect (p3-blk-fn (lambda () (go done)))
+         (push :cleanup log))
+       (push :skipped log)
+     done)
+    log))
+
+;; --- UNWIND-PROTECT ------------------------------------------------------
+(defun p3-uwp-values () (multiple-value-list (unwind-protect (values 1 (p3-k) 3) (p3-k))))
+(defun p3-uwp-error ()
+  (let ((log nil))
+    (list (handler-case (unwind-protect (error "boom") (push :cleanup log))
+            (error (e) (princ-to-string e)))
+          log)))
+(defun p3-uwp-nested ()
+  (let ((log nil))
+    (catch :x
+      (unwind-protect (throw :x :out)
+        (unwind-protect (push :inner log) (push :inner-cleanup log))
+        (push :outer-cleanup log)))
+    (reverse log)))
+(defun p3-uwp-rethrow ()
+  ;; A throw from the cleanup replaces the transfer in flight.
+  (catch :b (catch :a (unwind-protect (throw :a :first) (throw :b :second)))))
+
+;; --- HANDLER-CASE, HANDLER-BIND, RESTART-CASE ------------------------------
+(defun p3-hc (what)
+  (handler-case
+      (case what
+        (:type (car 5))
+        (:simple (error "simple ~A" 1))
+        (:warn (warn "w") :warned)
+        (t (list :ok (p3-k))))
+    (type-error () :type-error)
+    (simple-error (e) (list :simple (princ-to-string e)))
+    (warning () :warning)))
+(defun p3-hb ()
+  (let ((seen nil))
+    (handler-bind ((warning (lambda (c) (push (princ-to-string c) seen) (muffle-warning c))))
+      (warn "first")
+      (warn "second"))
+    seen))
+(defun p3-restart (v)
+  (restart-case (progn (invoke-restart 'p3-use (p3-k)) :not-here)
+    (p3-use (x) (list :used x v))))
+(defun p3-restart-handler ()
+  (handler-bind ((error (lambda (c) (declare (ignore c)) (invoke-restart 'p3-skip :skipped))))
+    (restart-case (error "x") (p3-skip (v) v))))
+
+;; --- Dynamic binding, PROGV ------------------------------------------------
+(defvar *p3-d* :global)
+(defun p3-dyn-read () *p3-d*)
+(defun p3-dyn (v) (let ((*p3-d* v)) (list (p3-dyn-read) (let ((*p3-d* :inner)) (p3-dyn-read)) (p3-dyn-read))))
+(defun p3-dyn-err ()
+  (list (handler-case (let ((*p3-d* :bound)) (error "x")) (error () (p3-dyn-read)))
+        (catch :t (let ((*p3-d* :bound)) (throw :t (p3-dyn-read))))
+        (p3-dyn-read)))
+(defun p3-progv (syms vals) (progv syms vals (if (boundp '*p3-d*) (p3-dyn-read) :unbound)))
+(defun p3-progv-pkg () (progv '(*package*) (list (find-package :keyword)) (package-name *package*)))
+
+;; --- Multiple values -------------------------------------------------------
+(defun p3-mv (n) (values n (p3-k) (* n 2)))
+(defun p3-mvb () (multiple-value-bind (a b c d) (p3-mv 3) (list a b c d)))
+(defun p3-nth (i) (nth-value i (p3-mv 5)))
+(defun p3-mvl () (multiple-value-list (p3-mv 4)))
+(defun p3-mvcall () (multiple-value-call #'list (p3-mv 1) (p3-mv 2)))
+(defun p3-nth-bad (i) (nth-value i (p3-mv 5)))
+
+;; --- Closures and cells ----------------------------------------------------
+(defun p3-counter ()
+  (let ((n 0)) (lambda () (setq n (+ n 1)) (list n (p3-k)))))
+(defun p3-adders (xs) (mapcar (lambda (x) (lambda (y) (+ x y))) xs))
+;; A closure inside a closure: captures the outer closure's upvalue.
+(defun p3-nest (a)
+  (let ((b (p3-k)))
+    (lambda (c) (let ((f (lambda () (list a b c)))) (funcall f)))))
+(defun p3-shared ()
+  (let ((v 0))
+    (let ((inc (lambda () (incf v))) (get (lambda () v)))
+      (funcall inc) (funcall inc) (setq v (+ v 10))
+      (list (funcall get) v))))
+
+;; --- &key ------------------------------------------------------------------
+(defun p3-key (a &key (b 2) (c (list a b) cp)) (list a b c cp))
+(defun p3-key-aok (&key x &allow-other-keys) x)
+(defun p3-key-call () (list (p3-key 1) (p3-key 1 :c 3) (p3-key 1 :b 5 :b 6)
+                            (p3-key 1 :zz 9 :allow-other-keys t)
+                            (p3-key-aok :x 4 :y 5)))
+(defun p3-key-tail (x) (p3-key x :b (p3-k)))
+(defun p3-key-heap () (p3-key (p3-k) :c (p3-k) :b (p3-k)))
+
+(chk "P3-NATIVE"
+     (mapcar #'native-p
+             (list #'p3-blk #'p3-blk-nlx #'p3-blk-mv #'p3-blk-uwp #'p3-catch #'p3-catch-outer
+                   #'p3-catch-mv #'p3-tb #'p3-tb-uwp #'p3-uwp-values #'p3-uwp-error
+                   #'p3-uwp-nested #'p3-uwp-rethrow #'p3-hc #'p3-hb #'p3-restart
+                   #'p3-restart-handler #'p3-dyn #'p3-dyn-err #'p3-progv #'p3-mvb #'p3-nth
+                   #'p3-mvl #'p3-mvcall #'p3-counter #'p3-adders #'p3-nest #'p3-shared
+                   #'p3-key #'p3-key-aok #'p3-key-call #'p3-key-tail)))
+(chk "P3-BLOCK" (list (p3-blk 1) (p3-blk 9)))
+(chk "P3-BLOCK-NLX" (p3-blk-nlx 5))
+(chk "P3-BLOCK-MV" (p3-blk-mv))
+(chk "P3-BLOCK-UWP" (list (p3-blk-uwp) *p3-log*))
+(chk "P3-CATCH" (list (p3-catch :t) (p3-catch-outer) (p3-catch-mv) (p3-catch-normal)))
+(chk "P3-THROW-NONE" (p3-throw :nobody 1))
+(chk "P3-TAGBODY" (list (p3-tb 4) (p3-tb 0) (p3-tb-uwp)))
+(chk "P3-UWP" (list (p3-uwp-values) (p3-uwp-error) (p3-uwp-nested) (p3-uwp-rethrow)))
+(chk "P3-HC" (list (p3-hc :type) (p3-hc :simple) (p3-hc :warn) (p3-hc :none)))
+(chk "P3-HB" (p3-hb))
+(chk "P3-RESTART" (list (p3-restart 1) (p3-restart-handler)))
+(chk "P3-DYN" (list (p3-dyn :a) (p3-dyn-err) (p3-dyn-read)))
+(chk "P3-PROGV" (list (p3-progv '(*p3-d*) '(:pv)) (p3-progv '(*p3-d*) nil) (p3-dyn-read)
+                      (p3-progv-pkg) (package-name *package*)))
+(chk "P3-PROGV-BAD" (p3-progv '(5) '(1)))
+(chk "P3-MV" (list (p3-mvb) (p3-nth 0) (p3-nth 1) (p3-nth 2) (p3-nth 7) (p3-mvl) (p3-mvcall)))
+(chk "P3-NTH-BAD" (p3-nth-bad :x))
+(chk "P3-CLOSURE" (let ((c (p3-counter)))
+                    (list (funcall c) (funcall c) (funcall c)
+                          (mapcar (lambda (f) (funcall f 10)) (p3-adders '(1 2 3)))
+                          (funcall (p3-nest :a) :c) (p3-shared))))
+(chk "P3-KEY" (p3-key-call))
+(chk "P3-KEY-TAIL" (p3-key-tail 7))
+(chk "P3-KEY-HEAP" (p3-key-heap))
+(chk "P3-KEY-ODD" (p3-key 1 :b))
+(chk "P3-KEY-UNKNOWN" (p3-key 1 :nope 2))
+(chk "P3-KEY-NONSYM" (p3-key 1 42 2))
+(chk "P3-KEY-NONE" (p3-key))
+;; NLX frames on four threads at once: each thread's own NLX stack.
+(chk "P3-THREADS"
+     (let ((out (make-array 4 :initial-element nil)))
+       (mapc #'mp:join-thread
+             (loop for k below 4
+                   collect (let ((k k))
+                             (mp:make-thread
+                              (lambda ()
+                                (let ((r nil))
+                                  (dotimes (i 300)
+                                    (setq r (list (p3-catch :t) (p3-blk-nlx i) (p3-hc :type)
+                                                  (p3-dyn k) (p3-tb 3))))
+                                  (setf (svref out k) r)))))))
+       (loop for k below 4
+             always (equal (svref out k)
+                           (list (p3-catch :t) (p3-blk-nlx 299) (p3-hc :type)
+                                 (list k :inner k) (p3-tb 3))))))
+
+;; A template compiled just now is young: the closure's allocation moves it
+;; (the classic collector compacts under CLAMIGA_GC_STRESS), so the helper
+;; must read it from the constants after allocating.
+(chk "P3-FRESH-TEMPLATE"
+     (let ((r nil))
+       (dotimes (i 20)
+         (let* ((junk (make-list 50))
+                (f (compile nil `(lambda (x) (lambda () (list x ,i))))))
+           (setq junk nil)
+           (push (funcall (funcall f i)) r)))
+       (list (native-p (compile nil '(lambda (x) (lambda () x))))
+             (every (lambda (p) (eql (first p) (second p))) r)
+             (length r))))
+
+;; --- Native frames: FRAME-LOCALS reads a native caller's locals -------------
+(defun p3-fl-inner () (ext:frame-locals 1))
+(defun p3-fl-outer (a b) (let ((c (+ a b))) (list (p3-fl-inner) c)))
+(chk "P3-FRAME-LOCALS" (list (native-p #'p3-fl-outer) (p3-fl-outer 3 4)))
+(format t "DONE~%")
+EOF
+out=$(run "$WORK/p3.lisp")
+check_contains "the phase-3 script ran to the end" "DONE" "$out"
+check_contains "the phase-3 shapes compile" \
+    "P3-NATIVE (T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T)" "$out"
+check_contains "block and return-from" "P3-BLOCK ((:SMALL 1) (:BIG 9))" "$out"
+check_contains "return-from out of a closure" 'P3-BLOCK-NLX (("k") (5 ("k")) ("k"))' "$out"
+check_contains "return-from carries multiple values" 'P3-BLOCK-MV (1 ("k") 3)' "$out"
+check_contains "return-from through an unwind-protect" 'P3-BLOCK-UWP ((:A ("k")) (:CLEANUP))' "$out"
+check_contains "catch and throw" 'P3-CATCH ((("k") ("k") ("k")) :THROUGH (7 8 9) ("k"))' "$out"
+check_contains "a throw without a catch signals" 'P3-THROW-NONE (:ERROR "No catch for tag NOBODY")' "$out"
+check_contains "go out of a closure, repeatedly, and through a cleanup" \
+    "P3-TAGBODY ((3 2 1 0) NIL (:CLEANUP))" "$out"
+check_contains "unwind-protect: values, error, nesting, a throw from a cleanup" \
+    'P3-UWP ((1 ("k") 3) ("boom" (:CLEANUP)) (:INNER :INNER-CLEANUP :OUTER-CLEANUP) :SECOND)' "$out"
+check_contains "handler-case picks the clause" \
+    'P3-HC (:TYPE-ERROR (:SIMPLE "simple 1") :WARNING (:OK ("k")))' "$out"
+check_contains "handler-bind" 'P3-HB ("second" "first")' "$out"
+check_contains "restart-case and invoke-restart" 'P3-RESTART ((:USED ("k") 1) :SKIPPED)' "$out"
+check_contains "special bindings, restored by an error and a throw" \
+    "P3-DYN ((:A :INNER :A) (:GLOBAL :BOUND :GLOBAL) :GLOBAL)" "$out"
+check_contains "progv: bound, unbound, *package*" \
+    'P3-PROGV (:PV :UNBOUND :GLOBAL "KEYWORD" "COMMON-LISP-USER")' "$out"
+check_contains "progv of a non-symbol signals" \
+    'P3-PROGV-BAD (:ERROR "PROGV: expected symbol, got non-symbol")' "$out"
+check_contains "multiple-value-bind, nth-value, -list, -call" \
+    'P3-MV ((3 ("k") 6 NIL) 5 ("k") 10 NIL (4 ("k") 8) (1 ("k") 2 2 ("k") 4))' "$out"
+check_contains "nth-value of a non-number signals" \
+    'P3-NTH-BAD (:ERROR "NTH-VALUE: index must be a number")' "$out"
+check_contains "closures: a counter, adders, a nested capture, a shared cell" \
+    'P3-CLOSURE ((1 ("k")) (2 ("k")) (3 ("k")) (11 12 13) (:A ("k") :C) (12 12))' "$out"
+check_contains "&key: defaults, supplied-p, duplicates, allow-other-keys" \
+    "P3-KEY ((1 2 (1 2) NIL) (1 2 3 T) (1 5 (1 5) NIL) (1 2 (1 2) NIL) 4)" "$out"
+check_contains "a tail call into an &key function" 'P3-KEY-TAIL (7 ("k") (7 ("k")) NIL)' "$out"
+check_contains "&key arguments across collections" 'P3-KEY-HEAP (("k") ("k") ("k") T)' "$out"
+check_contains "&key: an odd count signals" 'P3-KEY-ODD (:ERROR "odd number of keyword arguments")' "$out"
+check_contains "&key: an unknown keyword signals" 'P3-KEY-UNKNOWN (:ERROR "Unknown keyword argument: NOPE")' "$out"
+check_contains "&key: a non-symbol keyword signals" \
+    'P3-KEY-NONSYM (:ERROR "Invalid keyword argument: not a symbol")' "$out"
+check_contains "&key: a missing required argument signals" \
+    'P3-KEY-NONE (:ERROR "Too few arguments to P3-KEY' "$out"
+check_contains "NLX frames on four threads" "P3-THREADS T" "$out"
+check_contains "a closure over a template that moves" "P3-FRESH-TEMPLATE (T T 20)" "$out"
+# The same under the classic collector, which moves old objects too.
+out0=$(CLAMIGA_GENGC=0 run "$WORK/p3.lisp")
+total=$((total + 1))
+if [ "$out0" = "$out" ]; then
+    echo "  ok  the classic collector gives the same results"; passed=$((passed + 1))
+else
+    echo "  FAIL  the classic collector gives other results"
+    echo "$out" > "$WORK/p3-gengc.txt"
+    echo "$out0" > "$WORK/p3-classic.txt"
+    diff "$WORK/p3-gengc.txt" "$WORK/p3-classic.txt" | head -20
+    failed=$((failed + 1))
+fi
+check_contains "FRAME-LOCALS of a native frame" \
+    'P3-FRAME-LOCALS (T (((#:ARG0 . 3) (#:ARG1 . 4) (#:LOCAL2) (#:LOCAL3 . 7)) 7))' "$out"
+
+# A native function's frame is the interpreter's: the backtrace names each
+# native frame at the line of the form it is in.
+cat > "$WORK/bt.lisp" <<'EOF'
+(clamiga::%jit-set-hot-threshold 0)
+(defun p3-bt-inner (x) (car x))
+(defun p3-bt-outer (y)
+  (let ((z (list y)))
+    (p3-bt-inner y)
+    z))
+(format t "BT-NATIVE ~S~%" (mapcar (lambda (f) (not (null (clamiga::%jit-dump-bytes f))))
+                                   (list #'p3-bt-inner #'p3-bt-outer)))
+(p3-bt-outer 5)
+EOF
+out=$(run "$WORK/bt.lisp")
+check_contains "the backtrace's functions are native" "BT-NATIVE (T T)" "$out"
+check_contains "a native frame at the line of its error" "0: P3-BT-INNER ($WORK/bt.lisp:2)" "$out"
+check_contains "a suspended native caller at its call's line" "1: P3-BT-OUTER ($WORK/bt.lisp:5)" "$out"
 
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

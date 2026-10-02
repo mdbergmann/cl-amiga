@@ -14,6 +14,7 @@
 #include "core/vm.h"
 #include "core/mem.h"
 #include "core/builtins.h"   /* cl_ffi_stub_call */
+#include "core/symbol.h"     /* KW_ALLOW_OTHER_KEYS */
 #include "jit/jit.h"         /* cl_jit_invoke */
 
 extern CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
@@ -199,5 +200,99 @@ CL_Obj cl_jit_vmstack_push_local(CL_Obj *item, CL_Obj *slot)
     CL_Obj cell = cl_cons_rooted(item, slot);
     *slot = cell;
     return cell;
+}
+
+/* The &key prologue (phase 3), run before anything else touches the frame:
+ * BP[0 .. NARGS-1] holds the arguments the caller pushed, FUNC the function
+ * value (closure or bytecode) the frame was entered with.  The interpreter's
+ * normal-call matcher (vm.c, OP_CALL): the keyword pairs are copied out
+ * first -- they sit on the slots the other locals take -- then every local
+ * after the required ones is NIL, then the pairs are matched right to left
+ * so the leftmost duplicate wins (CLHS 3.4.1.4.1), and FUNC goes into the
+ * function slot BP[n_locals].  Non-allocating up to the errors, so neither
+ * FUNC nor the bytecode it leads to can move while it runs. */
+void cl_jit_vmstack_kw_prologue(uint32_t nargs, CL_Obj *bp, CL_Obj func)
+{
+    CL_Obj extra[256];
+    CL_Bytecode *bc = cl_jit_bytecode_of(func, CL_HDR_TYPE(CL_OBJ_TO_PTR(func)));
+    uint32_t arity = bc->arity & 0x7FFF;
+    uint32_t n_locals = bc->n_locals;
+    uint32_t n_extra = 0, i;
+    int allow = (bc->flags & 2) != 0;
+
+    for (i = arity; i < nargs && n_extra < 256; i++)
+        extra[n_extra++] = bp[i];
+    for (i = arity; i < n_locals; i++)
+        bp[i] = CL_NIL;
+    bp[n_locals] = func;
+
+    if (n_extra & 1u)
+        cl_error(CL_ERR_ARGS, "odd number of keyword arguments");
+    if (!allow) {
+        for (i = 0; i + 1 < n_extra; i += 2) {
+            if (extra[i] == KW_ALLOW_OTHER_KEYS && !CL_NULL_P(extra[i + 1])) {
+                allow = 1;
+                break;
+            }
+        }
+    }
+    if (n_extra >= 2) {
+        int32_t ki = (int32_t)n_extra - 2;
+        for (; ki >= 0; ki -= 2) {
+            CL_Obj key = extra[ki];
+            int j, found = 0;
+            for (j = 0; j < bc->n_keys; j++) {
+                if (key == bc->key_syms[j]) {
+                    bp[bc->key_slots[j]] = extra[ki + 1];
+                    if (bc->key_suppliedp_slots)
+                        bp[bc->key_suppliedp_slots[j]] = CL_T;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow) {
+                if (!CL_SYMBOL_P(key))
+                    cl_error(CL_ERR_ARGS, "Invalid keyword argument: not a symbol");
+                cl_error(CL_ERR_ARGS, "Unknown keyword argument: %s",
+                         cl_symbol_name(key));
+            }
+        }
+    }
+}
+
+/* OP_CLOSURE: a closure over the template *TMPL_REF (a word of
+ * bc->constants) with the N captured values at VALUES[0..N-1], which the
+ * walker pushed onto the VM stack.  Both are read after the allocation,
+ * which may move them -- the interpreter's order. */
+CL_Obj cl_jit_vmstack_make_closure(const CL_Obj *tmpl_ref, uint32_t n,
+                                   CL_Obj *values)
+{
+    CL_Closure *cl;
+    uint32_t i;
+    cl = (CL_Closure *)cl_alloc(TYPE_CLOSURE, sizeof(CL_Closure) + n * sizeof(CL_Obj));
+    if (!cl) return CL_NIL;
+    cl->bytecode = *tmpl_ref;
+    for (i = 0; i < n; i++)
+        cl->upvalues[i] = values[i];
+    return CL_PTR_TO_OBJ(cl);
+}
+
+/* OP_RESTART_PUSH: the restart named *NAME_REF (a word of bc->constants)
+ * from the five operands at OPS -- handler, report, interactive, test, tag,
+ * as compile_restart_case pushes them.  The binding takes its values back
+ * from the restart object, which cl_make_restart allocated (vm.c). */
+void cl_jit_vmstack_restart_push(const CL_Obj *name_ref, CL_Obj *ops)
+{
+    CL_Obj restart;
+    CL_Restart *rp;
+    if (cl_restart_top >= CL_MAX_RESTART_BINDINGS)
+        cl_error(CL_ERR_OVERFLOW, "Restart stack overflow");
+    restart = cl_make_restart(*name_ref, ops[0], ops[1], ops[2], ops[3], ops[4]);
+    rp = (CL_Restart *)CL_OBJ_TO_PTR(restart);
+    cl_restart_stack[cl_restart_top].name    = rp->name;
+    cl_restart_stack[cl_restart_top].handler = rp->function;
+    cl_restart_stack[cl_restart_top].tag     = rp->tag;
+    cl_restart_stack[cl_restart_top].restart = restart;
+    cl_restart_top++;
 }
 #endif /* JIT_A64 */
