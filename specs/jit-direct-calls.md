@@ -522,8 +522,8 @@ direct call reaches such a callee like any positional one.
   `jit_dispatch` and the fill): the interpreter's `OP_CALL` bounds --
   `arity <= nargs <= arity + n_optional`, any count above `arity` with
   `&key` (or, since "&rest callees" below, `&rest`).  A site fills only for a count the callee
-  accepts, so the hit path checks nothing.  The 6-argument cap applies to
-  `arity + n_optional`: the walker declines more.
+  accepts, so the hit path checks nothing.  The positional cap (see
+  "More than six positional parameters") applies to `arity + n_optional`.
 
 Tests: the "&optional" section of `tests/amiga/test-jit.lisp` (also run on
 arm64 hosts by `tests/test_jit_a64_walk.sh`): every default shape, a
@@ -565,8 +565,7 @@ positional `&rest` callee like any other.
   `&optional` copy NILs the rest slot, which is the empty list such a call
   conses.  A self call with more arguments is a real call.
 - **The fit rule** accepts any count above `arity` with `&rest`; a site
-  fills for a positional `&rest` callee within the six arguments the fill
-  rule allows.
+  fills for a positional `&rest` callee like any other.
 
 - **The trampoline's C stack.**  With `&rest` native, ASDF's `FIND-SYSTEM`
   on the suite's 128K stack (run-tests.lisp's shim checks, under nested
@@ -586,13 +585,29 @@ with 300, 20000-round self tail calls, direct calls with a hit check,
 closures and two threads.  `run-tests.lisp`'s frame-budget check used
 `&rest` to stay interpreted; it is a JIT-off definition now.
 
+## More than six positional parameters
+
+**Status (2026-10-03): done.**  The m68k walker, `cl_jit_invoke` and the
+fill rule capped positional arity (`arity + n_optional` without `&key`, and
+the count a site fills for) at six.  Nothing needed it: `cl_jit_enter`
+pushes any count, parameter i sits at `12+4*(n-1-i)(a6)` (a d16 for every
+count OP_CALL can pass), and a site's hit path passes counts above 127 with
+`move.l #n,d1` instead of `moveq`.  The cap is `CL_JIT_MAX_POSITIONAL`
+(`jit.h`) = 255, OP_CALL's count byte, for the walker, the pass-through
+matcher, `cl_jit_invoke` and the fill rule alike.
+
+Tests: the "More than six positional parameters" section of
+`tests/amiga/test-jit.lisp` (also run on arm64 hosts): 8, 12 and 255
+required parameters, `&optional` past six, compaction in the callee, self
+tail calls that rotate the arguments, direct calls with a hit check,
+`funcall`, closures, arity errors and two threads; a 9-argument
+pass-through.
+
 ## Later (not in this spec)
 
 - **`&key` callees**: the kw ABI wants an `args` pointer in natural order,
   so it needs either a site-side reverse or a reversed-args variant of
   `cl_jit_runtime_kw_prologue`.
-- **Lifting the 6-argument cap** once `cl_jit_enter` takes an argument
-  vector.
 - **Using A3 elsewhere**: inline `mv_count` resets and inline TLV-free
   `GLOAD` (`thr->tlv_entry_count == 0`), now that the thread pointer is a
   register.

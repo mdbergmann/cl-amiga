@@ -223,7 +223,7 @@ static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
     /* The positional native ABI (jit_dispatch has checked jit_fits): the
      * hit path pushes the arguments and passes their count in D1, which
      * covers &optional and &rest.  &key takes cl_jit_invoke's keyword ABI. */
-    if (bc->flags != 0 || nargs > CL_JIT_PASSTHROUGH_MAX_ARITY) {
+    if (bc->flags != 0 || nargs > CL_JIT_MAX_POSITIONAL) {
         jit_ds[CL_JIT_DS_REFUSED_ABI]++;
         return;
     }

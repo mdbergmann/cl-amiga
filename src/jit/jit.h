@@ -45,8 +45,10 @@ enum {
 
 #ifdef JIT_M68K
 /* The highest positional arity native code is entered with (cl_jit_invoke,
- * the pass-through matcher, the walker's gate, the call-site fill rule). */
-#define CL_JIT_PASSTHROUGH_MAX_ARITY 6
+ * the pass-through matcher, the walker's gate, the call-site fill rule):
+ * OP_CALL's count is a byte.  cl_jit_enter and a call site's hit path take
+ * any count; the frame displacements stay d16 at this bound. */
+#define CL_JIT_MAX_POSITIONAL 255
 #endif
 
 /* One-time init at boot, after cl_compiler_init. */

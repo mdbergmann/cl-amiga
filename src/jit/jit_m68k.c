@@ -236,19 +236,16 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
  * "reset mv, load arg, return".  Strict on metadata so optional/&key/
  * &rest variants don't sneak through.
  *
- * Capped at `CL_JIT_PASSTHROUGH_MAX_ARITY`, the positional arity
- * cl_jit_invoke accepts (cl_jit_enter itself takes any count; lifting
- * the cap is specs/jit-direct-calls.md §"Later").
+ * Capped at `CL_JIT_MAX_POSITIONAL` (jit.h), the positional arity
+ * cl_jit_invoke accepts.
  *
- * Returns 1 and stores the source slot j in *slot_out on match.
- * (CL_JIT_PASSTHROUGH_MAX_ARITY lives in jit.h: the call-site fill rule
- * in runtime_m68k.c applies it too.) */
+ * Returns 1 and stores the source slot j in *slot_out on match. */
 
 static int matches_passthrough(const CL_Bytecode *bc, uint8_t *slot_out)
 {
     uint8_t arity, slot;
 
-    if (bc->arity < 1 || bc->arity > CL_JIT_PASSTHROUGH_MAX_ARITY) return 0;
+    if (bc->arity < 1 || bc->arity > CL_JIT_MAX_POSITIONAL) return 0;
     if (bc->n_optional != 0) return 0;
     if (bc->flags != 0) return 0;
     if (bc->n_keys != 0) return 0;
@@ -1612,7 +1609,10 @@ static void emit_opt_self_tco_copy(CodeBuf *cb, uint8_t nargs,
         m68k_emit_dbf_w(cb, REG_D0,
                         (int16_t)(loop_off - ((int32_t)cb_len(cb) + 2)));
     }
-    m68k_emit_moveq(cb, (int8_t)nargs, REG_D0);
+    if (nargs <= 127)
+        m68k_emit_moveq(cb, (int8_t)nargs, REG_D0);
+    else
+        m68k_emit_move_l_imm32(cb, (uint32_t)nargs, REG_D0);
     m68k_emit_move_l_dn_to_disp_am(cb, REG_D0, -4, REG_A6);
 }
 
@@ -1687,12 +1687,12 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     }
 
     arity = (uint16_t)(bc->arity & 0x7FFF);
-    /* cl_jit_invoke accepts positional arities
-     * 0..CL_JIT_PASSTHROUGH_MAX_ARITY.  The kw-ABI is entered with
-     * three fixed words (bc, nargs, args), so it isn't constrained by
-     * that cap — arity bounded only by frame-size headroom below. */
+    /* cl_jit_invoke accepts positional arities 0..CL_JIT_MAX_POSITIONAL
+     * (OP_CALL's byte).  The kw-ABI is entered with three fixed words
+     * (bc, nargs, args), so it isn't constrained by that cap — arity
+     * bounded only by frame-size headroom below. */
     if (!is_kw &&
-        arity + (uint32_t)bc->n_optional > CL_JIT_PASSTHROUGH_MAX_ARITY)
+        arity + (uint32_t)bc->n_optional > CL_JIT_MAX_POSITIONAL)
         return 0;
 
     n_locals = bc->n_locals;
@@ -4652,7 +4652,7 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
  * (caller-saved).  cl_jit_enter loads A3 = this thread's CL_Thread for
  * the native code and restores the caller's A3 on return.
  *
- * A positional arity above CL_JIT_PASSTHROUGH_MAX_ARITY returns CL_NIL
+ * A positional count above CL_JIT_MAX_POSITIONAL returns CL_NIL
  * without calling — that shouldn't happen because cl_jit_compile
  * gatekeeps which shapes get native_code, but keep the defensive branch
  * so a future matcher mismatch surfaces as a wrong value rather than a
@@ -4751,12 +4751,10 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
 
     /* Positional ABI: the arguments are cl_vm.stack[sp-nargs .. sp-1] in
      * natural order; cl_jit_enter lays them out in operand-stack order
-     * (parameter i at 12+4*(nargs-1-i)(a6)).  The walker keeps positional
-     * arity <= CL_JIT_PASSTHROUGH_MAX_ARITY, so only an &rest function
-     * takes more (OP_CALL's u8 count bounds it); the guard keeps a matcher
-     * mismatch a wrong value rather than a wild call. */
-    if (nargs >= 0 && (nargs <= CL_JIT_PASSTHROUGH_MAX_ARITY ||
-                       ((bc->arity & 0x8000) && nargs <= 255)))
+     * (parameter i at 12+4*(nargs-1-i)(a6)).  OP_CALL's u8 count bounds
+     * nargs; the guard keeps a mismatch a wrong value rather than a wild
+     * call. */
+    if (nargs >= 0 && nargs <= CL_JIT_MAX_POSITIONAL)
         result = cl_jit_enter(bc->native_code, t, func_obj,
                               &cl_vm.stack[cl_vm.sp - nargs], (int32_t)nargs);
 

@@ -187,13 +187,12 @@
        'right (jit-2arg-snd 'left 'right))
 
 ; --- Higher arities: same matcher / template, different switch case
-; in cl_jit_invoke.  Cover arity 3 (middle slot) and arity 6 (the cap,
-; CL_JIT_PASSTHROUGH_MAX_ARITY).  Each emits move.l (8+4*(n-1-j))(a7),d0
-; ; rts where j is the source slot (user-arg index) of an arity-n
-; function: operand-stack order puts the last argument at 8(a7).  The
-; middle of three stays at 12; the 6-arg case puts the first at 28 and
-; the last at 8, and proves all six switch arms load args in the
-; correct order. ---
+; in cl_jit_invoke.  Cover arity 3 (middle slot), 6, and 9 (over the
+; old cap of six).  Each emits move.l (8+4*(n-1-j))(a7),d0 ; rts where j
+; is the source slot (user-arg index) of an arity-n function:
+; operand-stack order puts the last argument at 8(a7).  The middle of
+; three stays at 12; the 6-arg case puts the first at 28 and the last at
+; 8; the 9-arg one the first at 40. ---
 (defun jit-3arg-mid (x y z) y)
 #+m68k (check "jit-3arg-mid-bytes" t
   (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-3arg-mid) 12))
@@ -207,6 +206,10 @@
   (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-6arg-6) 8))
 (check "jit-6arg-1-returns" 'first  (jit-6arg-1 'first 2 3 4 5 'last))
 (check "jit-6arg-6-returns" 'last   (jit-6arg-6 'first 2 3 4 5 'last))
+(defun jit-9arg-1 (a b c d e f g h i) a)
+#+m68k (check "jit-9arg-1-bytes" t
+  (jit-passthrough-shape-p (clamiga::%jit-dump-bytes #'jit-9arg-1) 40))
+(check "jit-9arg-1-returns" 'first (jit-9arg-1 'first 2 3 4 5 6 7 8 'last))
 
 ; --- Per-opcode walker.  Fires only for shapes the whole-function
 ; matchers reject.  Uses LINK/UNLK to set up an A6 frame and the m68k
@@ -2641,8 +2644,8 @@
 (defun opt-nil (&optional a b) (list a b))
 (defun opt-sees-sp (&optional (a 1 ap) (b (if ap :given :missing))) (list a b))
 (defun opt-key (a &optional b &key (k 7 kp)) (list a b k kp))
-;; Six positional parameters is the m68k positional ABI's limit
-;; (CL_JIT_PASSTHROUGH_MAX_ARITY); seven stay interpreted there.
+;; Six and seven positional parameters: seven was over the m68k walker's
+;; old limit (see "More than six positional parameters").
 (defun opt-6 (a b c &optional (d :d) (e :e) (f :f)) (list a b c d e f))
 (defun opt-7 (a b c d &optional (e :e) (f :f) (g :g)) (list a b c d e f g))
 ;; Self tail calls that change the count: a loop in one frame.  A
@@ -2672,8 +2675,7 @@
     (opt-sum-loop n)
     (- (jds-stat :misses) m0)))
 
-(check "jit-opt-native" #+m68k '(t t t t t t t t nil t t t t t t t t t)
-                        #-m68k '(t t t t t t t t t t t t t t t t t t)
+(check "jit-opt-native" '(t t t t t t t t t t t t t t t t t t)
   (mapcar #'opt-native-p
           (list #'opt-o #'opt-heap #'opt-special #'opt-err #'opt-nil
                 #'opt-sees-sp #'opt-key #'opt-6 #'opt-7 #'opt-acc #'opt-acc-fc
@@ -2752,8 +2754,7 @@
 ;; the positional ones into a fresh list in the slot after them (CLHS
 ;; 3.4.1.3) -- which may collect, so the checks below churn the heap and
 ;; compact inside the callee.  Any count above the positional ones reaches
-;; native code (OP_CALL's count is a byte), not just the six of the
-;; positional ABI.
+;; native code (OP_CALL's count is a byte).
 (defun rest-all (&rest r) r)
 (defun rest-ab (a &optional (b 2 bp) &rest r) (list a b bp r))
 ;; A default after &optional sees the earlier ones; &rest sees neither.
@@ -2767,7 +2768,7 @@
 (defun rest-key-strict (&rest r &key k) (list r k))
 (defun rest-key-compact (&rest r &key (k (progn (ext:gc-compact) :dflt)))
   (list r k))
-;; Six positional parameters plus &rest: the positional ABI's limit.
+;; Six positional parameters plus &rest.
 (defun rest-6 (a b c d e &optional (f :f) &rest r) (list a b c d e f r))
 ;; Self tail calls up to the positional count stay a loop: the copy NILs
 ;; the rest slot, the empty list such a call conses.  20000 rounds would
@@ -2783,7 +2784,7 @@
   (let ((m0 (jds-stat :misses)))
     (rest-sum-loop n)
     (- (jds-stat :misses) m0)))
-;; Native callers: counts below, at and above the six a site can fill.
+;; Native callers: counts below, at and above six.
 (defun rest-call-all ()
   (list (rest-all) (rest-all 1) (rest-all 1 2 3 4 5 6)
         (rest-all 1 2 3 4 5 6 7 8 9 10 11 12)))
@@ -2853,14 +2854,18 @@
   (let ((r (rest-call-many))) (list (length r) (first r) (car (last r)))))
 (check "jit-rest-direct-calls-value" 1001000 (rest-sum-loop 1000))
 ;; The fill rule used to refuse &rest callees, so every call missed.  Best
-;; of three, as jit-opt-direct-calls-hit.
+;; of three, as jit-opt-direct-calls-hit.  REST-SUM conses its list, and
+;; under CLAMIGA_GC_STRESS every allocation collects, which empties every
+;; site: there every call misses by design, so the check stands down.
 (check "jit-rest-direct-calls-hit" 0
-  (progn
-    (rest-misses-for 10)
-    (let ((best nil))
-      (dotimes (k 3 best)
-        (let ((d (- (rest-misses-for 1000) (rest-misses-for 10))))
-          (when (or (null best) (< (abs d) (abs best))) (setq best d)))))))
+  (if (ext:getenv "CLAMIGA_GC_STRESS")
+      0
+      (progn
+        (rest-misses-for 10)
+        (let ((best nil))
+          (dotimes (k 3 best)
+            (let ((d (- (rest-misses-for 1000) (rest-misses-for 10))))
+              (when (or (null best) (< (abs d) (abs best))) (setq best d))))))))
 (check "jit-rest-too-few" :caught
   (handler-case (progn (rest-too-few) :no-error) (program-error () :caught)))
 (check "jit-rest-closures"
@@ -2880,6 +2885,126 @@
                                                          (list (list i)
                                                                (list (list (+ i 1)) (list (+ i 2)))
                                                                (list "k")))))))))))
+    (mapcar #'mp:join-thread ths)))
+
+;; --- More than six positional parameters.  The m68k walker used to decline
+;; a function without &key whose required plus optional parameters exceeded
+;; six, cl_jit_invoke refused to enter one, and a call site never filled for
+;; more than six arguments.  The bound is OP_CALL's count byte now (255):
+;; parameter i sits at 12+4*(n-1-i)(a6), a d16 for every such n, and a call
+;; site passes counts above 127 with move.l instead of moveq.
+(defmacro wide-defun (name n)
+  (let ((ps (loop for i below n collect (intern (format nil "W~D" i)))))
+    `(defun ,name ,ps (list ,(first ps) ,(second ps) ,(car (last ps)) (+ ,@ps)))))
+(defmacro wide-call (name n) `(,name ,@(loop for i below n collect i)))
+(defun wide-8 (a b c d e f g h) (list a b c d e f g h))
+(defun wide-12 (a b c d e f g h i j k l) (list l k j i h g f e d c b a))
+(defun wide-opt (a b c d e &optional (f :f) (g (list a e)) (h (list f g) hp))
+  (list a b c d e f g h hp))
+(wide-defun wide-255 255)
+;; Arguments live across a compaction and a collection in the body.
+(defun wide-compact (a b c d e f g h)
+  (ext:gc-compact)
+  (list a b c d e f g h (opt-k)))
+;; Self tail calls stay loops: the required-only copy and the &optional one.
+(defun wide-acc (n a b c d e f s)
+  (if (= n 0) (list a b c d e f s) (wide-acc (- n 1) b c d e f a (+ s n))))
+(defun wide-acc-opt (n a b c d e f &optional (s 0))
+  (if (= n 0) (list a f s) (wide-acc-opt (- n 1) a b c d e f (+ s n))))
+;; A self tail call with more than 127 arguments in an &optional function:
+;; the copy stores the count with move.l, not a sign-extending moveq.
+(defmacro wide-tco-defun (name n)
+  (let ((ps (loop for i below n collect (intern (format nil "T~D" i)))))
+    `(defun ,name (n ,@ps &optional (s 0))
+       (if (= n 0)
+           (list ,(first ps) ,(car (last ps)) s)
+           (,name (- n 1) ,@ps (+ s n))))))
+(wide-tco-defun wide-tco-opt 130)
+(defun wide-tco-call (n)
+  (wide-tco-opt n 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130))
+(check "jit-wide-self-tail-call-over-127" '(1 130 20100)
+  (wide-tco-call 200))
+;; Two-argument + only: a longer one calls the builtin, whose site misses.
+(defun wide-sum (a b c d e f g) (+ a (+ b (+ c (+ d (+ e (+ f g)))))))
+(defun wide-sum-loop (n)
+  (let ((s 0)) (dotimes (i n s) (setq s (+ s (wide-sum i 1 1 1 1 1 1))))))
+(defun wide-misses-for (n)
+  (let ((m0 (jds-stat :misses)))
+    (wide-sum-loop n)
+    (- (jds-stat :misses) m0)))
+;; Native callers: a site per count, and OP_CALL through a function value.
+(defun wide-call-all ()
+  (list (wide-8 1 2 3 4 5 6 7 8) (wide-12 1 2 3 4 5 6 7 8 9 10 11 12)
+        (wide-opt 1 2 3 4 5) (wide-opt 1 2 3 4 5 6) (wide-opt 1 2 3 4 5 6 7)
+        (wide-opt 1 2 3 4 5 6 7 8)))
+(defun wide-call-255 () (wide-call wide-255 255))
+(defun wide-fc (f) (funcall f 1 2 3 4 5 6 7 8))
+(defun wide-mk (n) (lambda (a b c d e f g h) (list n a h (+ a b c d e f g h))))
+(defun wide-too-many () (wide-8 1 2 3 4 5 6 7 8 9))
+(defun wide-too-few () (wide-8 1 2 3 4 5 6 7))
+(defun wide-opt-too-many () (wide-opt 1 2 3 4 5 6 7 8 9))
+
+(check "jit-wide-native" '(t t t t t t t t t t t t t t t t t t)
+  (mapcar #'opt-native-p
+          (list #'wide-8 #'wide-12 #'wide-opt #'wide-255 #'wide-compact
+                #'wide-acc #'wide-acc-opt #'wide-sum #'wide-sum-loop
+                #'wide-call-all #'wide-call-255 #'wide-fc (wide-mk 0)
+                #'wide-too-many #'wide-too-few #'wide-opt-too-many
+                #'opt-7 #'wide-misses-for)))
+(check "jit-wide-order" '((1 2 3 4 5 6 7 8) (12 11 10 9 8 7 6 5 4 3 2 1))
+  (list (wide-8 1 2 3 4 5 6 7 8) (wide-12 1 2 3 4 5 6 7 8 9 10 11 12)))
+(check "jit-wide-optional"
+  '((1 2 3 4 5 :f (1 5) (:f (1 5)) nil) (1 2 3 4 5 6 (1 5) (6 (1 5)) nil)
+    (1 2 3 4 5 6 7 (6 7) nil) (1 2 3 4 5 6 7 8 t))
+  (list (wide-opt 1 2 3 4 5) (wide-opt 1 2 3 4 5 6) (wide-opt 1 2 3 4 5 6 7)
+        (wide-opt 1 2 3 4 5 6 7 8)))
+;; Twice: the first round fills the sites, the second hits them.
+(check "jit-wide-direct-calls"
+  '((1 2 3 4 5 6 7 8) (12 11 10 9 8 7 6 5 4 3 2 1)
+    (1 2 3 4 5 :f (1 5) (:f (1 5)) nil) (1 2 3 4 5 6 (1 5) (6 (1 5)) nil)
+    (1 2 3 4 5 6 7 (6 7) nil) (1 2 3 4 5 6 7 8 t))
+  (progn (wide-call-all) (wide-call-all)))
+;; OP_CALL's limit, from a native caller (twice: fill, then hit) and APPLY.
+(check "jit-wide-255" '((0 1 254 32385) (0 1 254 32385) (0 1 254 32385))
+  (list (wide-call-255) (wide-call-255)
+        (apply #'wide-255 (loop for i below 255 collect i))))
+(check "jit-wide-across-compaction"
+  '(((1) (2) (3) (4) (5) (6) (7) (8) ("k")) ((1) (2) (3) (4) (5) (6) (7) (8) ("k")))
+  (loop repeat 2
+        collect (wide-compact (list 1) (list 2) (list 3) (list 4)
+                              (list 5) (list 6) (list 7) (list 8))))
+;; 20000 rounds: a native frame per round would exhaust the C stack.  The
+;; rotation checks that the copy reads every argument before it writes one.
+(check "jit-wide-self-tail-call" '((:c :d :e :f :a :b 200010000) (1 6 200010000))
+  (list (wide-acc 20000 :a :b :c :d :e :f 0)
+        (wide-acc-opt 20000 1 2 3 4 5 6)))
+(check "jit-wide-funcall-and-closures"
+  '((1 2 3 4 5 6 7 8) (:n 1 8 36) (("k") 1 8 36))
+  (list (wide-fc #'wide-8) (wide-fc (wide-mk :n)) (wide-fc (wide-mk (opt-k)))))
+(check "jit-wide-arity-errors" '(:caught :caught :caught)
+  (mapcar (lambda (f) (handler-case (progn (funcall f) :no-error)
+                        (program-error () :caught)))
+          (list #'wide-too-many #'wide-too-few #'wide-opt-too-many)))
+(check "jit-wide-direct-calls-value" 505500 (wide-sum-loop 1000))
+;; The fill rule refused more than six arguments, so every call missed.
+;; Best of three, as jit-opt-direct-calls-hit.
+(check "jit-wide-direct-calls-hit" 0
+  (progn
+    (wide-misses-for 10)
+    (let ((best nil))
+      (dotimes (k 3 best)
+        (let ((d (- (wide-misses-for 1000) (wide-misses-for 10))))
+          (when (or (null best) (< (abs d) (abs best))) (setq best d)))))))
+(check "jit-wide-threads" '(t t)
+  (let ((ths (loop for i below 2
+                   collect (let ((i i))
+                             (mp:make-thread
+                              (lambda ()
+                                (loop repeat 200
+                                      always (and (equal (wide-8 i 2 3 4 5 6 7 8)
+                                                         (list i 2 3 4 5 6 7 8))
+                                                  (equal (wide-acc 50 i 2 3 4 5 6 0)
+                                                         (list 3 4 5 6 i 2 1275))))))))))
     (mapcar #'mp:join-thread ths)))
 
 ;; The C stack a native call into a generic function costs.  Such a call
@@ -3249,20 +3374,19 @@
 ; small count (cl_jit_note_call re-checks before it writes), and a
 ; declined function would then be tried again every 8 calls.  That race
 ; is too narrow to force from here, so this is a smoke test of concurrent
-; settling.  On m68k hot-race-declined always declines: seven positional
-; parameters are over the positional ABI's six.  AArch64 compiles every lambda list, so
-; there it is a race to settle to native code.  %JIT-HOT-COMPILE-COUNT counts every function the hot path tries,
+; settling.  hot-race-declined always declines: neither walker compiles
+; DEFVAR's opcode.  %JIT-HOT-COMPILE-COUNT counts every function the hot path tries,
 ; so the target must be the only one counted in the window: the worker is
 ; (speed 3), settled at definition, and the thread's entry call into it
 ; (cl_vm_apply's stub OP_CALL, which counts like any interpreted call)
 ; therefore counts nothing -- a loop LAMBDA there would compile on its
 ; first call.  Two threads that reach the threshold together may both try
 ; (jit_m68k.c), hence at most 2.
-(defun hot-race-declined (x a b c d e f) (or x a b c d e f))
+(defun hot-race-declined (x a b c d e f) (defvar *hot-race-dv* nil) (or x a b c d e f))
 (defun hot-race-worker ()
   (declare (optimize (speed 3)))
   (dotimes (i 400) (hot-race-declined i nil nil nil nil nil nil)))
-(check "hot: concurrent calls settle a declined function" #+m68k '(nil t) #-m68k '(t t)
+(check "hot: concurrent calls settle a declined function" '(nil t)
   (let ((prev (clamiga::%jit-set-hot-threshold 8)))
     (unwind-protect
         (let ((before (clamiga::%jit-hot-compile-count))
