@@ -2944,13 +2944,13 @@
 (defun wide-too-few () (wide-8 1 2 3 4 5 6 7))
 (defun wide-opt-too-many () (wide-opt 1 2 3 4 5 6 7 8 9))
 
-(check "jit-wide-native" '(t t t t t t t t t t t t t t t t t t)
+(check "jit-wide-native" '(t t t t t t t t t t t t t t t t t t t)
   (mapcar #'opt-native-p
           (list #'wide-8 #'wide-12 #'wide-opt #'wide-255 #'wide-compact
                 #'wide-acc #'wide-acc-opt #'wide-sum #'wide-sum-loop
                 #'wide-call-all #'wide-call-255 #'wide-fc (wide-mk 0)
                 #'wide-too-many #'wide-too-few #'wide-opt-too-many
-                #'opt-7 #'wide-misses-for)))
+                #'opt-7 #'wide-misses-for #'wide-tco-opt)))
 (check "jit-wide-order" '((1 2 3 4 5 6 7 8) (12 11 10 9 8 7 6 5 4 3 2 1))
   (list (wide-8 1 2 3 4 5 6 7 8) (wide-12 1 2 3 4 5 6 7 8 9 10 11 12)))
 (check "jit-wide-optional"
