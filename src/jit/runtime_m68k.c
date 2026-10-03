@@ -222,8 +222,8 @@ static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
     }
     /* The positional native ABI (jit_dispatch has checked jit_fits): the
      * hit path pushes the arguments and passes their count in D1, which
-     * covers &optional and &rest.  &key takes cl_jit_invoke's keyword ABI. */
-    if (bc->flags != 0 || nargs > CL_JIT_MAX_POSITIONAL) {
+     * covers &optional, &rest and &key -- every shape the walker takes. */
+    if (nargs > CL_JIT_MAX_POSITIONAL) {
         jit_ds[CL_JIT_DS_REFUSED_ABI]++;
         return;
     }
@@ -367,15 +367,18 @@ CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
  * normal-call frame setup (the "Normal call: push new frame" branch in
  * OP_CALL) closely so behaviour stays in lock-step.
  *
+ * Argument i sits at LAST[nargs-1-i] (operand-stack order above A6, as
+ * in cl_jit_runtime_rest_prologue); ARG(i) reads it.
+ *
  * The only allocation is the &rest list.  Everything it can disturb is
- * safe by then: the arguments are on cl_vm.stack (a root), the frame
- * slots on the m68k stack (the conservative scan pins what they
- * reference), and the bytecode -- a raw pointer, which a compaction does
- * not fix up -- is re-derived from FUNC (8(a6), pinned the same way)
- * after the consing. */
+ * safe by then: the arguments and the frame slots are on the m68k stack
+ * (the conservative scan pins what they reference), and the bytecode --
+ * a raw pointer, which a compaction does not fix up -- is re-derived
+ * from FUNC (8(a6), pinned the same way) after the consing. */
 void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
-                                CL_Obj *args, CL_Obj *frame)
+                                CL_Obj *last, CL_Obj *frame)
 {
+#define ARG(i) (last[nargs - 1 - (i)])
     uint32_t i;
     CL_Bytecode *bc = cl_jit_bytecode_of(func, CL_HDR_TYPE(CL_OBJ_TO_PTR(func)));
     uint32_t arity        = (uint32_t)(bc->arity & 0x7FFFu);
@@ -385,9 +388,7 @@ void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
     uint32_t n_positional = arity + n_opt;
     uint32_t n_extra;
 
-    /* Defensive clamp — OP_CALL already enforces u8 nargs but match
-     * cl_vm_apply's behaviour rather than trusting the caller. */
-    if (nargs > 255) nargs = 255;
+    /* nargs <= 255: OP_CALL's byte, the bound of every entry. */
 
     /* NIL-initialize every frame slot.  Mirrors the VM's
      * `while (sp < bp + n_locals) push(NIL)` so any slot the body
@@ -398,7 +399,7 @@ void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
     /* Required + optional positional args copy across directly. */
     {
         uint32_t copy_n = (nargs < n_positional) ? nargs : n_positional;
-        for (i = 0; i < copy_n; i++) frame[i] = args[i];
+        for (i = 0; i < copy_n; i++) frame[i] = ARG(i);
     }
 
     n_extra = (nargs > n_positional) ? (nargs - n_positional) : 0;
@@ -410,13 +411,13 @@ void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
         int32_t j;
         CL_GC_PROTECT(rest);
         for (j = (int32_t)n_extra - 1; j >= 0; j--)
-            rest = cl_cons_rooted(&args[n_positional + (uint32_t)j], &rest);
+            rest = cl_cons_rooted(&ARG(n_positional + (uint32_t)j), &rest);
         CL_GC_UNPROTECT(1);
         frame[n_positional] = rest;
         bc = cl_jit_bytecode_of(func, CL_HDR_TYPE(CL_OBJ_TO_PTR(func)));
     }
 
-    if ((bc->flags & 1) == 0) return;
+    if ((bc->flags & 1) == 0) return;   /* not reached: &key shapes only */
 
     /* Odd-arg-count check per CLHS 3.4.1.4. */
     if (n_extra & 1u)
@@ -426,8 +427,8 @@ void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
     if (!allow) {
         uint32_t k;
         for (k = 0; k + 1 < n_extra; k += 2) {
-            if (args[n_positional + k] == KW_ALLOW_OTHER_KEYS &&
-                !CL_NULL_P(args[n_positional + k + 1])) {
+            if (ARG(n_positional + k) == KW_ALLOW_OTHER_KEYS &&
+                !CL_NULL_P(ARG(n_positional + k + 1))) {
                 allow = 1;
                 break;
             }
@@ -441,8 +442,8 @@ void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
         int32_t ki;
         if (last_ki & 1) last_ki--;
         for (ki = last_ki; ki >= 0; ki -= 2) {
-            CL_Obj key = args[n_positional + ki];
-            CL_Obj val = args[n_positional + ki + 1];
+            CL_Obj key = ARG(n_positional + (uint32_t)ki);
+            CL_Obj val = ARG(n_positional + (uint32_t)ki + 1);
             int j;
             int found = 0;
             for (j = 0; j < bc->n_keys; j++) {
@@ -459,6 +460,7 @@ void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
                          cl_symbol_name(key));
         }
     }
+#undef ARG
 }
 
 /* See runtime_m68k.h.  Argument i sits at LAST[nargs-1-i] (operand-stack

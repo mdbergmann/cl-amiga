@@ -65,7 +65,7 @@ Target: the native-leaf row at **≤ 2 µs net on the Vampire** (from ~6.5).
 That is an estimate to be confirmed, not a promise.
 
 Out of scope for this spec: `&key`, `&optional` and `&rest` callees (they
-keep the helper, see §"Later"), generic functions, FFI stubs, builtins, and
+keep the helper; each is done since, see their own sections), generic functions, FFI stubs, builtins, and
 any JIT on PPC/MorphOS or host (none exists).
 
 ## Design
@@ -556,7 +556,8 @@ positional `&rest` callee like any other.
   `cl_jit_invoke`'s guard capped it at six.  With `&rest` the guard is
   OP_CALL's byte (255).  `OP_APPLY` never enters native code, so a longer
   `apply` stays the interpreter's.
-- **`&rest` with `&key`** stays on the keyword ABI.
+- **`&rest` with `&key`** stays on the keyword ABI (gone since "&key
+  callees" below).
   `cl_jit_runtime_kw_prologue` now takes the function value (8(a6)) instead
   of the raw `bc` at 12(a6), conses the list and re-derives the bytecode
   from it before matching the keywords: a compaction does not fix a raw
@@ -603,11 +604,51 @@ tail calls that rotate the arguments, direct calls with a hit check,
 `funcall`, closures, arity errors and two threads; a 9-argument
 pass-through.
 
+## &key callees
+
+**Status (2026-10-03): done on FS-UAE.**  The m68k walker entered an
+`&key` function through a keyword ABI of its own: `(func, bc, nargs, args)`,
+with `args` pointing at the arguments on `cl_vm.stack` in natural order.  A
+site's hit path cannot pass that, so the fill rule refused every `&key`
+callee (`:refused-abi`) and each call from native code took the helper.
+
+The keyword ABI is gone: an `&key` function takes the positional ABI, as
+`&optional` and `&rest` do.
+
+- **Entry.**  The count arrives in D1 and the arguments sit above A6 in
+  operand-stack order.  The frame is the `&optional` one: every slot below
+  A6, the count at -4(a6) for `OP_ARGC`, and `slot_anchor = n_locals + 1`.
+- **The prologue** is the `&rest` one with another helper:
+  `cl_jit_runtime_kw_prologue(func, nargs, last, frame)` reads argument i
+  at `last[nargs-1-i]`, the order `cl_jit_runtime_rest_prologue` already
+  uses.  It copies the positional arguments, conses an `&rest` list,
+  re-derives the bytecode and matches the keywords, as before.  The
+  arguments now live on the m68k stack instead of `cl_vm.stack`.  The
+  conservative scan pins them across the consing, exactly as it does for
+  `&rest`.
+- **`cl_jit_invoke`** has one entry path; the `kw[3]` argv is gone.
+- **The fill rule** no longer looks at `bc->flags`.  The fit rule already
+  accepted any count above `arity` with `&key`.
+- **Self tail calls** stay off for `&key`: the frame copy does no keyword
+  matching.  A recursive `&key` call is a real call through a site.
+
+Tests: the "Direct calls into &key callees" section of
+`tests/amiga/test-jit.lisp` (also run on arm64 hosts): every shape with
+`&optional`, supplied-p variables and duplicate keywords, `&allow-other-keys`
+in the lambda list and from the caller, unknown and odd keyword errors from
+a filled site, compaction in the callee, `&rest` with `&key` called with 129
+arguments, recursion, closures, two threads, and a hit check (before this
+change every such call missed).  The keyword sections earlier in the file
+cover the prologue itself.
+
+Gates (2026-10-03): FS-UAE 68040 `test-amiga` 5255/5256 (the known audio
+check) + restored image 5246/5246; `make test`, `test-gc-stress`.  Bench
+(`trunk/bench-jit-call.lisp`, new "call &key leaf" row, HEAD and this
+change interleaved in one FS-UAE boot): an `&key` leaf called from native
+code 8.6 -> 3.1 µs on the 68040; every other row unchanged.
+
 ## Later (not in this spec)
 
-- **`&key` callees**: the kw ABI wants an `args` pointer in natural order,
-  so it needs either a site-side reverse or a reversed-args variant of
-  `cl_jit_runtime_kw_prologue`.
 - **Using A3 elsewhere**: inline `mv_count` resets and inline TLV-free
   `GLOAD` (`thr->tlv_entry_count == 0`), now that the thread pointer is a
   register.

@@ -7,6 +7,28 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-10-03 — m68k JIT direct calls into `&key` callees: an `&key` leaf call 8.6 → 3.1 µs
+
+**Context**: `specs/jit-direct-calls.md`, "&key callees": an `&key`
+function takes the positional native ABI (count in D1, arguments above A6),
+so a native call site fills for it and calls it directly instead of going
+through the helper.
+
+**Environment**: FS-UAE, 68040 JIT config, `make -f Makefile.cross amiga`.
+A = 9a6a2132 (master), B = this change, `--no-image`, A B A B in one boot
+(`ab-bench.sh` pattern: the boot-override runs both binaries interleaved).
+
+**`trunk/bench-jit-call.lisp`** (200k calls per row; new row "call &key
+leaf" = `(bjc-key-add s :b 1)` into `(a &key (b 1))`):
+
+| row                   | A bc / JIT µs | B bc / JIT µs |
+|-----------------------|---------------|---------------|
+| call native leaf      | 13.3-13.4 / 0.90-1.0 | 13.3-13.6 / 1.0 |
+| call `&optional` leaf | 16.8-16.9 / 1.3-1.4 | 16.9-17.1 / 1.3 |
+| call `&key` leaf      | 19.7-19.8 / 8.6 | 19.8-20.2 / 3.1-3.2 |
+
+The other rows are unchanged.
+
 ## 2026-10-03 — m68k JIT `&rest` prologue: an `&rest` leaf call 3× faster than bytecode
 
 **Context**: `specs/jit-direct-calls.md`, "&rest callees": the m68k walker

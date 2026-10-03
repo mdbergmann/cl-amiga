@@ -1583,10 +1583,10 @@
 
 ; --- &key support: native kw-prologue ----------------------------------
 ;
-; The walker emits a kw-ABI prologue (LINK + save D5/D6/D7 + JSR
+; The walker emits a kw prologue (LINK + save D5/D6/D7 + JSR
 ; cl_jit_runtime_kw_prologue) for bytecodes whose lambda-list carries
-; &key.  cl_jit_invoke dispatches through the 3-arg signature
-; (bc, nargs, args) and the helper NIL-initialises every slot then
+; &key.  The entry is the positional ABI (the count in D1, the
+; arguments above A6) and the helper NIL-initialises every slot then
 ; populates key_slots[]/key_suppliedp_slots[] via the same matcher
 ; logic as vm.c's OP_CALL.  Each test below proves a different facet:
 ; default-when-missing, value-when-supplied, suppliedp tracking,
@@ -2157,8 +2157,8 @@
 (defun jdc-builtin-mv () (multiple-value-list (floor 7 2)))
 (check "jit-direct-builtin-mv" '(3 1) (jdc-builtin-mv))
 
-;; A &key native callee is entered directly too (the kw ABI reads its
-;; arguments from the VM stack, where the direct path copies them).
+;; A &key native callee is reached from native code too (since "Direct
+;; calls into &key callees" below, through a filled site).
 (defun jdc-key (a &key (b 10)) (+ a b))
 (defun jdc-key-caller () (list (jdc-key 1) (jdc-key 1 :b 2)))
 #+m68k (check "jit-direct-key-callee-compiled" t
@@ -3005,6 +3005,103 @@
                                                          (list i 2 3 4 5 6 7 8))
                                                   (equal (wide-acc 50 i 2 3 4 5 6 0)
                                                          (list 3 4 5 6 i 2 1275))))))))))
+    (mapcar #'mp:join-thread ths)))
+
+;; --- Direct calls into &key callees.  The m68k walker entered an &key
+;; function through a keyword ABI of its own (bc, nargs, args on the VM
+;; stack), which a call site's hit path cannot pass, so the fill rule
+;; refused such a callee (:refused-abi) and every call from native code
+;; took the helper.  An &key function takes the positional ABI now, like
+;; &optional and &rest: the count in D1, the arguments above A6 in
+;; operand-stack order, and cl_jit_runtime_kw_prologue fills the frame and
+;; matches the keywords from there.
+(defun key-sum (a &key (b 1)) (+ a b))
+(defun key-sum-loop (n)
+  ;; Two-argument + only: a longer one calls the builtin, whose site misses.
+  (let ((s 0)) (dotimes (i n s) (setq s (+ s (+ (key-sum i) (key-sum i :b 2)))))))
+(defun key-misses-for (n)
+  (let ((m0 (jds-stat :misses)))
+    (key-sum-loop n)
+    (- (jds-stat :misses) m0)))
+(defun key-full (a &optional (b (list a) bp) &key (c (list b) cp) d)
+  (list a b bp c cp d))
+(defun key-allow (&key a &allow-other-keys) a)
+(defun key-strict (&key a) a)
+;; A body that conses, collects and compacts: the arguments and the key
+;; values read right afterwards.
+(defun key-compact (a &key (b (list a)) c)
+  (ext:gc-compact)
+  (list a b c (opt-k)))
+;; &rest with &key, called with 129 arguments: past moveq's range, and the
+;; prologue reads every one of them in operand-stack order.
+(defun key-rest (a &rest r &key (k 0) &allow-other-keys) (list a k (length r)))
+(defmacro key-rest-call-many (n)
+  `(key-rest 0 :k 5 ,@(loop for i below (- n 3) collect (if (evenp i) :x i))))
+(defun key-rest-many () (key-rest-call-many 129))
+;; Not a self tail call (those stay off for &key): a real native call per
+;; level, every one through a filled site.
+(defun key-rec (n &key (acc 0))
+  (if (= n 0) acc (+ 0 (key-rec (- n 1) :acc (+ acc n)))))
+(defun key-mk (n) (lambda (&key (x n) (y (list x))) (list x y)))
+(defun key-fc (f) (list (funcall f) (funcall f :x 1) (funcall f :y 2 :x 1)))
+;; Native callers: a site per count and keyword spelling.
+(defun key-call-full ()
+  (list (key-full 1) (key-full 1 2) (key-full 1 2 :c 3) (key-full 1 2 :d 4 :c 3)
+        (key-full 1 2 :c 3 :c 4)))
+(defun key-call-allow ()
+  (list (key-allow) (key-allow :a 1 :z 2) (key-strict :a 1 :z 2 :allow-other-keys t)))
+(defun key-call-strict (k) (key-strict k 1))
+(defun key-call-odd (k) (key-strict k))
+(defun key-call-fresh (i) (key-compact (list i) :c (list (+ i 1))))
+
+(check "jit-key-direct-native" '(t t t t t t t t t t t t t t t t t)
+  (mapcar #'opt-native-p
+          (list #'key-sum #'key-sum-loop #'key-misses-for #'key-full
+                #'key-allow #'key-strict #'key-compact #'key-rest
+                #'key-rest-many #'key-rec #'key-fc (key-mk 0)
+                #'key-call-full #'key-call-allow #'key-call-strict
+                #'key-call-odd #'key-call-fresh)))
+;; Twice: the first round fills the sites, the second hits them.
+(check "jit-key-direct-calls"
+  '((1 (1) nil ((1)) nil nil) (1 2 t (2) nil nil) (1 2 t 3 t nil)
+    (1 2 t 3 t 4) (1 2 t 3 t nil))
+  (progn (key-call-full) (key-call-full)))
+(check "jit-key-direct-allow-other-keys" '(nil 1 1)
+  (progn (key-call-allow) (key-call-allow)))
+(check "jit-key-direct-errors" '(1 :unknown :unknown :odd :odd)
+  (list (key-call-strict :a)
+        (handler-case (progn (key-call-strict :q) :no-error) (error () :unknown))
+        (handler-case (progn (key-call-strict :q) :no-error) (error () :unknown))
+        (handler-case (progn (key-call-odd :a) :no-error) (error () :odd))
+        (handler-case (progn (key-call-odd :a) :no-error) (error () :odd))))
+(check "jit-key-direct-value" 1002000 (key-sum-loop 1000))
+;; Best of three, as jit-opt-direct-calls-hit.  KEY-SUM conses nothing, so
+;; this holds under CLAMIGA_GC_STRESS too.
+(check "jit-key-direct-calls-hit" 0
+  (progn
+    (key-misses-for 10)
+    (let ((best nil))
+      (dotimes (k 3 best)
+        (let ((d (- (key-misses-for 1000) (key-misses-for 10))))
+          (when (or (null best) (< (abs d) (abs best))) (setq best d)))))))
+(check "jit-key-direct-across-compaction"
+  '(((7) ((7)) (8) ("k")) ((7) ((7)) (8) ("k")))
+  (list (key-call-fresh 7) (key-call-fresh 7)))
+(check "jit-key-direct-129-arguments" '((0 5 128) (0 5 128))
+  (list (key-rest-many) (key-rest-many)))
+(check "jit-key-direct-recursion" '(20100 20100) (list (key-rec 200) (key-rec 200)))
+(check "jit-key-direct-closures"
+  '(((1 (1)) (1 (1)) (1 2)) ((("k") (("k"))) (1 (1)) (1 2)))
+  (list (key-fc (key-mk 1)) (key-fc (key-mk (opt-k)))))
+(check "jit-key-direct-threads" '(t t)
+  (let ((ths (loop for i below 2
+                   collect (let ((i i))
+                             (mp:make-thread
+                              (lambda ()
+                                (loop repeat 200
+                                      always (and (equal (key-full i 2 :d 4 :c 3)
+                                                         (list i 2 t 3 t 4))
+                                                  (= (key-sum-loop 10) 120)))))))))
     (mapcar #'mp:join-thread ths)))
 
 ;; The C stack a native call into a generic function costs.  Such a call

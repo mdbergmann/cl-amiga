@@ -44,10 +44,11 @@ CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
  *
  *   func   - the function value at 8(a6) (closure or bytecode); the
  *            bytecode is derived from it, again after the &rest consing.
- *   nargs  - actual number of caller-supplied arguments.
- *   args   - pointer to the raw arg vector (`&cl_vm.stack[sp-nargs]`).
+ *   nargs  - actual number of caller-supplied arguments (D1 at entry).
+ *   last   - the last argument (12(a6)); argument i at last[nargs-1-i],
+ *            the positional ABI's operand-stack order.
  *   frame  - pointer to the JIT frame's locals area; the walker LEAs
- *            `-(4*n_locals)(a6)` into this pointer so frame[i]
+ *            `-(4*(n_locals+1))(a6)` into this pointer so frame[i]
  *            corresponds to JIT slot i (forward layout — frame[0] is
  *            the lowest-addressed slot).
  *
@@ -55,7 +56,7 @@ CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
  * keeps GC depth tracking consistent via the CL_ErrorFrame snapshot,
  * so no manual cleanup is required. */
 void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
-                                CL_Obj *args, CL_Obj *frame);
+                                CL_Obj *last, CL_Obj *frame);
 
 /* Prologue of a positional-ABI function with &rest (no &key): FUNC the
  * function value at 8(a6), NARGS the count the entry passed in D1, LAST
