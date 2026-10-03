@@ -24,7 +24,8 @@
 | setjmp saved its own A3, so nothing here needs to be unwound.
 |
 | D2 is ours too (the pop count); native code preserves it like every
-| callee-saved register.  dbf counts a word, which is plenty: the walker
+| callee-saved register.  D1 carries nargs into the callee, as a native call
+| site's hit path passes it: an &optional function's prologue reads it.  dbf counts a word, which is plenty: the walker
 | caps positional arity far below 32K.
 |
 | cl_jit_invoke (src/jit/jit_m68k.c) is the only caller.  Not built on MorphOS
@@ -48,6 +49,7 @@ _cl_jit_enter:
 .Lnext:
 	dbf	d0,.Lpush
 	move.l	d1,-(sp)		| func at 8(a6) of the callee
+	move.l	d2,d1			| d1 = nargs (an &optional prologue's)
 	jsr	(a2)			| D0 = the result
 	lsl.l	#2,d2
 	lea	4(sp,d2.l),sp		| drop func + the arguments

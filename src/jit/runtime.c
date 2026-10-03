@@ -453,16 +453,6 @@ CL_Obj cl_jit_runtime_rplacd(CL_Obj cons_obj, CL_Obj new_cdr)
     return new_cdr;
 }
 
-/* OP_ARGC.  cl_jit_invoke stashed the nargs of the innermost native
- * entry into CT->jit_current_nargs before calling into the m68k code;
- * we read it back here.  Bypasses the VM's `frame->nargs` channel
- * since JIT'd code has no CL_Frame at all. */
-CL_Obj cl_jit_runtime_argc(void)
-{
-    cl_mv_count = 1;
-    return CL_MAKE_FIXNUM(CT->jit_current_nargs);
-}
-
 /* OP_MV_LOAD.  No mv_count reset (matches vm.c). */
 CL_Obj cl_jit_runtime_mv_load(uint32_t index)
 {

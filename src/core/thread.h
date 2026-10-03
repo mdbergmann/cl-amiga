@@ -335,13 +335,6 @@ typedef struct CL_Thread_s {
      * meaningful while the thread is stopped with jit_depth > 0. */
     void  *jit_park_sp;
 
-    /* nargs the innermost JIT-entry was invoked with.  Backs OP_ARGC
-     * inside JIT'd code (which has no `frame` pointer the way the VM
-     * does).  cl_jit_invoke save/restores this around every native
-     * call so nested entries return to their caller's value.  Unset
-     * (any prior value) when jit_depth == 0 — callers must only read
-     * it from inside a JIT'd frame. */
-    int32_t jit_current_nargs;
 #ifdef JIT_A64
     /* cl_jit_invoke entries on this thread (%JIT-INVOKE-COUNT reads the
      * calling thread's).  Per-thread because it is written on every native

@@ -432,4 +432,31 @@ void m68k_emit_tst_l_dn(CodeBuf *cb, M68kReg dn)
     cb_emit_u16(cb, (uint16_t)(0x4A80 | (dn & 7)));
 }
 
+/* ADDA.L Dn,An: 1101 an 111 000 dn. */
+void m68k_emit_adda_l_dn_an(CodeBuf *cb, M68kReg dn, M68kReg an)
+{
+    cb_emit_u16(cb, (uint16_t)(0xD1C0 | ((an & 7) << 9) | (dn & 7)));
+}
+
+/* MOVE.L -(An),(Am)+: 0010 am 011 100 an. */
+void m68k_emit_move_l_predec_an_to_postinc_am(CodeBuf *cb, M68kReg an,
+                                              M68kReg am)
+{
+    cb_emit_u16(cb, (uint16_t)(0x2000 | ((am & 7) << 9) | (3 << 6) |
+                               (4 << 3) | (an & 7)));
+}
+
+/* CLR.L (An)+: 0100 0010 10 011 an. */
+void m68k_emit_clr_l_postinc(CodeBuf *cb, M68kReg an)
+{
+    cb_emit_u16(cb, (uint16_t)(0x4298 | (an & 7)));
+}
+
+/* DBF Dn,disp (DBRA): 0101 0001 1100 1 dn + disp16. */
+void m68k_emit_dbf_w(CodeBuf *cb, M68kReg dn, int16_t disp)
+{
+    cb_emit_u16(cb, (uint16_t)(0x51C8 | (dn & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
 #endif /* JIT_M68K */

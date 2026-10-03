@@ -106,7 +106,7 @@ JIT frames.
 | arena base                            | A5        | x23 |
 | top-of-stack cache (phase 2)          | D5-D7     | w24-w26 (built: w13-w15) |
 | the function's `CL_Frame` (phase 3)   | -         | x25 |
-| the entry's `nargs` (`OP_ARGC`)       | `jit_current_nargs` | w24 |
+| the entry's `nargs` (`OP_ARGC`)       | D1 at entry, then -4(a6) (`&optional`); 16(a6) (`&key`) | w24 |
 | result / first helper argument        | D0        | w0 / x0 |
 | scratch                               | D1-D3     | x9-x15 |
 | far-call veneer                       | -         | x16, x17 |
@@ -646,8 +646,8 @@ interpreter), `mt.call-x8` 13 -> 6, `call-args` 20 -> 14,
 
 ### &optional and &rest
 
-**Status (2026-10-02): done** on branch `feat/a64-optrest` (AArch64 only;
-the m68k walker still declines both).
+**Status (2026-10-02): done** on branch `feat/a64-optrest` (AArch64; m68k
+`&optional` followed on 2026-10-03, see "Later").
 
 The walker takes every lambda list.  The frame is the one the interpreter's
 `OP_CALL` builds: the positional parameters (required and optional) where
@@ -667,7 +667,8 @@ right after them, every other local NIL, `&key` matched into its slots.
 - **`OP_ARGC`** pushes the fixnum `nargs`: the entry's w2, kept in x24
   (callee-saved; it was the padding of the x23/x24 pair).  Every entry --
   `cl_jit_invoke`, a direct call's hit, the tail-call chain -- passes the
-  count in w2, so unlike m68k nothing goes through `jit_current_nargs`.
+  count in w2, so nothing goes through `jit_current_nargs` (m68k has since
+  dropped it too: D1, see "Later").
 - **Self tail calls** stay on for `&optional`-only functions with a count
   in `[arity, arity + n_optional]`: the copy NILs from the new count up,
   and the code writes the new count into x24 and the frame's `nargs`
@@ -705,8 +706,8 @@ m68k-only checks it uncovered are `#+m68k`, the file ends with a marker
 the walker test checks, and the minimum count is 500.
 
 ### Later
-- `&optional` on m68k: pass `nargs` in D1 and lift the walker's gate
-  (specs/jit-direct-calls.md, "Later").
+- **Done 2026-10-03:** `&optional` on m68k (specs/jit-direct-calls.md,
+  "&optional callees").  `&rest` on m68k is still declined.
 
 ## Measuring
 

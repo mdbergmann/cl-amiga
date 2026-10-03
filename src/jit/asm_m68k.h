@@ -259,6 +259,22 @@ void m68k_emit_pea_disp_an(CodeBuf *cb, int16_t disp, M68kReg an);
 /* BLS.W — branch if lower or same (unsigned <=).  4 bytes. */
 void m68k_emit_bls_w(CodeBuf *cb, int16_t disp);
 
+/* The &optional prologue's argument copy (jit_m68k.c, emit_opt_prologue). */
+
+/* ADDA.L Dn,An — 2 bytes. */
+void m68k_emit_adda_l_dn_an(CodeBuf *cb, M68kReg dn, M68kReg an);
+
+/* MOVE.L -(An),(Am)+ — 2 bytes. */
+void m68k_emit_move_l_predec_an_to_postinc_am(CodeBuf *cb, M68kReg an,
+                                              M68kReg am);
+
+/* CLR.L (An)+ — 2 bytes. */
+void m68k_emit_clr_l_postinc(CodeBuf *cb, M68kReg an);
+
+/* DBF Dn,disp — decrement the low word of Dn, branch unless it became
+ * -1.  disp is relative to the displacement word.  4 bytes. */
+void m68k_emit_dbf_w(CodeBuf *cb, M68kReg dn, int16_t disp);
+
 /* Overwrite a 16-bit big-endian field already written to `code` at byte
  * offset `patch_off`.  Used to fill in forward-branch displacements
  * once the target's native offset is known.  No-op if patch_off+2

@@ -107,8 +107,8 @@ void cl_jit_runtime_init(void)
  *     function is called.  No C-stack probe, as in the VM: a builtin does
  *     not grow the C stack by itself, and the ones that call back into
  *     Lisp go through cl_vm_apply, which is guarded;
- *   - a bytecode/closure callee that carries native code and whose arity
- *     the argument count satisfies (the VM's own rule): a safepoint poll,
+ *   - a bytecode/closure callee that carries native code and whose lambda
+ *     list the argument count fits (the VM's own rule): a safepoint poll,
  *     one C-stack probe (native frames nest on the m68k stack, so runaway
  *     recursion must still reach the guard) and cl_jit_invoke;
  *   - any other bytecode/closure callee (interpreted, or an arity
@@ -183,6 +183,18 @@ void cl_jit_direct_call_stats(uint32_t *out)
     for (i = 0; i < CL_JIT_DS_COUNT; i++) out[i] = jit_ds[i];
 }
 
+/* Does a call with NARGS arguments fit BC's lambda list, the way the walker
+ * compiles it?  The interpreter's OP_CALL bounds -- arity <= nargs <=
+ * arity + n_optional, any count above arity with &key -- and no &rest
+ * (the walker declines it).  A call outside them takes the interpreter,
+ * which signals the arity error. */
+static int jit_fits(const CL_Bytecode *bc, uint32_t nargs)
+{
+    uint32_t arity = bc->arity & 0x7FFFu;
+    if ((bc->arity & 0x8000) || nargs < arity) return 0;
+    return (bc->flags & 1) || nargs <= arity + bc->n_optional;
+}
+
 /* Fill SITE with a native callee jit_dispatch has classified (BC carries
  * native code and the call fits its lambda list).  G was read before any
  * input of the fill rule; see above. */
@@ -190,7 +202,6 @@ static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
                               uint32_t g, CL_Obj func, CL_Bytecode *bc,
                               uint32_t nargs)
 {
-    uint32_t arity;
     if (!jit_direct_calls) return;
     if (cl_jit_shadow_frames_enabled()) {
         jit_ds[CL_JIT_DS_REFUSED_SHADOW]++;     /* the frame is cl_jit_invoke's */
@@ -200,11 +211,10 @@ static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
         jit_ds[CL_JIT_DS_REFUSED_TRACE]++;      /* traced calls take cl_vm_apply */
         return;
     }
-    /* The positional native ABI, entered with exactly its arity: anything
-     * else needs jit_dispatch's checks (and OP_CALL's diagnostics). */
-    arity = bc->arity;
-    if (bc->flags != 0 || bc->n_optional != 0 || (arity & 0x8000) ||
-        arity != nargs || nargs > CL_JIT_PASSTHROUGH_MAX_ARITY) {
+    /* The positional native ABI (jit_dispatch has checked jit_fits): the
+     * hit path pushes the arguments and passes their count in D1.  &key
+     * takes cl_jit_invoke's keyword ABI. */
+    if (bc->flags != 0 || nargs > CL_JIT_PASSTHROUGH_MAX_ARITY) {
         jit_ds[CL_JIT_DS_REFUSED_ABI]++;
         return;
     }
@@ -261,10 +271,7 @@ static CL_Obj jit_dispatch(CL_Thread *thr, CL_Obj func, CL_Obj *operand_top,
              * here too made a native caller's callee hot after half the
              * threshold. */
             if (bc != NULL && bc->native_code != NULL) {
-                uint32_t arity = bc->arity & 0x7FFF;
-                int fits = (bc->arity & 0x8000) == 0 && bc->n_optional == 0 &&
-                           ((bc->flags & 1) ? nargs >= arity : nargs == arity);
-                if (fits) {
+                if (jit_fits(bc, nargs)) {
                     int base;
                     CL_Obj result;
                     if (site != NULL)

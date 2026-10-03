@@ -176,12 +176,6 @@ CL_Obj cl_jit_runtime_rplaca(CL_Obj cons_obj, CL_Obj new_car);
  * slot.  Resets cl_mv_count = 1 like the VM op. */
 CL_Obj cl_jit_runtime_rplacd(CL_Obj cons_obj, CL_Obj new_cdr);
 
-/* OP_ARGC backing.  Returns CL_MAKE_FIXNUM of the nargs the innermost
- * JIT-entry was invoked with (sourced from
- * CL_Thread.jit_current_nargs, set by cl_jit_invoke).  Resets
- * cl_mv_count = 1. */
-CL_Obj cl_jit_runtime_argc(void);
-
 /* OP_MV_LOAD backing.  Returns cl_mv_values[index] if index <
  * cl_mv_count, NIL otherwise.  Matches vm.c::OP_MV_LOAD: does NOT
  * reset cl_mv_count (so consecutive MV_LOAD reads see the same

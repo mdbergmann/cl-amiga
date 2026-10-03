@@ -9,9 +9,9 @@
 ;;;
 ;;;   - a call to a C builtin (LOGTEST, GETHASH, ...: the bulk of any
 ;;;     generic function body -- there are no opcodes for these),
-;;;   - a call to a Lisp function that is native / bytecode / declined by
-;;;     the walker (&optional on m68k; AArch64 compiles it), with the callee PINNED to one state so
-;;;     only the caller's path changes,
+;;;   - a call to a Lisp function that is native / bytecode / &optional
+;;;     (native on both backends since 2026-10-03), with the callee PINNED
+;;;     to one state so only the caller's path changes,
 ;;;   - FUNCALL through a variable, a local BLOCK/RETURN-FROM, a fixnum
 ;;;     CASE, an FFI peek, and a decode-key-like mix of all of them.
 ;;;
@@ -45,7 +45,7 @@
 (clamiga::%jit-set-active t)
 (defun bjc-nat-add (a b) (+ a b))               ; native when the JIT is built in
 (defun bjc-nat-key (code mods) (logior code (ash mods 16)))
-(defun bjc-opt-add (a &optional (b 1)) (+ a b)) ; m68k declines &optional: bytecode
+(defun bjc-opt-add (a &optional (b 1)) (+ a b)) ; native: the &optional prologue
 
 (clamiga::%jit-set-active *bjc-jit-was*)
 

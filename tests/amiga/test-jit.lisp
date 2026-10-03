@@ -1803,12 +1803,8 @@
   (handler-case (progn (walker-rplacd-1 42 'x) :no-error)
     (type-error () :caught)))
 
-; --- OP_ARGC.  Compiler emits OP_ARGC only inside the &optional
-; prologue today; the walker's n_optional != 0 gate keeps such
-; functions interpreted, so we have no walker-reachable path for the
-; opcode here.  Helper + prescan + emitter are in place so that
-; lifting the gate (separate follow-up commit) immediately picks
-; them up.
+; --- OP_ARGC.  The compiler emits it only inside the &optional
+; prologue: see the "&optional" section after the direct-call sites.
 
 ; --- OP_MV_LOAD / OP_NTH_VALUE.  Both come from multiple-value-bind
 ; / nth-value.  multiple-value-bind expands to OP_MV_LOAD for vars
@@ -2585,6 +2581,9 @@
 (defun jds-bt-leaf () (ext:backtrace))
 (defun jds-bt-caller () (let ((r (jds-bt-leaf))) r))
 (jds-bt-caller) (jds-bt-caller)   ; the site is filled
+;; Restored below: off by default on m68k, on on AArch64 (whose sites fill
+;; only while it is on).
+(defparameter *jds-frames-were* (clamiga::%jit-frames-p))
 (clamiga::%jit-set-frames t)
 (let ((bt (jds-bt-caller)))
   (check "jit-site-shadow-frames-backtrace" '("JDS-BT-LEAF" "JDS-BT-CALLER")
@@ -2594,7 +2593,7 @@
   (let ((r0 (jds-stat :refused-shadow)))
     (jds-loop 3)
     (> (jds-stat :refused-shadow) r0)))
-(clamiga::%jit-set-frames nil)
+(clamiga::%jit-set-frames *jds-frames-were*)
 
 ;; Runaway recursion through filled sites still meets the C-stack guard:
 ;; below CL_Thread.jit_c_floor every site misses, and the miss path
@@ -2625,6 +2624,126 @@
         r))))
 ;; (A peer's stop-the-world collection while threads loop on direct calls:
 ;; jit-direct-native-callee-across-concurrent-gc above.)
+
+;; --- &optional (the m68k walker: emit_opt_prologue; AArch64: its inline
+;; prologue).  The caller passes the argument count -- in D1 on m68k, from
+;; cl_jit_enter and from a call site's hit path -- and the prologue copies
+;; the arguments into the frame, NILs the slots after them and keeps the
+;; count for OP_ARGC, which the compiler's &optional prologue tests.  Values
+;; are the HyperSpec's (3.4.1): a default sees the earlier parameters and
+;; their supplied-p variables, and runs only for a missing argument.
+(defun opt-k () (list "k"))
+(defvar *opt-s* :global)
+(defun opt-o (a &optional (b 10) (c (list a b) cp)) (list a b c cp))
+(defun opt-heap (&optional (x (opt-k)) (y (opt-k))) (list x y))
+(defun opt-special (&optional (s *opt-s*)) s)
+(defun opt-err (&optional (x (error "default ~A" 1))) x)
+(defun opt-nil (&optional a b) (list a b))
+(defun opt-sees-sp (&optional (a 1 ap) (b (if ap :given :missing))) (list a b))
+(defun opt-key (a &optional b &key (k 7 kp)) (list a b k kp))
+;; Six positional parameters is the m68k positional ABI's limit
+;; (CL_JIT_PASSTHROUGH_MAX_ARITY); seven stay interpreted there.
+(defun opt-6 (a b c &optional (d :d) (e :e) (f :f)) (list a b c d e f))
+(defun opt-7 (a b c d &optional (e :e) (f :f) (g :g)) (list a b c d e f g))
+;; Self tail calls that change the count: a loop in one frame.  A
+;; supplied-p variable set by one round must read NIL again in the next.
+(defun opt-acc (n &optional (s 0)) (if (= n 0) s (opt-acc (- n 1) (+ s n))))
+(defun opt-acc-fc (n &optional (s 0))
+  (if (= n 0) s (funcall #'opt-acc-fc (- n 1) (+ s n))))
+(defun opt-st (n &optional (a :dflt a-p))
+  (cond ((= n 0) (list a a-p)) ((= n 1) (opt-st 0)) (t (opt-st (- n 1) n))))
+(defun opt-st-up (n &optional (a :dflt a-p))
+  (if (= n 0) (list a a-p) (if (= n 3) (opt-st-up (- n 1) :x) (opt-st-up (- n 1)))))
+;; Native callers: a site per count, into each callee.
+(defun opt-call-o () (list (opt-o 1) (opt-o 1 2) (opt-o 1 2 3)))
+(defun opt-call-6 ()
+  (list (opt-6 1 2 3) (opt-6 1 2 3 4) (opt-6 1 2 3 4 5) (opt-6 1 2 3 4 5 6)))
+(defun opt-sum (a &optional (b 1)) (+ a b))
+(defun opt-sum-loop (n)
+  ;; Two-argument + only: a three-argument one calls the builtin, which misses.
+  (let ((s 0)) (dotimes (i n s) (setq s (+ s (+ (opt-sum i) (opt-sum i 2)))))))
+(defun opt-too-many () (opt-o 1 2 3 4))
+(defun opt-too-few () (opt-o))
+(defun opt-mk (n) (lambda (&optional (x n) (y (list x))) (list x y)))
+(defun opt-fc (f) (list (funcall f) (funcall f 1) (funcall f 1 2)))
+(defun opt-native-p (f) (and (clamiga::%jit-dump-bytes f) t))
+(defun opt-misses-for (n)
+  (let ((m0 (jds-stat :misses)))
+    (opt-sum-loop n)
+    (- (jds-stat :misses) m0)))
+
+(check "jit-opt-native" #+m68k '(t t t t t t t t nil t t t t t t t t t)
+                        #-m68k '(t t t t t t t t t t t t t t t t t t)
+  (mapcar #'opt-native-p
+          (list #'opt-o #'opt-heap #'opt-special #'opt-err #'opt-nil
+                #'opt-sees-sp #'opt-key #'opt-6 #'opt-7 #'opt-acc #'opt-acc-fc
+                #'opt-st #'opt-st-up #'opt-call-o #'opt-call-6 #'opt-sum
+                #'opt-sum-loop (opt-mk 0))))
+;; The prologue's copy and NIL loops, decoded by %JIT-DISASSEMBLE.
+#+m68k
+(check "jit-opt-prologue-disassembles" '(t t t t)
+  (let ((d (with-output-to-string (*standard-output*)
+             (clamiga::%jit-disassemble #'opt-o))))
+    (mapcar (lambda (s) (not (null (search s d))))
+            '("adda.l d0,a0" "move.l -(a0),(a1)+" "clr.l (a1)+" "dbf d0,"))))
+(check "jit-opt-defaults" '((1 10 (1 10) nil) (1 2 (1 2) nil) (1 2 3 t))
+  (list (opt-o 1) (opt-o 1 2) (opt-o 1 2 3)))
+(check "jit-opt-default-allocates" '((("k") ("k")) (:a ("k")) (:a :b))
+  (list (opt-heap) (opt-heap :a) (opt-heap :a :b)))
+(check "jit-opt-default-reads-special" '(:global :bound 3)
+  (list (opt-special) (let ((*opt-s* :bound)) (opt-special)) (opt-special 3)))
+(check "jit-opt-default-signals" '(5 "default 1")
+  (list (opt-err 5) (handler-case (opt-err) (error (e) (princ-to-string e)))))
+(check "jit-opt-missing-is-nil" '((nil nil) (1 nil) (1 2))
+  (list (opt-nil) (opt-nil 1) (opt-nil 1 2)))
+(check "jit-opt-default-sees-supplied-p" '((1 :missing) (5 :given) (5 6))
+  (list (opt-sees-sp) (opt-sees-sp 5) (opt-sees-sp 5 6)))
+(check "jit-opt-then-key" '((1 nil 7 nil) (1 2 7 nil) (1 2 9 t) (1 2 9 t))
+  (list (opt-key 1) (opt-key 1 2) (opt-key 1 2 :k 9) (opt-key 1 2 :k 9 :k 10)))
+(check "jit-opt-then-key-unknown" :caught
+  (handler-case (progn (opt-key 1 2 :q 3) :no-error) (error () :caught)))
+(check "jit-opt-six-positional"
+  '((1 2 3 :d :e :f) (1 2 3 4 :e :f) (1 2 3 4 5 :f) (1 2 3 4 5 6))
+  (opt-call-6))
+(check "jit-opt-seven-positional" '((1 2 3 4 :e :f :g) (1 2 3 4 5 6 7))
+  (list (opt-7 1 2 3 4) (opt-7 1 2 3 4 5 6 7)))
+;; 20000 rounds: a native frame per round would exhaust the C stack.
+(check "jit-opt-self-tail-call" '(200010000 200010000)
+  (list (opt-acc 20000) (opt-acc-fc 20000)))
+(check "jit-opt-self-tail-call-supplied-p"
+  '((:dflt nil) (:dflt nil) (5 t) (:dflt nil))
+  (list (opt-st 3) (opt-st 2) (opt-st 0 5) (opt-st-up 5)))
+;; Twice: the first round fills the sites, the second hits them.
+(check "jit-opt-direct-calls"
+  '((1 10 (1 10) nil) (1 2 (1 2) nil) (1 2 3 t))
+  (progn (opt-call-o) (opt-call-o)))
+(check "jit-opt-direct-calls-value" 1002000 (opt-sum-loop 1000))
+;; Before the m68k walker took &optional, the fill rule refused these
+;; callees (:refused-abi) and every call missed.  Best of three, as
+;; jit-site-hits-cost-no-misses: a collection empties every site.
+(check "jit-opt-direct-calls-hit" 0
+  (progn
+    (opt-misses-for 10)
+    (let ((best nil))
+      (dotimes (k 3 best)
+        (let ((d (- (opt-misses-for 1000) (opt-misses-for 10))))
+          (when (or (null best) (< (abs d) (abs best))) (setq best d)))))))
+(check "jit-opt-too-many" :caught
+  (handler-case (progn (opt-too-many) :no-error) (program-error () :caught)))
+(check "jit-opt-too-few" :caught
+  (handler-case (progn (opt-too-few) :no-error) (program-error () :caught)))
+(check "jit-opt-closures"
+  '(((1 (1)) (1 (1)) (1 2)) ((("k") (("k"))) (1 (1)) (1 2)))
+  (list (opt-fc (opt-mk 1)) (opt-fc (opt-mk (opt-k)))))
+(check "jit-opt-threads" '(t t)
+  (let ((ths (loop for i below 2
+                   collect (let ((i i))
+                             (mp:make-thread
+                              (lambda ()
+                                (loop repeat 200
+                                      always (and (equal (opt-o i) (list i 10 (list i 10) nil))
+                                                  (= (opt-acc 50 i) (+ i 1275))))))))))
+    (mapcar #'mp:join-thread ths)))
 
 ;; --- Loops without calls poll (the interpreter's OP_JMP safepoint).
 ;; The interpreter checks for a pending GC, an interrupt and Ctrl-C on every
@@ -2967,7 +3086,7 @@
 ; small count (cl_jit_note_call re-checks before it writes), and a
 ; declined function would then be tried again every 8 calls.  That race
 ; is too narrow to force from here, so this is a smoke test of concurrent
-; settling.  On m68k hot-race-declined always declines: its &optional
+; settling.  On m68k hot-race-declined always declines: its &rest
 ; arg bails every matcher/walker.  AArch64 compiles every lambda list, so
 ; there it is a race to settle to native code.  %JIT-HOT-COMPILE-COUNT counts every function the hot path tries,
 ; so the target must be the only one counted in the window: the worker is
@@ -2976,7 +3095,7 @@
 ; therefore counts nothing -- a loop LAMBDA there would compile on its
 ; first call.  Two threads that reach the threshold together may both try
 ; (jit_m68k.c), hence at most 2.
-(defun hot-race-declined (x &optional y) (or x y))
+(defun hot-race-declined (x &rest y) (or x y))
 (defun hot-race-worker ()
   (declare (optimize (speed 3)))
   (dotimes (i 400) (hot-race-declined i nil)))

@@ -597,6 +597,8 @@ static void cache_push_obj(CodeBuf *cb, int *head, int *depth,
  *   4(a6)            return address (pushed by JSR)
  *   0(a6)            saved A6 (pushed by LINK)
  *  -4(a6) - 4*j      "extra" local j (j = slot - arity, j in [0, n_extra))
+ *                    (&optional and &key: every slot is down here, see
+ *                    slot_disp and emit_opt_prologue)
  *  -N-4(a6)          saved D7 (pushed first after LINK)
  *  -N-8(a6)          saved D6
  *  -N-12(a6)         saved D5
@@ -657,14 +659,16 @@ typedef struct {
  * so user slot s sits at 12 + 4*(n-1-s).  Slot slot_anchor (first
  * non-arg local) sits at -4(a6), slot_anchor+1 at -8(a6), and so on.
  *
- * Keyworded (is_kw == 1): every slot lives below A6 in the LINK
- * frame, laid out FORWARD so the helper's plain C array indexing
- * `frame[i]` matches slot i.  The walker passes the helper a pointer
- * to the lowest slot (`-(4*n_locals)(a6)`), so slot 0 → that address
- * and slot n_locals-1 → -4(a6).  `slot_anchor` here is `n_locals`. */
-static int16_t slot_disp(uint8_t slot, uint16_t slot_anchor, int is_kw)
+ * Keyworded and &optional (in_frame == 1): every slot lives below A6
+ * in the LINK frame, laid out FORWARD so the helper's plain C array
+ * indexing `frame[i]` matches slot i.  The walker passes the helper a
+ * pointer to the lowest slot (`-(4*n_locals)(a6)`), so slot 0 → that
+ * address and slot n_locals-1 → -4(a6).  `slot_anchor` here is
+ * `n_locals` -- `n_locals + 1` with &optional, whose argument count
+ * takes -4(a6) (see emit_opt_prologue). */
+static int16_t slot_disp(uint8_t slot, uint16_t slot_anchor, int in_frame)
 {
-    if (is_kw) {
+    if (in_frame) {
         return (int16_t)(-4 * ((int32_t)slot_anchor - (int32_t)slot));
     }
     if (slot < slot_anchor) {
@@ -1355,6 +1359,13 @@ static void jit_sites_record(JitSites *s, uint32_t off)
 typedef char jit_c_floor_disp_fits_d16[
     (offsetof(CL_Thread, jit_c_floor) < 32768) ? 1 : -1];
 
+/* OP_ARGC writes CL_Thread.mv_count through A3. */
+#define JIT_MV_COUNT_DISP ((int16_t)offsetof(CL_Thread, mv_count))
+typedef char jit_mv_count_disp_fits_d16[
+    (offsetof(CL_Thread, mv_count) < 32768) ? 1 : -1];
+typedef char jit_mv_count_is_32bit[(sizeof(int) == 4) ? 1 : -1];
+typedef char jit_fixnum_tag_is_1[(CL_TAG_FIXNUM == 1) ? 1 : -1];
+
 /* The loop poll counts down CL_Thread.jit_loop_ctr through A3. */
 #define JIT_LOOP_CTR_DISP ((int16_t)offsetof(CL_Thread, jit_loop_ctr))
 typedef char jit_loop_ctr_disp_fits_d16[
@@ -1396,6 +1407,7 @@ static void emit_loop_poll(CodeBuf *cb)
  *         cmpa.l  jit_c_floor(a3),a7  ; C stack below the floor: the helper
  *         bls.w   .miss               ; path signals "C stack exhausted"
  *         move.l  d1,-(a7)            ; func -> the callee's 8(a6)
+ *         moveq   #nargs,d1           ; the count, for an &optional callee
  *         jsr     (a0)
  *         lea     4+drop(a7),a7
  *         bra.w   .done
@@ -1436,6 +1448,10 @@ static void emit_call_site(CodeBuf *cb, JitRelocs *relocs, JitSites *sites,
     miss_pc[n_miss++] = (int32_t)cb_len(cb) + 2;
     m68k_emit_bls_w(cb, 0);
     m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+    if (nargs <= 127)
+        m68k_emit_moveq(cb, (int8_t)nargs, REG_D1);
+    else
+        m68k_emit_move_l_imm32(cb, (uint32_t)nargs, REG_D1);
     m68k_emit_jsr_ind_an(cb, REG_A0);
     m68k_emit_lea_disp_an_to_am(cb, (int16_t)(4 + drop), REG_A7, REG_A7);
     bra_done_pc = (int32_t)cb_len(cb) + 2;
@@ -1506,6 +1522,100 @@ static int emit_call_global(const CL_Bytecode *bc, uint32_t *ip, CodeBuf *cb,
     return 1;
 }
 
+/* The prologue of an &optional function (no &key, no &rest).  The caller
+ * pushed NARGS arguments in operand-stack order -- argument i at
+ * 12+4*(nargs-1-i)(a6) -- and passed NARGS in D1.  Copy them into slots
+ * 0..nargs-1 of the LINK frame (frame_size(a6) upwards), NIL the slots
+ * from nargs to n_locals-1 (a missing optional, the supplied-p variables
+ * the compiler's prologue sets only when the argument was passed, and
+ * the other locals, as the interpreter's frame setup does), and keep
+ * NARGS at -4(a6) for OP_ARGC.  The dispatch and the call-site fill only
+ * enter with arity <= nargs <= arity + n_optional (<= n_locals), so both
+ * counts are >= 0.  D0/D1/A0/A1 are scratch here, as at any entry.
+ *
+ *         move.l  d1,-4(a6)
+ *         move.l  d1,d0
+ *         add.l   d0,d0
+ *         add.l   d0,d0
+ *         lea     12(a6),a0
+ *         adda.l  d0,a0             ; one past argument 0
+ *         lea     frame_size(a6),a1 ; slot 0
+ *         move.l  d1,d0
+ *         bra.w   .copy_next
+ * .copy:  move.l  -(a0),(a1)+
+ * .copy_next:
+ *         dbf     d0,.copy
+ *         move.l  #n_locals,d0
+ *         sub.l   d1,d0
+ *         bra.w   .nil_next
+ * .nil:   clr.l   (a1)+
+ * .nil_next:
+ *         dbf     d0,.nil */
+static void emit_opt_prologue(CodeBuf *cb, int16_t frame_size,
+                              uint16_t n_locals)
+{
+    int32_t bra_pc, loop_off;
+
+    m68k_emit_move_l_dn_to_disp_am(cb, REG_D1, -4, REG_A6);
+    m68k_emit_move_l_dn_to_dm(cb, REG_D1, REG_D0);
+    m68k_emit_add_l_dn_to_dm(cb, REG_D0, REG_D0);
+    m68k_emit_add_l_dn_to_dm(cb, REG_D0, REG_D0);
+    m68k_emit_lea_disp_an_to_am(cb, 12, REG_A6, REG_A0);
+    m68k_emit_adda_l_dn_an(cb, REG_D0, REG_A0);
+    m68k_emit_lea_disp_an_to_am(cb, frame_size, REG_A6, REG_A1);
+
+    m68k_emit_move_l_dn_to_dm(cb, REG_D1, REG_D0);
+    bra_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bra_w(cb, 0);
+    loop_off = (int32_t)cb_len(cb);
+    m68k_emit_move_l_predec_an_to_postinc_am(cb, REG_A0, REG_A1);
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_pc,
+                      (int16_t)((int32_t)cb_len(cb) - bra_pc));
+    m68k_emit_dbf_w(cb, REG_D0,
+                    (int16_t)(loop_off - ((int32_t)cb_len(cb) + 2)));
+
+    m68k_emit_move_l_imm32(cb, (uint32_t)n_locals, REG_D0);
+    m68k_emit_sub_l_dn_to_dm(cb, REG_D1, REG_D0);
+    bra_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bra_w(cb, 0);
+    loop_off = (int32_t)cb_len(cb);
+    m68k_emit_clr_l_postinc(cb, REG_A1);
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_pc,
+                      (int16_t)((int32_t)cb_len(cb) - bra_pc));
+    m68k_emit_dbf_w(cb, REG_D0,
+                    (int16_t)(loop_off - ((int32_t)cb_len(cb) + 2)));
+}
+
+/* A self tail call of an &optional function: the NARGS new arguments are
+ * on the operand stack ((a7) = the last).  Copy them into slots
+ * 0..nargs-1, NIL slots nargs..n_locals-1 (as the prologue does, so a
+ * supplied-p variable set by the previous round reads NIL again) and
+ * store the new count at -4(a6).  The source lies below the frame, so the
+ * order of the moves does not matter. */
+static void emit_opt_self_tco_copy(CodeBuf *cb, uint8_t nargs,
+                                   uint16_t slot_anchor, uint16_t n_locals)
+{
+    uint32_t i;
+    for (i = 0; i < nargs; i++) {
+        m68k_emit_move_l_disp_an_to_dn(cb, (int16_t)(4 * (int32_t)i),
+                                       REG_A7, REG_D0);
+        m68k_emit_move_l_dn_to_disp_am(cb, REG_D0,
+            slot_disp((uint8_t)(nargs - 1 - i), slot_anchor, 1), REG_A6);
+    }
+    if (n_locals > nargs) {
+        int32_t loop_off;
+        m68k_emit_lea_disp_an_to_am(cb, slot_disp(nargs, slot_anchor, 1),
+                                    REG_A6, REG_A1);
+        m68k_emit_move_l_imm32(cb, (uint32_t)(n_locals - nargs - 1), REG_D0);
+        loop_off = (int32_t)cb_len(cb);
+        m68k_emit_clr_l_postinc(cb, REG_A1);
+        m68k_emit_dbf_w(cb, REG_D0,
+                        (int16_t)(loop_off - ((int32_t)cb_len(cb) + 2)));
+    }
+    m68k_emit_moveq(cb, (int8_t)nargs, REG_D0);
+    m68k_emit_move_l_dn_to_disp_am(cb, REG_D0, -4, REG_A6);
+}
+
 static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 {
     uint16_t arity;
@@ -1526,26 +1636,35 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     int cache_depth = 0;
     int result = 0;
     int is_kw;
+    int is_opt;
+    int in_frame;
     uint16_t slot_anchor;
 
-    /* Conservative gate.  The walker handles two ABIs:
+    /* Conservative gate.  The walker handles three shapes:
      *
-     *   Non-keyworded: fixed required-arg count, no &rest/&optional/
-     *   &key.  C-ABI calling convention; required args live above A6
-     *   in the C-pushed arg slots, body locals below A6 in the LINK
-     *   frame.
+     *   Required parameters only: the positional ABI.  The arguments
+     *   stay where the caller pushed them, above A6; body locals live
+     *   below A6 in the LINK frame.
      *
-     *   Keyworded (&key only, today): the cl_jit_invoke entry passes
-     *   `(bc, nargs, args)` rather than positional args, and a JSR'd
-     *   kw-prologue (cl_jit_runtime_kw_prologue) populates every
-     *   slot in the LINK frame before the body runs.  &rest /
-     *   &optional / &aux / upvalues all need additional work and are
-     *   still rejected.  Arity (required-arg count) is still bounded
-     *   by the dispatch cap so callers without &key going through
-     *   the existing positional path stay tight. */
+     *   &optional (no &key): the positional ABI too, plus the argument
+     *   count in D1 (every entry sets it: cl_jit_enter, a call site's
+     *   hit path).  Where an argument sits above A6 depends on the
+     *   count, so emit_opt_prologue copies the arguments into the LINK
+     *   frame, NILs the slots after them and keeps the count at -4(a6)
+     *   for OP_ARGC: every slot lives below A6, as with &key.
+     *
+     *   &key (with or without &optional): the cl_jit_invoke entry
+     *   passes `(bc, nargs, args)` rather than positional args, and a
+     *   JSR'd kw-prologue (cl_jit_runtime_kw_prologue) populates every
+     *   slot in the LINK frame before the body runs; OP_ARGC reads the
+     *   count at 16(a6).
+     *
+     * &rest is rejected: its list is consed at entry, so the prologue
+     * would allocate. */
     is_kw = (bc->flags & 1) != 0;
-    if (bc->arity & 0x8000)  return 0;          /* &rest not yet supported */
-    if (bc->n_optional != 0) return 0;          /* &optional needs OP_ARGC */
+    is_opt = !is_kw && bc->n_optional != 0;
+    in_frame = is_kw || is_opt;
+    if (bc->arity & 0x8000)  return 0;          /* &rest */
     /* n_upvalues > 0 (= inner closures that READ their captures via
      * OP_UPVAL / mutate them via OP_CELL_SET_UPVAL) is now walker-
      * supported via the func_obj first-C-arg ABI: both opcodes route
@@ -1567,7 +1686,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
      * 0..CL_JIT_PASSTHROUGH_MAX_ARITY.  The kw-ABI is entered with
      * three fixed words (bc, nargs, args), so it isn't constrained by
      * that cap — arity bounded only by frame-size headroom below. */
-    if (!is_kw && arity > CL_JIT_PASSTHROUGH_MAX_ARITY) return 0;
+    if (!is_kw &&
+        arity + (uint32_t)bc->n_optional > CL_JIT_PASSTHROUGH_MAX_ARITY)
+        return 0;
 
     n_locals = bc->n_locals;
     if (n_locals < arity) return 0;
@@ -1577,12 +1698,16 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
      * For non-kw frame_slots == n_extra; for kw it's n_locals because
      * required args are also in the frame. */
     if (n_extra > 1000) return 0;
-    if (is_kw && n_locals > 1000) return 0;
+    if (in_frame && n_locals > 1000) return 0;
 
-    frame_size = is_kw
-                 ? (int16_t)(-4 * (int32_t)n_locals)
-                 : (int16_t)(-4 * (int32_t)n_extra);
-    slot_anchor = is_kw ? n_locals : arity;
+    /* &optional: one more slot below the locals, -4(a6), holds nargs. */
+    if (is_kw)
+        frame_size = (int16_t)(-4 * (int32_t)n_locals);
+    else if (is_opt)
+        frame_size = (int16_t)(-4 * ((int32_t)n_locals + 1));
+    else
+        frame_size = (int16_t)(-4 * (int32_t)n_extra);
+    slot_anchor = is_kw ? n_locals : is_opt ? (uint16_t)(n_locals + 1) : arity;
     /* Saved cache registers sit below the frame at -frame_size-4/-8/-12
      * (A6-relative).  D7 is pushed first after LINK so it occupies the
      * slot closest to the frame (-4 below it); D5 is pushed last so it
@@ -1652,6 +1777,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
         m68k_emit_jsr_abs_l(cb, helper);
         m68k_emit_lea_disp_an_to_am(cb, 16, REG_A7, REG_A7); /* drop 4 args */
     }
+    if (is_opt) emit_opt_prologue(cb, frame_size, n_locals);
 
     ip = 0;
     while (ip < bc->code_len) {
@@ -1693,7 +1819,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
-            disp = slot_disp(slot, slot_anchor, is_kw);
+            disp = slot_disp(slot, slot_anchor, in_frame);
             cache_push_disp_an(cb, &cache_head, &cache_depth, disp, REG_A6);
             break;
         }
@@ -1707,7 +1833,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
-            disp = slot_disp(slot, slot_anchor, is_kw);
+            disp = slot_disp(slot, slot_anchor, in_frame);
             if (cache_depth >= 1) {
                 m68k_emit_move_l_dn_to_disp_am(cb, (M68kReg)cache_head,
                                                disp, REG_A6);
@@ -2419,8 +2545,12 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * slots above A6 and the copy-into-frame trick below would
              * read garbage.  Recursive &key calls fall back to the
              * call-site path (still tail-position correct,
-             * just at the cost of one extra m68k frame per call). */
-            self_tco = !is_kw && (nargs == arity) && CL_SYMBOL_P(bc->name);
+             * just at the cost of one extra m68k frame per call).
+             * An &optional function takes any count its lambda list
+             * accepts: emit_opt_self_tco_copy rewrites the frame. */
+            self_tco = !is_kw && nargs >= arity &&
+                       nargs <= arity + bc->n_optional &&
+                       CL_SYMBOL_P(bc->name);
 
             if (self_tco) {
                 uint32_t self_obj = (uint32_t)CL_PTR_TO_OBJ(bc);
@@ -2458,13 +2588,14 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                  * in operand-stack order, so this is a straight block
                  * copy (ascending, and the source lies below the
                  * frame, so the order of the moves does not matter). */
-                for (i = 0; i < nargs; i++) {
+                if (is_opt) {
+                    emit_opt_self_tco_copy(cb, nargs, slot_anchor, n_locals);
+                } else for (i = 0; i < nargs; i++) {
                     int16_t src_disp = (int16_t)(4 * (int32_t)i);
-                    /* Self-TCO is gated to non-kw shapes above, so
-                     * slot_anchor == arity here and the positional
-                     * layout applies. */
+                    /* Required parameters only: slot_anchor == arity
+                     * here and the positional layout applies. */
                     int16_t dst_disp = slot_disp((uint8_t)(nargs - 1 - i),
-                                                 slot_anchor, is_kw);
+                                                 slot_anchor, in_frame);
                     m68k_emit_move_l_disp_an_to_dn(cb, src_disp, REG_A7, REG_D0);
                     m68k_emit_move_l_dn_to_disp_am(cb, REG_D0, dst_disp, REG_A6);
                 }
@@ -2517,7 +2648,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
             cache_push_disp_an(cb, &cache_head, &cache_depth,
-                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+                               slot_disp(slot, slot_anchor, in_frame), REG_A6);
             if (!emit_call_global(bc, &ip, cb, relocs, &sites, &cache_head, &cache_depth))
                 goto fail;
             break;
@@ -2576,8 +2707,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 
             cache_flush(cb, &cache_head, &cache_depth);
 
-            self_tco = !is_kw && (nargs == arity) && CL_SYMBOL_P(bc->name) &&
-                       sym == bc->name;
+            self_tco = !is_kw && nargs >= arity &&
+                       nargs <= arity + bc->n_optional &&
+                       CL_SYMBOL_P(bc->name) && sym == bc->name;
 
             if (self_tco) {
                 uint32_t self_obj = (uint32_t)CL_PTR_TO_OBJ(bc);
@@ -2602,10 +2734,12 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                 m68k_emit_beq_w(cb, 0);   /* D0==0 → not self → fallback */
 
                 /* Copy args into frame slots — see OP_TAILCALL. */
-                for (i = 0; i < nargs; i++) {
+                if (is_opt) {
+                    emit_opt_self_tco_copy(cb, nargs, slot_anchor, n_locals);
+                } else for (i = 0; i < nargs; i++) {
                     int16_t src_disp = (int16_t)(4 * (int32_t)i);
                     int16_t dst_disp = slot_disp((uint8_t)(nargs - 1 - i),
-                                                 slot_anchor, is_kw);
+                                                 slot_anchor, in_frame);
                     m68k_emit_move_l_disp_an_to_dn(cb, src_disp, REG_A7, REG_D0);
                     m68k_emit_move_l_dn_to_disp_am(cb, REG_D0, dst_disp, REG_A6);
                 }
@@ -2733,13 +2867,19 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
         }
 
         case OP_ARGC: {
-            /* Zero-arg helper returns CL_MAKE_FIXNUM(nargs) from
-             * CT->jit_current_nargs (set by cl_jit_invoke).  No
-             * cache_flush — helper is non-allocating, only touches
-             * caller-saved D0/D1; D5/D6/D7 cache regs are callee-saved
-             * across the JSR per m68k SysV. */
-            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_argc;
-            m68k_emit_jsr_abs_l(cb, helper);
+            /* The fixnum nargs, as the interpreter's frame->nargs: the
+             * count emit_opt_prologue keeps at -4(a6), or the kw ABI's
+             * 16(a6).  Only the &optional prologue emits OP_ARGC, so a
+             * shape with neither cannot reach it.  Sets mv_count = 1
+             * like the VM's OP_ARGC. */
+            if (!in_frame) goto fail;
+            m68k_emit_move_l_disp_an_to_dn(cb, (int16_t)(is_kw ? 16 : -4),
+                                           REG_A6, REG_D0);
+            m68k_emit_add_l_dn_to_dm(cb, REG_D0, REG_D0);
+            m68k_emit_addq_l_dn(cb, 1, REG_D0);          /* CL_TAG_FIXNUM */
+            m68k_emit_moveq(cb, 1, REG_D1);
+            m68k_emit_move_l_dn_to_disp_am(cb, REG_D1, JIT_MV_COUNT_DISP,
+                                           REG_A3);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
@@ -3164,7 +3304,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
             cache_push_disp_an(cb, &cache_head, &cache_depth,
-                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+                               slot_disp(slot, slot_anchor, in_frame), REG_A6);
         }
         /* FALLTHROUGH */
         case OP_STRUCT_REF: {
@@ -3240,7 +3380,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
-            disp = slot_disp(slot, slot_anchor, is_kw);
+            disp = slot_disp(slot, slot_anchor, in_frame);
 
             /* Read TOS without popping into D1. */
             if (cache_depth >= 1) {
@@ -3378,7 +3518,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                 if (is_local) {
                     int16_t cap_disp;
                     if (cap_idx >= n_locals) goto fail;
-                    cap_disp = slot_disp(cap_idx, slot_anchor, is_kw);
+                    cap_disp = slot_disp(cap_idx, slot_anchor, in_frame);
                     m68k_emit_move_l_disp_an_to_dn(cb, cap_disp, REG_A6, REG_D0);
                     m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
                 } else {
@@ -3654,7 +3794,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
-            disp = slot_disp(slot, slot_anchor, is_kw);
+            disp = slot_disp(slot, slot_anchor, in_frame);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* item */
             cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_lea_disp_an_to_am(cb, disp, REG_A6, REG_A0);
@@ -3676,7 +3816,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
-            disp = slot_disp(slot, slot_anchor, is_kw);
+            disp = slot_disp(slot, slot_anchor, in_frame);
             cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_lea_disp_an_to_am(cb, disp, REG_A6, REG_A0);
             m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
@@ -3692,7 +3832,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
-            disp = slot_disp(slot, slot_anchor, is_kw);
+            disp = slot_disp(slot, slot_anchor, in_frame);
             if (cache_depth >= 1) {
                 m68k_emit_move_l_dn_to_disp_am(cb, (M68kReg)cache_head,
                                                disp, REG_A6);
@@ -3711,9 +3851,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             ip += 2;
             if (a >= n_locals || b >= n_locals) goto fail;
             cache_push_disp_an(cb, &cache_head, &cache_depth,
-                               slot_disp(a, slot_anchor, is_kw), REG_A6);
+                               slot_disp(a, slot_anchor, in_frame), REG_A6);
             cache_push_disp_an(cb, &cache_head, &cache_depth,
-                               slot_disp(b, slot_anchor, is_kw), REG_A6);
+                               slot_disp(b, slot_anchor, in_frame), REG_A6);
             break;
         }
 
@@ -3816,7 +3956,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (slot >= n_locals) goto fail;
             if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
             cache_push_disp_an(cb, &cache_head, &cache_depth,
-                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+                               slot_disp(slot, slot_anchor, in_frame), REG_A6);
             cache_push_obj(cb, &cache_head, &cache_depth, relocs,
                            bc->constants[idx]);
             break;
@@ -3830,10 +3970,10 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             b = bc->code[ip + 1];
             ip += 2;
             if (a >= n_locals || b >= n_locals) goto fail;
-            m68k_emit_move_l_disp_an_to_dn(cb, slot_disp(a, slot_anchor, is_kw),
+            m68k_emit_move_l_disp_an_to_dn(cb, slot_disp(a, slot_anchor, in_frame),
                                            REG_A6, REG_D0);
             m68k_emit_move_l_dn_to_disp_am(cb, REG_D0,
-                                           slot_disp(b, slot_anchor, is_kw),
+                                           slot_disp(b, slot_anchor, in_frame),
                                            REG_A6);
             break;
         }
@@ -3845,7 +3985,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             if (slot >= n_locals) goto fail;
             cache_drop(cb, &cache_head, &cache_depth);
             cache_push_disp_an(cb, &cache_head, &cache_depth,
-                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+                               slot_disp(slot, slot_anchor, in_frame), REG_A6);
             break;
         }
 
@@ -3865,7 +4005,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             target_bc_off = compute_landing_ip(offset, ip, bc->code_len, &ok);
             if (!ok) goto fail;
             if (slot >= n_locals) goto fail;
-            disp = slot_disp(slot, slot_anchor, is_kw);
+            disp = slot_disp(slot, slot_anchor, in_frame);
             cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_disp_an_to_dn(cb, disp, REG_A6, REG_D0);
             if (!emit_bcc_to_bc(cb, BCC_EQ, target_bc_off, insn_start,
@@ -3881,7 +4021,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
             cache_push_disp_an(cb, &cache_head, &cache_depth,
-                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+                               slot_disp(slot, slot_anchor, in_frame), REG_A6);
             m68k_emit_jsr_abs_l(cb, (uint32_t)(uintptr_t)&cl_jit_runtime_mv_reset);
             break;
         }
@@ -3892,7 +4032,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
             cache_push_disp_an(cb, &cache_head, &cache_depth,
-                               slot_disp(slot, slot_anchor, is_kw), REG_A6);
+                               slot_disp(slot, slot_anchor, in_frame), REG_A6);
         }
         /* FALLTHROUGH into OP_RET */
 
@@ -4192,6 +4332,21 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
         int an = op & 7;
         snprintf(mnemonic, (size_t)msize, "clr.l -(a%d)", an);
         matched = 1;
+    } else if ((op & 0xFFF8) == 0x4298) {           /* CLR.L (An)+ */
+        snprintf(mnemonic, (size_t)msize, "clr.l (a%d)+", op & 7);
+        matched = 1;
+    } else if ((op & 0xF1F8) == 0xD1C0) {           /* ADDA.L Dn,An */
+        snprintf(mnemonic, (size_t)msize, "adda.l d%d,a%d", op & 7,
+                 (op >> 9) & 7);
+        matched = 1;
+    } else if ((op & 0xFFF8) == 0x51C8) {           /* DBF Dn,disp */
+        int16_t d;
+        if (pos + 2 > len) return 0;
+        d = (int16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
+        snprintf(mnemonic, (size_t)msize, "dbf d%d,%ld", op & 7,
+                 (long)pos + (long)d);
+        pos += 2;
+        matched = 1;
     } else if ((op & 0xF100) == 0x7000) {           /* MOVEQ #imm,Dn */
         int dn = (op >> 9) & 7;
         int8_t imm = (int8_t)(op & 0xFF);
@@ -4430,16 +4585,16 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
  * OP_CELL_SET_UPVAL can read the active closure's upvalues[] from
  * inside JIT'd code (mirrors the VM's `frame->bytecode` channel).
  *
- *   Positional ABI (the common case).  cl_jit_compile only emits
- *   native_code for bytecodes whose arity is fixed (matchers and the
- *   walker's non-kw gate both refuse &optional/&key/&rest), and
- *   OP_CALL has already verified nargs == bc->arity, so the
- *   call is sound.  cl_jit_enter (jit_enter_m68k.s) pushes
+ *   Positional ABI (the common case: required and &optional
+ *   parameters, no &key).  Every caller has checked that the lambda
+ *   list accepts nargs (OP_CALL's bounds, jit_dispatch's fit rule), so
+ *   the call is sound.  cl_jit_enter (jit_enter_m68k.s) pushes
  *   `cl_vm.stack[sp - nargs ... sp - 1]` first to last, then `func`:
  *   operand-stack order on the m68k stack — the last argument at
  *   `8(sp)` after the JSR, the first one highest — which is the order
  *   a native caller's operand stack already holds them in (walker
- *   reads them via slot_disp's A6-relative offsets after LINK).
+ *   reads them via slot_disp's A6-relative offsets after LINK) — and
+ *   passes nargs in D1 for an &optional callee's prologue.
  *
  *   Kw ABI (when bc->flags & 1).  The walker emits a kw-prologue
  *   that JSRs cl_jit_runtime_kw_prologue to populate the LINK
@@ -4475,7 +4630,6 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     int     prev_depth;
     void   *prev_top;
     char   *prev_floor;
-    int32_t prev_nargs;
     int   is_kw;
     int   pushed_frame = 0;
 
@@ -4496,7 +4650,6 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     t = cl_get_current_thread();
     prev_depth = t->jit_depth;
     prev_top   = t->jit_stack_top;
-    prev_nargs = t->jit_current_nargs;
     prev_floor = t->jit_c_floor;
     if (prev_depth == 0) {
         extern volatile int cl_jit_active_threads;
@@ -4524,7 +4677,6 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
             t->jit_c_floor = (char *)~(uintptr_t)0;
     }
     t->jit_depth = prev_depth + 1;
-    t->jit_current_nargs = (int32_t)nargs;
 
     /* Push a shadow CL_Frame so EXT:BACKTRACE / EXT:FRAME-LOCALS and the
      * error-time backtrace can see this JIT'd function: native code keeps
@@ -4574,9 +4726,8 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
 
 done:
     if (pushed_frame) cl_vm.fp--;
-    t->jit_depth         = prev_depth;
-    t->jit_stack_top     = prev_top;
-    t->jit_current_nargs = prev_nargs;
+    t->jit_depth     = prev_depth;
+    t->jit_stack_top = prev_top;
     if (prev_depth == 0) {
         extern volatile int cl_jit_active_threads;
         cl_jit_active_threads--;

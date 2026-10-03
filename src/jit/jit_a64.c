@@ -2292,7 +2292,6 @@ static CL_Obj a64_tail_chain(CL_Thread *t, int bp, CL_Frame *sf, int pushed)
         if (cbc == NULL)              /* defensive: dispatch it as a call */
             return cl_vm_apply(func, &t->vm.stack[bp], (int)n);
         t->jit_invoke_count++;
-        t->jit_current_nargs = (int32_t)n;
         if (pushed) {
             sf->bytecode  = func;
             sf->code      = cbc->code;
@@ -2312,10 +2311,7 @@ static CL_Obj a64_tail_chain(CL_Thread *t, int bp, CL_Frame *sf, int pushed)
 static CL_Obj a64_tail_finish(CL_Thread *t)
 {
     CL_Frame *sf = &t->vm.frames[t->vm.fp - 1];
-    int32_t prev_nargs = t->jit_current_nargs;
-    CL_Obj result = a64_tail_chain(t, (int)sf->bp, sf, 1);
-    t->jit_current_nargs = prev_nargs;
-    return result;
+    return a64_tail_chain(t, (int)sf->bp, sf, 1);
 }
 
 CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
@@ -2323,15 +2319,12 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     CL_Obj result;
     CL_Thread *t;
     CL_Frame scratch, *sf = &scratch;
-    int32_t prev_nargs;
     int saved_sp, bp;
     int pushed_frame = 0;
 
     if (bc == NULL || bc->native_code == NULL) return CL_NIL;
     t = cl_get_current_thread();
     t->jit_invoke_count++;
-    prev_nargs = t->jit_current_nargs;
-    t->jit_current_nargs = (int32_t)nargs;
     saved_sp = t->vm.sp;
     bp = t->vm.sp - nargs;
 
@@ -2365,7 +2358,6 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
      * pops the arguments from where it pushed them. */
     t->vm.sp = saved_sp;
     if (pushed_frame) t->vm.fp--;
-    t->jit_current_nargs = prev_nargs;
     return result;
 }
 

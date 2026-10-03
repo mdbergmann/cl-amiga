@@ -7,6 +7,30 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-10-03 — m68k JIT `&optional` prologue: an `&optional` leaf call 12× faster
+
+**Context**: `specs/jit-direct-calls.md`, "&optional callees": the m68k
+walker compiles `&optional` (the count comes in D1, the prologue copies the
+arguments into the frame), and direct calls fill for such callees.
+
+**Environment**: FS-UAE, 68040 JIT config (`verify/realamiga/verify.fs-uae`),
+`make -f Makefile.cross amiga`.  A = 483711c6 (`feat/a64-optrest`), B = this
+change.  One boot, run alternately A, B, A, B with `--no-image`.
+
+**Command**: `clamiga --no-userinit --no-image --heap 8M --non-interactive
+--load trunk/bench-jit-call.lisp` (200k calls per row).
+
+| row                     | A bc / JIT µs | B bc / JIT µs |
+|-------------------------|---------------|---------------|
+| call bytecode leaf      | 13.0 / 12.0   | 12.9-13.2 / 12.0 |
+| call native leaf        | 13.2 / 0.90   | 13.1-13.3 / 0.90 |
+| call `&optional` leaf   | 16.4-16.5 / 16.3-16.4 | 16.5-16.8 / 1.3-1.4 |
+| funcall native leaf     | 11.7-11.8 / 1.0-1.1 | 11.6 / 1.0-1.1 |
+
+The `&optional` leaf (`(a &optional (b 1))`, one argument) stayed bytecode
+in A.  The `moveq #nargs,d1` every call site now carries costs the native
+leaf nothing measurable.
+
 ## 2026-10-02 — AArch64 JIT `&optional`/`&rest` prologues: an `&optional` leaf call 5× the interpreter
 
 **Context**: `specs/native-backend-a64.md`, "&optional and &rest": the

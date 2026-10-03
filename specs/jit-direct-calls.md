@@ -340,7 +340,7 @@ frame's snapshot, so the parking ends with the callback
 | Skipped (vs. `cl_jit_invoke`) | Why it is safe |
 |---|---|
 | `jit_depth` / `jit_stack_top` / `cl_jit_active_threads` | The caller is native, so `jit_depth > 0` already.  The scan window runs from the outermost entry's `jit_stack_top` down to the current SP, which covers nested direct frames.  Error/NLX unwind restores depth from snapshots taken in C, which direct calls never enter. |
-| `jit_current_nargs` | Only `OP_ARGC` reads it, and the walker rejects `&optional`, the only shape that emits it.  `walker_compile` gets an assert-style comment at its `&optional` gate; see §"Later". |
+| `jit_current_nargs` | Only `OP_ARGC` read it, and the walker rejected `&optional`, the only shape that emits it.  Gone since the walker takes `&optional`: the count comes in D1 (§"&optional callees"). |
 | VM-stack argument copy | The positional native ABI reads its arguments from the m68k stack.  Arguments are conservatively scanned and pinned there, the same as every value in a native frame today. |
 | Shadow `CL_Frame` | Fill refuses while shadow frames are on; toggling bumps. |
 | `jit_invoke_count++` | Diagnostic only.  Test `jit-direct-native-callee-invokes` counts it and is rewritten against the new site statistics. |
@@ -496,12 +496,54 @@ Measure it the same way: one binary, kill-switch pairs, interleaved, plus
 the spike through `clamacs/spike/run-vamp.py` with the same
 `SPIKE_SETENV`.
 
+## &optional callees
+
+**Status (2026-10-03): done.**  The m68k walker compiles `&optional`
+(without `&rest`; with `&key` too, through the keyword ABI), and a
+direct call reaches such a callee like any positional one.
+
+- **The count in D1.**  Every entry passes `nargs` in D1: `cl_jit_enter`
+  (`move.l d2,d1` before the JSR) and a site's hit path (`moveq #nargs,d1`
+  after pushing `func`; 2 bytes per site, every callee but an `&optional`
+  one ignores it).  `jit_current_nargs` and `cl_jit_runtime_argc` are gone.
+- **The frame.**  Where an argument sits above A6 depends on the count, so
+  the prologue (`emit_opt_prologue`) copies the arguments into the LINK
+  frame with a DBF loop, NILs the slots after them (a missing optional,
+  the supplied-p variables the compiler sets only for a passed argument,
+  the other locals) and keeps the count at -4(a6).  Every slot then lives
+  below A6, laid out as for `&key` (`slot_disp`'s `in_frame`).
+- **`OP_ARGC`** is inline: the count from -4(a6) (`&optional`) or the
+  keyword ABI's 16(a6), tagged, and `mv_count = 1` through A3.
+- **Self tail calls** stay loops for any count the lambda list accepts:
+  the copy writes the new arguments, NILs the slots after them, stores the
+  new count and branches back over the prologue to the compiler's default
+  code.
+- **The fit rule** (`jit_fits` in `runtime_m68k.c`, shared by
+  `jit_dispatch` and the fill): the interpreter's `OP_CALL` bounds --
+  `arity <= nargs <= arity + n_optional`, any count above `arity` with
+  `&key` -- and no `&rest`.  A site fills only for a count the callee
+  accepts, so the hit path checks nothing.  The 6-argument cap applies to
+  `arity + n_optional`: the walker declines more.
+
+Tests: the "&optional" section of `tests/amiga/test-jit.lisp` (also run on
+arm64 hosts by `tests/test_jit_a64_walk.sh`): every default shape, a
+default that sees an earlier supplied-p variable, `&optional` then `&key`,
+six and seven positional parameters, 20000-round self tail calls that
+change the count, direct calls with every count and a hit check (before
+this change every such call missed), arity errors, closures and two
+threads.
+
+Gates (2026-10-03): FS-UAE 68040 `test-amiga` 5197/5198 (the known audio
+check) + restored image 5188/5188; `make test`, `test-jit-eager`,
+`test-gc-stress`, `test-memleak` on macOS and Linux arm64.  Bench
+(`docs/benchmarks.md`): the `&optional` leaf call 16.4 -> 1.3 µs on the
+68040; the native leaf unchanged at 0.90 µs.
+
 ## Later (not in this spec)
 
-- **`&optional` prologues** (the other open lever).  When the walker takes
-  them, a direct-called callee needs `nargs`.  Pass it in D1 (caller-saved,
-  free at entry) instead of `jit_current_nargs`, and let fill accept
-  `nargs` in `[arity, arity+n_optional]`.
+- **`&rest` callees** on m68k: the prologue conses, so `bc` must be
+  re-derived after the allocation (the AArch64 helper,
+  `cl_jit_vmstack_ll_prologue`, does it).
 - **`&key` callees**: the kw ABI wants an `args` pointer in natural order,
   so it needs either a site-side reverse or a reversed-args variant of
   `cl_jit_runtime_kw_prologue`.
