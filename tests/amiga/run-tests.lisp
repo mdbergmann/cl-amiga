@@ -90,6 +90,26 @@
 (check "bignum floor 2^8000 length" 7981 (integer-length (floor (expt 2 8000) 1000003)))
 (check "bignum 600! mod prime" 471663
        (let ((r 1)) (dotimes (i 600) (setq r (* r (1+ i)))) (mod r 1000003)))
+;; (* bignum fixnum) single-pass path: one- and two-limb multipliers, both
+;; operand orders, signs, carries through every limb, demotion to a fixnum.
+(check "bignum*fixnum 16-bit multiplier" 1208907372870555465089025
+       (* (1- (expt 2 64)) 65535))
+(check "fixnum*bignum 17-bit multiplier" 1208925819614629174640640
+       (* 65536 (1- (expt 2 64))))
+(check "bignum*most-positive-fixnum, 5 limbs" 1298074213424781087517993833857025
+       (* (1- (expt 2 80)) most-positive-fixnum))
+(check "bignum*most-negative-fixnum" -19807040628566084397312245760
+       (* (1- (expt 2 64)) most-negative-fixnum))
+(check "negative bignum * negative fixnum" 83078017387157470285889437970726912
+       (* -65537 (- (expt 2 100))))
+(check "bignum*0 and bignum*1" (list 0 t)
+       (let ((b (expt 2 100))) (list (* b 0) (eq b (* b 1)))))
+(check "bignum*fixnum demotes to fixnum" (list -1073741824 t)
+       (let ((r (* 1073741824 -1))) (list r (typep r 'fixnum))))
+(check "bignum 30!" 265252859812191058636308480000000
+       (let ((r 1)) (dotimes (i 30 r) (setq r (* r (1+ i))))))
+(check "bignum*fixnum 4000-bit operand" 890373
+       (mod (* (1- (expt 2 4000)) most-positive-fixnum) 1000003))
 (check "bignum truncate by 2100-bit divisor" (list t 12345)
        (multiple-value-bind (q r) (truncate (+ (expt 2 5000) 12345) (expt 2 2100))
          (list (= q (expt 2 2900)) r)))

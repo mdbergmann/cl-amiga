@@ -263,6 +263,63 @@ TEST(mixed_mul)
                   "2535301200456458802993406410752");
 }
 
+TEST(mul_bignum_by_fixnum)
+{
+    /* (* bignum fixnum) takes a single-pass path of its own; the limb loop
+       steps 4, 2 and 1 limbs at a time on 64-bit hosts, so cover every
+       operand length modulo 4, both operand orders, all sign combinations
+       and the largest fixnum magnitudes.  Expected values from exact
+       integer arithmetic (Python). */
+    ASSERT_STR_EQ(eval_print("(* (expt 2 100) -3)"),
+                  "-3802951800684688204490109616128");
+    ASSERT_STR_EQ(eval_print("(* -65537 (- (expt 2 100)))"),
+                  "83078017387157470285889437970726912");
+    ASSERT_STR_EQ(eval_print("(* (1- (expt 2 64)) 65535)"),
+                  "1208907372870555465089025");
+    ASSERT_STR_EQ(eval_print("(* 65536 (1- (expt 2 64)))"),
+                  "1208925819614629174640640");
+    ASSERT_STR_EQ(eval_print("(* (1- (expt 2 64)) most-negative-fixnum)"),
+                  "-19807040628566084397312245760");
+    ASSERT_STR_EQ(eval_print("(* (+ (expt 2 79) 12345) 46341)"),
+                  "28011415703380765293101530653");
+    /* All-ones operands of 3..9 limbs times MOST-POSITIVE-FIXNUM: every
+       limb carries. */
+    ASSERT_STR_EQ(eval_print("(* (1- (expt 2 48)) most-positive-fixnum)"),
+                  "302231454622181243224065");
+    ASSERT_STR_EQ(eval_print("(* most-positive-fixnum (1- (expt 2 64)))"),
+                  "19807040610119340323602694145");
+    ASSERT_STR_EQ(eval_print("(* (1- (expt 2 80)) most-positive-fixnum)"),
+                  "1298074213424781087517993833857025");
+    ASSERT_STR_EQ(eval_print("(* (1- (expt 2 96)) most-positive-fixnum)"),
+                  "85070591651006453351579314263324360705");
+    ASSERT_STR_EQ(eval_print("(* (1- (expt 2 112)) most-positive-fixnum)"),
+                  "5575186294440358926849101939631592973533185");
+    ASSERT_STR_EQ(eval_print("(* (1- (expt 2 144)) most-positive-fixnum)"),
+                  "23945242803728768213318549157687862721394436204396545");
+    /* Identities: zero, one (same object), minus one */
+    ASSERT_STR_EQ(eval_print("(* (expt 2 100) 0)"), "0");
+    ASSERT_STR_EQ(eval_print("(* 0 (expt 2 100))"), "0");
+    ASSERT_STR_EQ(eval_print("(let ((b (expt 2 100))) (eq b (* b 1)))"), "T");
+    ASSERT_STR_EQ(eval_print("(* -1 (expt 2 100))"),
+                  "-1267650600228229401496703205376");
+    /* 2^30 is a bignum, -2^30 is MOST-NEGATIVE-FIXNUM: result must demote */
+    ASSERT_STR_EQ(eval_print("(let ((r (* 1073741824 -1)))"
+                             "  (list r (typep r 'fixnum)))"),
+                  "(-1073741824 T)");
+    /* Factorial: the multiplier grows through the fixnum/bignum boundary */
+    ASSERT_STR_EQ(eval_print("(let ((r 1)) (dotimes (i 30 r)"
+                             "  (setq r (* r (1+ i)))))"),
+                  "265252859812191058636308480000000");
+    ASSERT_STR_EQ(eval_print("(let ((r 1)) (dotimes (i 1000)"
+                             "  (setq r (* (1+ i) r))) (mod r 1000003))"),
+                  "864722");
+    /* Operand past the general path's 256-limb stack buffers */
+    ASSERT_STR_EQ(eval_print("(mod (* (1- (expt 2 4000)) most-positive-fixnum)"
+                             "     1000003)"), "890373");
+    ASSERT_STR_EQ(eval_print("(mod (* most-negative-fixnum (1- (expt 2 4000)))"
+                             "     1000003)"), "412080");
+}
+
 /* ================================================================
  * Division and modulo
  * ================================================================ */
@@ -930,6 +987,7 @@ int main(void)
     RUN(mixed_add);
     RUN(mixed_sub);
     RUN(mixed_mul);
+    RUN(mul_bignum_by_fixnum);
 
     /* Division and modulo */
     RUN(div_bignum);

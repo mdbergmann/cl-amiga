@@ -122,6 +122,92 @@ static uint32_t bignum_mul_mag(const uint16_t *a, uint32_t a_len,
     return r_len;
 }
 
+/* Multiply a magnitude by a single small multiplier m (1 <= m <= 2^30,
+ * i.e. a fixnum's magnitude) in ONE pass, straight into result[0..r_len).
+ * r_len must cover the product: the caller sizes it from the operands'
+ * bit lengths, so the final carry always fits.  This is the shape of
+ * (* bignum fixnum) -- factorial, digit accumulation in the reader and
+ * printer -- where the general N x M path would pack, zero, multiply,
+ * unpack and copy. */
+#ifdef __SIZEOF_INT128__
+__extension__ typedef unsigned __int128 cl_uint128;
+#endif
+
+static void bignum_mul_small(const uint16_t *a, uint32_t a_len, uint32_t m,
+                             uint16_t *result, uint32_t r_len)
+{
+    uint32_t i = 0;
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
+    /* 64-bit hosts: several limbs per step (2^32 * 2^30 + carry fits a
+     * uint64_t, 2^64 * 2^30 + carry a 128-bit product). */
+    uint64_t carry = 0;
+#ifdef __SIZEOF_INT128__
+    /* Four limbs per step where the compiler has a 128-bit product: the
+     * loop is one carry chain, so halving the steps halves the time. */
+    for (; i + 3 < a_len; i += 4) {
+        uint64_t x = (uint64_t)a[i] | ((uint64_t)a[i + 1] << 16)
+                   | ((uint64_t)a[i + 2] << 32) | ((uint64_t)a[i + 3] << 48);
+        cl_uint128 prod = (cl_uint128)x * m + carry;
+        uint64_t lo = (uint64_t)prod;
+        result[i]     = (uint16_t)(lo & 0xFFFF);
+        result[i + 1] = (uint16_t)((lo >> 16) & 0xFFFF);
+        result[i + 2] = (uint16_t)((lo >> 32) & 0xFFFF);
+        result[i + 3] = (uint16_t)(lo >> 48);
+        carry = (uint64_t)(prod >> 64);
+    }
+#endif
+    for (; i + 1 < a_len; i += 2) {
+        uint64_t prod = (uint64_t)((uint32_t)a[i] | ((uint32_t)a[i + 1] << 16))
+                        * m + carry;
+        result[i]     = (uint16_t)(prod & 0xFFFF);
+        result[i + 1] = (uint16_t)((prod >> 16) & 0xFFFF);
+        carry = prod >> 32;
+    }
+    if (i < a_len) {
+        uint64_t prod = (uint64_t)a[i] * m + carry;
+        result[i++] = (uint16_t)(prod & 0xFFFF);
+        carry = prod >> 16;
+    }
+#else
+    /* 68020: 16x16->32 multiplies only, no 64-bit arithmetic.  With
+     * m = mh:ml the carry stays below 2^31:
+     *   p0    = a*ml + carry.lo          <= 0xFFFF*0xFFFF + 0xFFFF
+     *   carry = a*mh + carry.hi + p0.hi  <= 0xFFFF*0x4000 + 2*0xFFFF */
+    uint32_t ml = m & 0xFFFF, mh = m >> 16;
+    uint32_t carry = 0;
+    if (mh == 0) {
+        for (; i < a_len; i++) {
+            uint32_t prod = (uint32_t)a[i] * ml + carry;
+            result[i] = (uint16_t)(prod & 0xFFFF);
+            carry = prod >> 16;
+        }
+    } else {
+        for (; i < a_len; i++) {
+            uint32_t x = a[i];
+            uint32_t p0 = x * ml + (carry & 0xFFFF);
+            result[i] = (uint16_t)(p0 & 0xFFFF);
+            carry = x * mh + (carry >> 16) + (p0 >> 16);
+        }
+    }
+#endif
+    for (; i < r_len; i++) {
+        result[i] = (uint16_t)(carry & 0xFFFF);
+        carry >>= 16;
+    }
+}
+
+/* Number of significant bits in v (0 for v == 0). */
+static uint32_t bit_length32(uint32_t v)
+{
+#if defined(__GNUC__)
+    return v ? 32u - (uint32_t)__builtin_clz(v) : 0;   /* bfffo on 68020 */
+#else
+    uint32_t n = 0;
+    while (v) { n++; v >>= 1; }
+    return n;
+#endif
+}
+
 #if defined(PLATFORM_POSIX) || defined(PLATFORM_WIN32)
 /* ================================================================
  * 32-bit limb operations for 64-bit hosts.
@@ -809,6 +895,35 @@ CL_Obj cl_arith_mul(CL_Obj a, CL_Obj b)
     }
 
 bignum_mul:
+    /* Bignum x fixnum: one pass into the result object itself. */
+    if (CL_FIXNUM_P(a) != CL_FIXNUM_P(b)) {
+        CL_Obj big = CL_FIXNUM_P(a) ? b : a;
+        int32_t v = CL_FIXNUM_VAL(CL_FIXNUM_P(a) ? a : b);
+        uint32_t m = v < 0 ? (uint32_t)(-v) : (uint32_t)v;
+        CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(big);
+        uint32_t a_len = bn->length;
+        uint32_t r_sign = bn->sign ^ (v < 0 ? 1u : 0u);
+        uint32_t r_len;
+        CL_Obj res;
+        CL_Bignum *rn;
+
+        if (m == 0) return CL_MAKE_FIXNUM(0);
+        if (v == 1) return big;
+
+        /* The product has bits(a)+bits(m) bits, or one fewer: at most
+         * one limb over, which the normalize below strips. */
+        r_len = ((a_len - 1) * 16 + bit_length32(bn->limbs[a_len - 1])
+                 + bit_length32(m) + 15) / 16;
+
+        CL_GC_PROTECT(big);
+        res = cl_make_bignum(r_len, r_sign);
+        CL_GC_UNPROTECT(1);
+        bn = (CL_Bignum *)CL_OBJ_TO_PTR(big);   /* may have moved */
+        rn = (CL_Bignum *)CL_OBJ_TO_PTR(res);
+        bignum_mul_small(bn->limbs, a_len, m, rn->limbs, r_len);
+        return cl_bignum_normalize(res);
+    }
+
     {
         uint16_t ta[2], tb[2];
         uint32_t a_len, b_len, a_sign, b_sign;

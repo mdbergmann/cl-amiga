@@ -3008,6 +3008,44 @@ check_contains "tier-3 numeric-tower fixes survive big operands under GC stress"
 check_absent   "no tier-3 numeric corruption under GC stress" \
   "T3N-BAD\|corrupted pointer\|not of type\|Guru" "$out"
 
+# --- (* bignum fixnum) single-pass multiply under GC stress ------------------
+# The fast path allocates the result bignum and only then reads the operand's
+# limbs: the operand must be protected across that allocation and its pointer
+# re-derived afterwards, or a compaction leaves the loop reading a stale
+# object.  Expected values from exact integer arithmetic.
+cat > "$WORK/bignum-mul-small.lisp" <<'LISPEOF'
+(let ((ok t))
+  (macrolet ((chk (name form want)
+               `(let ((got ,form))
+                  (unless (equalp got ,want)
+                    (format t "BMS-BAD ~a:~s~%" ,name got)
+                    (setf ok nil)))))
+    (dotimes (i 3)
+      (chk "fact-30" (let ((r 1)) (dotimes (k 30 r) (setq r (* r (1+ k)))))
+                     265252859812191058636308480000000)
+      (chk "fact-300" (let ((r 1)) (dotimes (k 300) (setq r (* (1+ k) r)))
+                        (mod r 1000003))
+                      943844)
+      (chk "big*mpf" (* (1- (expt 2 112)) most-positive-fixnum)
+                     5575186294440358926849101939631592973533185)
+      (chk "mnf*big" (* most-negative-fixnum (1- (expt 2 64)))
+                     -19807040628566084397312245760)
+      (chk "big*1"   (let ((b (expt 2 100))) (eq b (* b 1))) t)
+      (chk "demote"  (* 1073741824 -1) most-negative-fixnum)
+      ;; garbage between the multiplies so the operand really moves
+      (let ((r (expt 3 80)) (junk nil))
+        (dotimes (k 40)
+          (push (make-string 9) junk)
+          (setq r (* r 7))
+          (when (oddp k) (setq junk nil)))
+        (chk "interleaved" r (* (expt 3 80) (expt 7 40))))))
+  (format t "BMS:~a~%" ok))
+LISPEOF
+out=$(run_stress "$WORK/bignum-mul-small.lisp")
+check_contains "bignum x fixnum single-pass multiply survives GC stress" "BMS:T" "$out"
+check_absent   "no bignum x fixnum corruption under GC stress" \
+  "BMS-BAD\|corrupted pointer\|not of type\|Guru" "$out"
+
 # --- Tier-3 audit: typep/coerce/subtypep with allocating type walks ---------
 # Every check crosses an allocating call while holding obj/type-spec locals
 # (audit 2026-07 tier 3, batch B): deftype expander cl_vm_apply in
