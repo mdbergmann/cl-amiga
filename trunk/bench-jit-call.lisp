@@ -9,8 +9,8 @@
 ;;;
 ;;;   - a call to a C builtin (LOGTEST, GETHASH, ...: the bulk of any
 ;;;     generic function body -- there are no opcodes for these),
-;;;   - a call to a Lisp function that is native / bytecode / &optional
-;;;     (native on both backends since 2026-10-03), with the callee PINNED
+;;;   - a call to a Lisp function that is native / bytecode / &optional /
+;;;     &rest (native on both backends since 2026-10-03), with the callee PINNED
 ;;;     to one state so only the caller's path changes,
 ;;;   - FUNCALL through a variable, a local BLOCK/RETURN-FROM, a fixnum
 ;;;     CASE, an FFI peek, and a decode-key-like mix of all of them.
@@ -46,6 +46,7 @@
 (defun bjc-nat-add (a b) (+ a b))               ; native when the JIT is built in
 (defun bjc-nat-key (code mods) (logior code (ash mods 16)))
 (defun bjc-opt-add (a &optional (b 1)) (+ a b)) ; native: the &optional prologue
+(defun bjc-rest-add (a &rest r) (+ a (car r)))   ; native: the &rest prologue
 
 (clamiga::%jit-set-active *bjc-jit-was*)
 
@@ -113,6 +114,14 @@
 (bjc-bench "call &optional leaf"
   (defun bjc-r6 (n) (let ((s 0)) (dotimes (i n) (setq s (bjc-opt-add s))) s))
   (bjc-r6 *bjc-n*))
+
+;; One extra argument: a cons per call, in both columns.  On the 68040 a
+;; cons costs more the longer the process has consed, interpreted or native
+;; (2026-10-03: 5 -> 70 us per consing call within one run, not reset by GC
+;; or compaction), so this row's JIT column, timed second, reads high.
+(bjc-bench "call &rest leaf"
+  (defun bjc-r14 (n) (let ((s 0)) (dotimes (i n) (setq s (bjc-rest-add s 1))) s))
+  (bjc-r14 *bjc-n*))
 
 (bjc-bench "call same-state leaf"
   (progn (defun bjc-same-add (a b) (+ a b))

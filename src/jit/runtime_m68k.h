@@ -34,15 +34,16 @@ CL_Obj cl_jit_runtime_call_site(CL_Obj *operand_top, uint32_t nargs,
 CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
                                        CL_Obj sym, CL_JitCallSite *site);
 
-/* Kw prologue for JIT'd functions whose lambda-list carries &key.
- * Mirrors the matching code in vm.c::OP_CALL normal path:
- * NIL-initializes the frame's slot area, copies positional args into
- * the matching slots, then performs keyword matching right-to-left so
- * the leftmost duplicate keyword wins (CLHS 3.4.1.4.1).  Signals
- * CL_ERR_ARGS on odd argument count or unknown keyword unless
- * :allow-other-keys is enabled.
+/* Kw prologue for JIT'd functions whose lambda-list carries &key
+ * (with or without &optional / &rest).  Mirrors the frame setup in
+ * vm.c::OP_CALL normal path: NIL-initializes the frame's slot area,
+ * copies positional args into the matching slots, conses the &rest
+ * list, then performs keyword matching right-to-left so the leftmost
+ * duplicate keyword wins (CLHS 3.4.1.4.1).  Signals CL_ERR_ARGS on odd
+ * argument count or unknown keyword unless :allow-other-keys is enabled.
  *
- *   bc     - the callee's bytecode (read-only metadata).
+ *   func   - the function value at 8(a6) (closure or bytecode); the
+ *            bytecode is derived from it, again after the &rest consing.
  *   nargs  - actual number of caller-supplied arguments.
  *   args   - pointer to the raw arg vector (`&cl_vm.stack[sp-nargs]`).
  *   frame  - pointer to the JIT frame's locals area; the walker LEAs
@@ -50,14 +51,20 @@ CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
  *            corresponds to JIT slot i (forward layout — frame[0] is
  *            the lowest-addressed slot).
  *
- * Non-allocating, so passing `bc` as a raw pointer is safe — there is
- * no GC opportunity that would relocate the bytecode header.  May
- * call cl_error which longjmps out of the JIT frame; the unwind path
+ * May call cl_error which longjmps out of the JIT frame; the unwind path
  * keeps GC depth tracking consistent via the CL_ErrorFrame snapshot,
- * so no manual cleanup is required.  See the walker gate for the
- * shape restrictions (&key only, no &rest / &optional / upvalues). */
-void cl_jit_runtime_kw_prologue(CL_Bytecode *bc, uint32_t nargs,
+ * so no manual cleanup is required. */
+void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
                                 CL_Obj *args, CL_Obj *frame);
+
+/* Prologue of a positional-ABI function with &rest (no &key): FUNC the
+ * function value at 8(a6), NARGS the count the entry passed in D1, LAST
+ * the last argument (12(a6); argument i at LAST[nargs-1-i]) and FRAME
+ * slot 0 of the LINK frame.  NILs every slot, copies the positional
+ * arguments and stores the list of the others in the slot after them.
+ * Allocates (the list). */
+void cl_jit_runtime_rest_prologue(CL_Obj func, uint32_t nargs,
+                                  CL_Obj *last, CL_Obj *frame);
 
 /* Backing for OP_AMIGA_CALL — resolves the library-base symbol to a
  * foreign-pointer address (errors like the VM's OP_AMIGA_CALL on

@@ -707,7 +707,9 @@ the walker test checks, and the minimum count is 500.
 
 ### Later
 - **Done 2026-10-03:** `&optional` on m68k (specs/jit-direct-calls.md,
-  "&optional callees").  `&rest` on m68k is still declined.
+  "&optional callees").
+- **Done 2026-10-03:** `&rest` on m68k (specs/jit-direct-calls.md,
+  "&rest callees").
 
 ## Measuring
 

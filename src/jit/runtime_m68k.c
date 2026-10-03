@@ -119,22 +119,31 @@ void cl_jit_runtime_init(void)
  * cl_vm_apply as before, so every diagnostic is unchanged.  Both helpers allocate (the callee may),
  * so the walker cache_flushes before the JSR. */
 
-/* The trampoline arm, its own function so that the CL_Obj[256] copy is not
- * part of every native call's C-stack footprint: jit_dispatch's frame sits
- * under the callee for the whole call, and native recursion nests one such
- * frame per level (a 1 KB array there let a 100-deep recursion exhaust the
- * 128 KB suite stack).  Never inlined, for the same reason. */
+/* The trampoline arm: the arguments go onto the VM stack, in natural order,
+ * right below sp, and cl_vm_apply takes them from there (it pushes its own
+ * copies above sp, so the two never overlap; the slice is a GC root
+ * meanwhile).  They used to go into a CL_Obj[256] in this frame: 1 KB of C
+ * stack per native call into a generic function, on top of cl_vm_run's own
+ * frame -- with &rest functions native, ASDF's FIND-SYSTEM on the 128K suite
+ * stack nested deep enough to hit the C-stack guard.  Never inlined, so
+ * jit_dispatch's frame (under the callee for the whole call) stays small. */
 #ifdef JIT_M68K
-static CL_Obj jit_dispatch_apply(CL_Obj func, CL_Obj *operand_top,
-                                 uint32_t nargs) CL_NOINLINE;
-static CL_Obj jit_dispatch_apply(CL_Obj func, CL_Obj *operand_top,
-                                 uint32_t nargs)
+static CL_Obj jit_dispatch_apply(CL_Thread *thr, CL_Obj func,
+                                 CL_Obj *operand_top, uint32_t nargs) CL_NOINLINE;
+static CL_Obj jit_dispatch_apply(CL_Thread *thr, CL_Obj func,
+                                 CL_Obj *operand_top, uint32_t nargs)
 {
-    CL_Obj args[256];
+    int base = thr->vm.sp;
     uint32_t i;
+    CL_Obj result;
+    if (base + (int)nargs >= (int)thr->vm.stack_size - 16)
+        cl_error(CL_ERR_OVERFLOW, "VM stack overflow");
     for (i = 0; i < nargs; i++)
-        args[i] = operand_top[nargs - 1 - i];
-    return cl_vm_apply(func, args, (int)nargs);
+        thr->vm.stack[base + (int)i] = operand_top[nargs - 1 - i];
+    thr->vm.sp = base + (int)nargs;
+    result = cl_vm_apply(func, &thr->vm.stack[base], (int)nargs);
+    thr->vm.sp = base;
+    return result;
 }
 
 #endif /* JIT_M68K */
@@ -183,16 +192,16 @@ void cl_jit_direct_call_stats(uint32_t *out)
     for (i = 0; i < CL_JIT_DS_COUNT; i++) out[i] = jit_ds[i];
 }
 
-/* Does a call with NARGS arguments fit BC's lambda list, the way the walker
- * compiles it?  The interpreter's OP_CALL bounds -- arity <= nargs <=
- * arity + n_optional, any count above arity with &key -- and no &rest
- * (the walker declines it).  A call outside them takes the interpreter,
+/* Does a call with NARGS arguments fit BC's lambda list?  The interpreter's
+ * OP_CALL bounds: arity <= nargs <= arity + n_optional, any count above
+ * arity with &rest or &key.  A call outside them takes the interpreter,
  * which signals the arity error. */
 static int jit_fits(const CL_Bytecode *bc, uint32_t nargs)
 {
     uint32_t arity = bc->arity & 0x7FFFu;
-    if ((bc->arity & 0x8000) || nargs < arity) return 0;
-    return (bc->flags & 1) || nargs <= arity + bc->n_optional;
+    if (nargs < arity) return 0;
+    return (bc->flags & 1) || (bc->arity & 0x8000) ||
+           nargs <= arity + bc->n_optional;
 }
 
 /* Fill SITE with a native callee jit_dispatch has classified (BC carries
@@ -212,8 +221,8 @@ static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
         return;
     }
     /* The positional native ABI (jit_dispatch has checked jit_fits): the
-     * hit path pushes the arguments and passes their count in D1.  &key
-     * takes cl_jit_invoke's keyword ABI. */
+     * hit path pushes the arguments and passes their count in D1, which
+     * covers &optional and &rest.  &key takes cl_jit_invoke's keyword ABI. */
     if (bc->flags != 0 || nargs > CL_JIT_PASSTHROUGH_MAX_ARITY) {
         jit_ds[CL_JIT_DS_REFUSED_ABI]++;
         return;
@@ -310,7 +319,7 @@ static CL_Obj jit_dispatch(CL_Thread *thr, CL_Obj func, CL_Obj *operand_top,
     if (site != NULL)
         jit_ds[thr->trace_count != 0 || cl_traced_function_count != 0
                ? CL_JIT_DS_REFUSED_TRACE : CL_JIT_DS_REFUSED_NOT_NATIVE]++;
-    return jit_dispatch_apply(func, operand_top, nargs);
+    return jit_dispatch_apply(thr, func, operand_top, nargs);
 }
 
 /* Miss path of an OP_CALL / OP_TAILCALL site: the callee is the function
@@ -355,23 +364,22 @@ CL_Obj cl_jit_runtime_call_global_site(CL_Obj *operand_top, uint32_t nargs,
  * bindings are shared with the AArch64 walker: runtime_nlx.c. */
 
 /* See runtime_m68k.h for the contract.  Implementation tracks vm.c's
- * normal-call kw matcher (the "Normal call: push new frame" branch
- * in OP_CALL) closely so behaviour stays in lock-step.
+ * normal-call frame setup (the "Normal call: push new frame" branch in
+ * OP_CALL) closely so behaviour stays in lock-step.
  *
- * Non-allocating by design: the only allocation in the VM's matcher
- * is cl_cons for the &rest list, and the walker gate refuses to
- * JIT-compile bytecodes with &rest precisely so the helper can take
- * bc as a raw CL_Bytecode pointer.  If &rest support is added later,
- * the parameter must change to a CL_Obj (so the m68k-stack scan can
- * forward it across compaction) and bc must be re-derived after each
- * cl_cons; see the equivalent dance in vm.c around line 1830. */
-void cl_jit_runtime_kw_prologue(CL_Bytecode *bc, uint32_t nargs,
+ * The only allocation is the &rest list.  Everything it can disturb is
+ * safe by then: the arguments are on cl_vm.stack (a root), the frame
+ * slots on the m68k stack (the conservative scan pins what they
+ * reference), and the bytecode -- a raw pointer, which a compaction does
+ * not fix up -- is re-derived from FUNC (8(a6), pinned the same way)
+ * after the consing. */
+void cl_jit_runtime_kw_prologue(CL_Obj func, uint32_t nargs,
                                 CL_Obj *args, CL_Obj *frame)
 {
     uint32_t i;
+    CL_Bytecode *bc = cl_jit_bytecode_of(func, CL_HDR_TYPE(CL_OBJ_TO_PTR(func)));
     uint32_t arity        = (uint32_t)(bc->arity & 0x7FFFu);
     uint32_t n_opt        = bc->n_optional;
-    int      has_key      = (bc->flags & 1) != 0;
     int      allow        = (bc->flags & 2) != 0;
     uint32_t n_locals     = bc->n_locals;
     uint32_t n_positional = arity + n_opt;
@@ -395,7 +403,20 @@ void cl_jit_runtime_kw_prologue(CL_Bytecode *bc, uint32_t nargs,
 
     n_extra = (nargs > n_positional) ? (nargs - n_positional) : 0;
 
-    if (!has_key) return;
+    /* &rest: the arguments past the positional ones, in the slot right
+     * after them (the compiler's layout, before the keyword slots). */
+    if (bc->arity & 0x8000u) {
+        CL_Obj rest = CL_NIL;
+        int32_t j;
+        CL_GC_PROTECT(rest);
+        for (j = (int32_t)n_extra - 1; j >= 0; j--)
+            rest = cl_cons_rooted(&args[n_positional + (uint32_t)j], &rest);
+        CL_GC_UNPROTECT(1);
+        frame[n_positional] = rest;
+        bc = cl_jit_bytecode_of(func, CL_HDR_TYPE(CL_OBJ_TO_PTR(func)));
+    }
+
+    if ((bc->flags & 1) == 0) return;
 
     /* Odd-arg-count check per CLHS 3.4.1.4. */
     if (n_extra & 1u)
@@ -438,6 +459,32 @@ void cl_jit_runtime_kw_prologue(CL_Bytecode *bc, uint32_t nargs,
                          cl_symbol_name(key));
         }
     }
+}
+
+/* See runtime_m68k.h.  Argument i sits at LAST[nargs-1-i] (operand-stack
+ * order above A6), so walking LAST upwards from the last argument conses
+ * the &rest list back to front.  The consing may collect: the arguments
+ * and the frame are on the m68k stack, which the conservative scan pins,
+ * and the bytecode is read before it. */
+void cl_jit_runtime_rest_prologue(CL_Obj func, uint32_t nargs,
+                                  CL_Obj *last, CL_Obj *frame)
+{
+    CL_Bytecode *bc = cl_jit_bytecode_of(func, CL_HDR_TYPE(CL_OBJ_TO_PTR(func)));
+    uint32_t n_pos    = (uint32_t)(bc->arity & 0x7FFFu) + bc->n_optional;
+    uint32_t n_locals = bc->n_locals;
+    uint32_t i;
+    CL_Obj rest = CL_NIL;
+
+    if (nargs > 255) nargs = 255;
+    for (i = 0; i < n_locals; i++) frame[i] = CL_NIL;
+    for (i = 0; i < nargs && i < n_pos; i++) frame[i] = last[nargs - 1 - i];
+    if (nargs > n_pos) {
+        CL_GC_PROTECT(rest);
+        for (i = 0; i < nargs - n_pos; i++)
+            rest = cl_cons_rooted(&last[i], &rest);
+        CL_GC_UNPROTECT(1);
+    }
+    frame[n_pos] = rest;
 }
 
 /* Backing for OP_AMIGA_CALL — mirrors the VM's dispatch in vm.c::
@@ -508,6 +555,6 @@ void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj report,
     cl_restart_top++;
 }
 
-#endif /* JIT_M68K (the &key prologue, AMIGA_CALL, RESTART_PUSH) */
+#endif /* JIT_M68K (the &key/&rest prologues, AMIGA_CALL, RESTART_PUSH) */
 
 #endif /* JIT_M68K */

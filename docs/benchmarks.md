@@ -7,6 +7,37 @@ command, and results, so later runs can be compared like-for-like.
 Related: [specs/performance.md](../specs/performance.md) is the optimization
 *plan*; this file is the *measured results* log.
 
+## 2026-10-03 — m68k JIT `&rest` prologue: an `&rest` leaf call 3× faster than bytecode
+
+**Context**: `specs/jit-direct-calls.md`, "&rest callees": the m68k walker
+compiles `&rest` (a helper conses the list), and direct calls fill for
+positional `&rest` callees.  Same change: the trampoline arm's argument
+copy left the C stack (1040 -> 36 bytes per native call into a generic
+function).
+
+**Environment**: FS-UAE, 68040 JIT config, `make -f Makefile.cross amiga`.
+A = 33e2c186 (master), B = this change, `--no-image`, one boot per run.
+
+**Clean-heap probe** (B, 50k calls per row, fresh process, the first round):
+a native caller into the native `(a &rest r)` leaf with one extra argument
+5.2-5.6 µs, a bytecode caller 16.8-17.6 µs; a fixed-arity native leaf that
+conses the same cell itself (`(car (list b))`) 7.6-8.0 µs.
+
+**`trunk/bench-jit-call.lisp`** (200k calls per row, A, B, A, B):
+
+| row                   | A bc / JIT µs | B bc / JIT µs |
+|-----------------------|---------------|---------------|
+| call native leaf      | 13.4 / 0.90-1.0 | 13.4-13.7 / 1.0-1.1 |
+| call `&optional` leaf | 17.0-17.3 / 1.4 | 17.0-17.2 / 1.3-1.4 |
+| call `&rest` leaf     | 20.4-21.7 / 46.6-62.1 | 20.5-20.7 / 31.9-47.0 |
+
+The `&rest` row's JIT column is timed after its bytecode column has consed
+200k cells, and on the 68040 a cons gets dearer the longer a process has
+consed -- interpreted or native alike: in the probe, a pure-bytecode consing
+loop went 20 -> 60 µs per call within one run, and neither `ext:gc` nor
+`ext:gc-compact` brought it back.  Cause not yet investigated.  The other
+rows are unchanged.
+
 ## 2026-10-03 — m68k JIT `&optional` prologue: an `&optional` leaf call 12× faster
 
 **Context**: `specs/jit-direct-calls.md`, "&optional callees": the m68k

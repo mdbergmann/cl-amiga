@@ -521,7 +521,7 @@ direct call reaches such a callee like any positional one.
 - **The fit rule** (`jit_fits` in `runtime_m68k.c`, shared by
   `jit_dispatch` and the fill): the interpreter's `OP_CALL` bounds --
   `arity <= nargs <= arity + n_optional`, any count above `arity` with
-  `&key` -- and no `&rest`.  A site fills only for a count the callee
+  `&key` (or, since "&rest callees" below, `&rest`).  A site fills only for a count the callee
   accepts, so the hit path checks nothing.  The 6-argument cap applies to
   `arity + n_optional`: the walker declines more.
 
@@ -539,11 +539,55 @@ check) + restored image 5188/5188; `make test`, `test-jit-eager`,
 (`docs/benchmarks.md`): the `&optional` leaf call 16.4 -> 1.3 µs on the
 68040; the native leaf unchanged at 0.90 µs.
 
+## &rest callees
+
+**Status (2026-10-03): done.**  The m68k walker compiles `&rest` -- alone,
+after `&optional`, and together with `&key` -- and a direct call reaches a
+positional `&rest` callee like any other.
+
+- **Positional `&rest`** (no `&key`) takes the `&optional` frame: the count
+  in D1, every slot below A6, the count at -4(a6) for `OP_ARGC`.  The
+  prologue is a JSR to `cl_jit_runtime_rest_prologue(func, nargs, last,
+  frame)`: it NILs the slots, copies the positional arguments from above A6
+  and conses the others into the slot after them.  The consing may
+  collect; the arguments and the frame are on the m68k stack, which the
+  conservative scan pins, and the bytecode is read before it.
+- **Any count arrives.**  `cl_jit_enter` always took any count; only
+  `cl_jit_invoke`'s guard capped it at six.  With `&rest` the guard is
+  OP_CALL's byte (255).  `OP_APPLY` never enters native code, so a longer
+  `apply` stays the interpreter's.
+- **`&rest` with `&key`** stays on the keyword ABI.
+  `cl_jit_runtime_kw_prologue` now takes the function value (8(a6)) instead
+  of the raw `bc` at 12(a6), conses the list and re-derives the bytecode
+  from it before matching the keywords: a compaction does not fix a raw
+  pointer up.
+- **Self tail calls** stay loops up to the positional count: the
+  `&optional` copy NILs the rest slot, which is the empty list such a call
+  conses.  A self call with more arguments is a real call.
+- **The fit rule** accepts any count above `arity` with `&rest`; a site
+  fills for a positional `&rest` callee within the six arguments the fill
+  rule allows.
+
+- **The trampoline's C stack.**  With `&rest` native, ASDF's `FIND-SYSTEM`
+  on the suite's 128K stack (run-tests.lisp's shim checks, under nested
+  LOADs) hit the C-stack guard.  A native call into a generic function
+  takes `jit_dispatch_apply` into `cl_vm_apply`, and the arm copied the
+  arguments into a `CL_Obj[256]` of its own: 1040 bytes per level, on top
+  of `cl_vm_run`'s 1200.  The arguments now go onto the VM stack below
+  `sp` (`cl_vm_apply` pushes its copies above it); the frame is 36 bytes.
+  An 80000-byte worker reached 23 levels of native -> GF -> native on the
+  68040 before, 38 after (`jit-native-to-gf-c-stack-per-level`).
+
+Tests: the "&rest" section of `tests/amiga/test-jit.lisp` (also run on
+arm64 hosts): every lambda-list shape, a fresh list per call, compaction and
+heap churn inside the callee, `&rest` with `&key` (errors, and a default that
+compacts after the consing), forty arguments from a native caller, `apply`
+with 300, 20000-round self tail calls, direct calls with a hit check,
+closures and two threads.  `run-tests.lisp`'s frame-budget check used
+`&rest` to stay interpreted; it is a JIT-off definition now.
+
 ## Later (not in this spec)
 
-- **`&rest` callees** on m68k: the prologue conses, so `bc` must be
-  re-derived after the allocation (the AArch64 helper,
-  `cl_jit_vmstack_ll_prologue`, does it).
 - **`&key` callees**: the kw ABI wants an `args` pointer in natural order,
   so it needs either a site-side reverse or a reversed-args variant of
   `cl_jit_runtime_kw_prologue`.

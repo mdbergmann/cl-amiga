@@ -2745,6 +2745,169 @@
                                                   (= (opt-acc 50 i) (+ i 1275))))))))))
     (mapcar #'mp:join-thread ths)))
 
+;; --- &rest (the m68k walker: cl_jit_runtime_rest_prologue, or the keyword
+;; prologue together with &key; AArch64: cl_jit_vmstack_ll_prologue).  The
+;; entry passes the count as for &optional; the prologue copies the
+;; positional arguments, NILs the other slots and conses the arguments past
+;; the positional ones into a fresh list in the slot after them (CLHS
+;; 3.4.1.3) -- which may collect, so the checks below churn the heap and
+;; compact inside the callee.  Any count above the positional ones reaches
+;; native code (OP_CALL's count is a byte), not just the six of the
+;; positional ABI.
+(defun rest-all (&rest r) r)
+(defun rest-ab (a &optional (b 2 bp) &rest r) (list a b bp r))
+;; A default after &optional sees the earlier ones; &rest sees neither.
+(defun rest-argc (a &optional (b (list a)) &rest r) (list a b r))
+(defun rest-mut (&rest r) (setf (car r) :x) r)
+(defun rest-heap (&rest r) (list (opt-k) r))
+(defun rest-compact (a &rest r)
+  (ext:gc-compact)
+  (list a r (opt-k)))
+(defun rest-key (a &rest r &key (k 1 kp) &allow-other-keys) (list a r k kp))
+(defun rest-key-strict (&rest r &key k) (list r k))
+(defun rest-key-compact (&rest r &key (k (progn (ext:gc-compact) :dflt)))
+  (list r k))
+;; Six positional parameters plus &rest: the positional ABI's limit.
+(defun rest-6 (a b c d e &optional (f :f) &rest r) (list a b c d e f r))
+;; Self tail calls up to the positional count stay a loop: the copy NILs
+;; the rest slot, the empty list such a call conses.  20000 rounds would
+;; exhaust the C stack with a native frame per round.
+(defun rest-acc (n &optional (s 0) &rest more)
+  (if (= n 0) (list s more) (rest-acc (- n 1) (+ s n))))
+;; A self call with more arguments than that is a real call.
+(defun rest-cnt (n &rest r) (if (= n 0) (length r) (rest-cnt (- n 1) 1 2 3)))
+(defun rest-sum (a &rest r) (if r (+ a (car r)) a))
+(defun rest-sum-loop (n)
+  (let ((s 0)) (dotimes (i n s) (setq s (+ s (+ (rest-sum i) (rest-sum i 2)))))))
+(defun rest-misses-for (n)
+  (let ((m0 (jds-stat :misses)))
+    (rest-sum-loop n)
+    (- (jds-stat :misses) m0)))
+;; Native callers: counts below, at and above the six a site can fill.
+(defun rest-call-all ()
+  (list (rest-all) (rest-all 1) (rest-all 1 2 3 4 5 6)
+        (rest-all 1 2 3 4 5 6 7 8 9 10 11 12)))
+(defun rest-call-many ()
+  (rest-all 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
+            20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39))
+(defun rest-call-fresh (i) (rest-compact (list i) (list (+ i 1)) (list (+ i 2))))
+(defun rest-too-few () (rest-ab))
+(defun rest-mk (n) (lambda (&rest r) (cons n r)))
+(defun rest-fc (f) (list (funcall f) (funcall f 1) (funcall f 1 2 3 4 5 6 7 8)))
+
+(check "jit-rest-native" '(t t t t t t t t t t t t t t t t t t t)
+  (mapcar #'opt-native-p
+          (list #'rest-all #'rest-ab #'rest-argc #'rest-mut #'rest-heap
+                #'rest-compact #'rest-key #'rest-key-strict #'rest-key-compact
+                #'rest-6 #'rest-acc #'rest-cnt #'rest-sum #'rest-sum-loop
+                #'rest-call-all #'rest-call-many #'rest-call-fresh
+                #'rest-fc (rest-mk 0))))
+(check "jit-rest-list" '(nil (1) (1 2 3))
+  (list (rest-all) (rest-all 1) (rest-all 1 2 3)))
+(check "jit-rest-after-optional"
+  '((1 2 nil nil) (1 5 t nil) (1 5 t (6)) (1 5 t (6 7 8)))
+  (list (rest-ab 1) (rest-ab 1 5) (rest-ab 1 5 6) (rest-ab 1 5 6 7 8)))
+(check "jit-rest-optional-default" '((1 (1) nil) (1 2 nil) (1 2 (3 4)))
+  (list (rest-argc 1) (rest-argc 1 2) (rest-argc 1 2 3 4)))
+;; A fresh list each call (the caller's arguments are not shared).
+(check "jit-rest-fresh-list" '((:x 2) (:x 2))
+  (list (rest-mut 1 2) (rest-mut 1 2)))
+(check "jit-rest-body-allocates" '((("k") nil) (("k") (1 ("k"))))
+  (list (rest-heap) (rest-heap 1 (opt-k))))
+;; Compaction inside the callee: the rest list, the positional argument and
+;; the heap objects in both survive and still read right.
+(check "jit-rest-across-compaction"
+  '(((7) ((8) (9)) ("k")) ((7) ((8) (9)) ("k")))
+  (list (rest-call-fresh 7) (rest-call-fresh 7)))
+(check "jit-rest-across-churn" t
+  (loop for i below 300
+        always (equal (rest-call-fresh i)
+                      (list (list i) (list (list (+ i 1)) (list (+ i 2))) (list "k")))))
+(check "jit-rest-and-key"
+  '((1 nil 1 nil) (1 (:k 2) 2 t) (1 (:z 3 :k 2) 2 t) (1 (:k 2 :k 3) 2 t))
+  (list (rest-key 1) (rest-key 1 :k 2) (rest-key 1 :z 3 :k 2)
+        (rest-key 1 :k 2 :k 3)))
+(check "jit-rest-and-key-errors" '(((:k 1) 1) :unknown :odd)
+  (list (rest-key-strict :k 1)
+        (handler-case (progn (rest-key-strict :q 1) :no-error)
+          (error () :unknown))
+        (handler-case (progn (rest-key-strict :k) :no-error)
+          (error () :odd))))
+;; The keyword prologue re-derives the bytecode after consing the list;
+;; the default compacts on top.
+(check "jit-rest-and-key-compaction" '((nil :dflt) ((:k 5) 5))
+  (list (rest-key-compact) (rest-key-compact :k 5)))
+(check "jit-rest-six-positional"
+  '((1 2 3 4 5 :f nil) (1 2 3 4 5 6 nil) (1 2 3 4 5 6 (7 8)))
+  (list (rest-6 1 2 3 4 5) (rest-6 1 2 3 4 5 6) (rest-6 1 2 3 4 5 6 7 8)))
+;; (rest-acc 0 6 :x) keeps its extra; the rounds after an extra drop it.
+(check "jit-rest-self-tail-call" '((200010000 nil) (6 (:x)) (6 nil) (6 nil))
+  (list (rest-acc 20000) (rest-acc 0 6 :x) (rest-acc 3 0 :x) (rest-acc 3)))
+(check "jit-rest-self-call-with-extras" '(0 3 3)
+  (list (rest-cnt 0) (rest-cnt 1) (rest-cnt 10)))
+;; Twice: the first round fills the sites, the second hits them.
+(check "jit-rest-direct-calls"
+  '(nil (1) (1 2 3 4 5 6) (1 2 3 4 5 6 7 8 9 10 11 12))
+  (progn (rest-call-all) (rest-call-all)))
+(check "jit-rest-forty-arguments" '(40 0 39)
+  (let ((r (rest-call-many))) (list (length r) (first r) (car (last r)))))
+(check "jit-rest-direct-calls-value" 1001000 (rest-sum-loop 1000))
+;; The fill rule used to refuse &rest callees, so every call missed.  Best
+;; of three, as jit-opt-direct-calls-hit.
+(check "jit-rest-direct-calls-hit" 0
+  (progn
+    (rest-misses-for 10)
+    (let ((best nil))
+      (dotimes (k 3 best)
+        (let ((d (- (rest-misses-for 1000) (rest-misses-for 10))))
+          (when (or (null best) (< (abs d) (abs best))) (setq best d)))))))
+(check "jit-rest-too-few" :caught
+  (handler-case (progn (rest-too-few) :no-error) (program-error () :caught)))
+(check "jit-rest-closures"
+  '(((1) (1 1) (1 1 2 3 4 5 6 7 8)) ((("k")) (("k") 1) (("k") 1 2 3 4 5 6 7 8)))
+  (list (rest-fc (rest-mk 1)) (rest-fc (rest-mk (opt-k)))))
+(check "jit-rest-apply" '(100 300)
+  (list (length (apply #'rest-all (make-list 100 :initial-element 1)))
+        (length (apply #'rest-all (make-list 300 :initial-element 1)))))
+(check "jit-rest-threads" '(t t)
+  (let ((ths (loop for i below 2
+                   collect (let ((i i))
+                             (mp:make-thread
+                              (lambda ()
+                                (loop repeat 200
+                                      always (and (equal (rest-ab i 2 3 4) (list i 2 t (list 3 4)))
+                                                  (equal (rest-call-fresh i)
+                                                         (list (list i)
+                                                               (list (list (+ i 1)) (list (+ i 2)))
+                                                               (list "k")))))))))))
+    (mapcar #'mp:join-thread ths)))
+
+;; The C stack a native call into a generic function costs.  Such a call
+;; takes jit_dispatch's trampoline arm into cl_vm_apply; the arm used to copy
+;; the arguments into a CL_Obj[256] of its own (1 KB per level).  Once &rest
+;; functions turned native, ASDF's FIND-SYSTEM on the suite's 128K stack hit
+;; the C-stack guard (run-tests.lisp's shim checks).  On a 68040 an 80000-byte
+;; worker reached 23 levels of native -> GF -> native before, 38 after; the
+;; interpreter's frames (AArch64) cost no C stack at all.
+(defgeneric gfdepth-gf (n))
+(defvar *gfdepth-max* 0)
+(defun gfdepth-down (n)
+  (setq *gfdepth-max* (max *gfdepth-max* n))
+  (gfdepth-gf (+ n 1)))
+(defmethod gfdepth-gf ((n integer)) (if (>= n 400) n (gfdepth-down n)))
+(dotimes (i 20) (gfdepth-gf 399))
+(check "jit-native-to-gf-c-stack-per-level" t
+  (progn
+    (setq *gfdepth-max* 0)
+    (mp:join-thread
+     (mp:make-thread
+      (lambda () (handler-case (gfdepth-down 0) (error () nil)))
+      :stack-size 80000 :vm-frames 4096 :vm-stack-size 16384))
+    (or (>= *gfdepth-max* 30)
+        (progn (format t ";; DIAG native->GF depth ~D on an 80000-byte stack~%"
+                       *gfdepth-max*)
+               nil))))
+
 ;; --- Loops without calls poll (the interpreter's OP_JMP safepoint).
 ;; The interpreter checks for a pending GC, an interrupt and Ctrl-C on every
 ;; backward jump; native code used to check only on its way into a call.
@@ -3086,8 +3249,8 @@
 ; small count (cl_jit_note_call re-checks before it writes), and a
 ; declined function would then be tried again every 8 calls.  That race
 ; is too narrow to force from here, so this is a smoke test of concurrent
-; settling.  On m68k hot-race-declined always declines: its &rest
-; arg bails every matcher/walker.  AArch64 compiles every lambda list, so
+; settling.  On m68k hot-race-declined always declines: seven positional
+; parameters are over the positional ABI's six.  AArch64 compiles every lambda list, so
 ; there it is a race to settle to native code.  %JIT-HOT-COMPILE-COUNT counts every function the hot path tries,
 ; so the target must be the only one counted in the window: the worker is
 ; (speed 3), settled at definition, and the thread's entry call into it
@@ -3095,10 +3258,10 @@
 ; therefore counts nothing -- a loop LAMBDA there would compile on its
 ; first call.  Two threads that reach the threshold together may both try
 ; (jit_m68k.c), hence at most 2.
-(defun hot-race-declined (x &rest y) (or x y))
+(defun hot-race-declined (x a b c d e f) (or x a b c d e f))
 (defun hot-race-worker ()
   (declare (optimize (speed 3)))
-  (dotimes (i 400) (hot-race-declined i nil)))
+  (dotimes (i 400) (hot-race-declined i nil nil nil nil nil nil)))
 (check "hot: concurrent calls settle a declined function" #+m68k '(nil t) #-m68k '(t t)
   (let ((prev (clamiga::%jit-set-hot-threshold 8)))
     (unwind-protect

@@ -1637,6 +1637,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     int result = 0;
     int is_kw;
     int is_opt;
+    int is_rest;
     int in_frame;
     uint16_t slot_anchor;
 
@@ -1653,18 +1654,22 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
      *   frame, NILs the slots after them and keeps the count at -4(a6)
      *   for OP_ARGC: every slot lives below A6, as with &key.
      *
-     *   &key (with or without &optional): the cl_jit_invoke entry
-     *   passes `(bc, nargs, args)` rather than positional args, and a
-     *   JSR'd kw-prologue (cl_jit_runtime_kw_prologue) populates every
-     *   slot in the LINK frame before the body runs; OP_ARGC reads the
-     *   count at 16(a6).
+     *   &rest (no &key): the &optional frame, but the prologue is a
+     *   JSR to cl_jit_runtime_rest_prologue, which conses the list of
+     *   the arguments past the positional ones.  Any count above the
+     *   positional ones arrives (cl_jit_invoke lifts its cap for &rest).
      *
-     * &rest is rejected: its list is consed at entry, so the prologue
-     * would allocate. */
+     *   &key (with or without &optional / &rest): the cl_jit_invoke
+     *   entry passes `(bc, nargs, args)` rather than positional args,
+     *   and a JSR'd kw-prologue (cl_jit_runtime_kw_prologue) populates
+     *   every slot in the LINK frame before the body runs; OP_ARGC reads
+     *   the count at 16(a6). */
     is_kw = (bc->flags & 1) != 0;
-    is_opt = !is_kw && bc->n_optional != 0;
+    is_rest = !is_kw && (bc->arity & 0x8000) != 0;
+    /* is_opt: the positional ABI with every slot in the LINK frame and
+     * the count at -4(a6) -- &optional, &rest or both. */
+    is_opt = !is_kw && (bc->n_optional != 0 || is_rest);
     in_frame = is_kw || is_opt;
-    if (bc->arity & 0x8000)  return 0;          /* &rest */
     /* n_upvalues > 0 (= inner closures that READ their captures via
      * OP_UPVAL / mutate them via OP_CELL_SET_UPVAL) is now walker-
      * supported via the func_obj first-C-arg ABI: both opcodes route
@@ -1692,6 +1697,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 
     n_locals = bc->n_locals;
     if (n_locals < arity) return 0;
+    /* The &rest list's slot follows the positional ones. */
+    if ((bc->arity & 0x8000) &&
+        n_locals <= arity + (uint32_t)bc->n_optional) return 0;
     n_extra = (uint32_t)(n_locals - arity);
     /* LINK takes a 16-bit signed disp; cap so 4*frame_slots plus the
      * 12 bytes for saved D5/D6/D7 stays within range with headroom.
@@ -1773,11 +1781,35 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
         m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);   /* push frame */
         m68k_emit_move_l_disp_an_predec_am(cb, 20, REG_A6, REG_A7);  /* push args */
         m68k_emit_move_l_disp_an_predec_am(cb, 16, REG_A6, REG_A7);  /* push nargs */
-        m68k_emit_move_l_disp_an_predec_am(cb, 12, REG_A6, REG_A7);  /* push bc */
+        /* func, not the raw bc at 12(a6): an &rest list is consed, so the
+         * helper re-derives the bytecode after allocating. */
+        m68k_emit_move_l_disp_an_predec_am(cb, 8, REG_A6, REG_A7);   /* push func */
         m68k_emit_jsr_abs_l(cb, helper);
         m68k_emit_lea_disp_an_to_am(cb, 16, REG_A7, REG_A7); /* drop 4 args */
     }
-    if (is_opt) emit_opt_prologue(cb, frame_size, n_locals);
+    if (is_rest) {
+        /*   move.l  d1,-4(a6)          ; the count, for OP_ARGC
+         *   lea     frame_size(a6),a0  ; push &frame[0]
+         *   move.l  a0,-(a7)
+         *   lea     12(a6),a0          ; push the last argument's address
+         *   move.l  a0,-(a7)
+         *   move.l  d1,-(a7)           ; push nargs
+         *   move.l  8(a6),-(a7)        ; push func
+         *   jsr     cl_jit_runtime_rest_prologue
+         *   lea     16(a7),a7 */
+        uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_rest_prologue;
+        m68k_emit_move_l_dn_to_disp_am(cb, REG_D1, -4, REG_A6);
+        m68k_emit_lea_disp_an_to_am(cb, frame_size, REG_A6, REG_A0);
+        m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
+        m68k_emit_lea_disp_an_to_am(cb, 12, REG_A6, REG_A0);
+        m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
+        m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+        m68k_emit_move_l_disp_an_predec_am(cb, 8, REG_A6, REG_A7);
+        m68k_emit_jsr_abs_l(cb, helper);
+        m68k_emit_lea_disp_an_to_am(cb, 16, REG_A7, REG_A7);
+    } else if (is_opt) {
+        emit_opt_prologue(cb, frame_size, n_locals);
+    }
 
     ip = 0;
     while (ip < bc->code_len) {
@@ -2547,7 +2579,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * call-site path (still tail-position correct,
              * just at the cost of one extra m68k frame per call).
              * An &optional function takes any count its lambda list
-             * accepts: emit_opt_self_tco_copy rewrites the frame. */
+             * accepts: emit_opt_self_tco_copy rewrites the frame.  So
+             * does an &rest one, up to the positional count -- the copy
+             * NILs the rest slot, the empty list such a call conses. */
             self_tco = !is_kw && nargs >= arity &&
                        nargs <= arity + bc->n_optional &&
                        CL_SYMBOL_P(bc->name);
@@ -2868,9 +2902,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 
         case OP_ARGC: {
             /* The fixnum nargs, as the interpreter's frame->nargs: the
-             * count emit_opt_prologue keeps at -4(a6), or the kw ABI's
-             * 16(a6).  Only the &optional prologue emits OP_ARGC, so a
-             * shape with neither cannot reach it.  Sets mv_count = 1
+             * count the &optional/&rest prologue keeps at -4(a6), or the
+             * kw ABI's 16(a6).  Only the &optional prologue emits OP_ARGC,
+             * so a shape with neither cannot reach it.  Sets mv_count = 1
              * like the VM's OP_ARGC. */
             if (!in_frame) goto fail;
             m68k_emit_move_l_disp_an_to_dn(cb, (int16_t)(is_kw ? 16 : -4),
@@ -4718,9 +4752,11 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     /* Positional ABI: the arguments are cl_vm.stack[sp-nargs .. sp-1] in
      * natural order; cl_jit_enter lays them out in operand-stack order
      * (parameter i at 12+4*(nargs-1-i)(a6)).  The walker keeps positional
-     * arity <= CL_JIT_PASSTHROUGH_MAX_ARITY; the guard keeps a matcher
+     * arity <= CL_JIT_PASSTHROUGH_MAX_ARITY, so only an &rest function
+     * takes more (OP_CALL's u8 count bounds it); the guard keeps a matcher
      * mismatch a wrong value rather than a wild call. */
-    if (nargs >= 0 && nargs <= CL_JIT_PASSTHROUGH_MAX_ARITY)
+    if (nargs >= 0 && (nargs <= CL_JIT_PASSTHROUGH_MAX_ARITY ||
+                       ((bc->arity & 0x8000) && nargs <= 255)))
         result = cl_jit_enter(bc->native_code, t, func_obj,
                               &cl_vm.stack[cl_vm.sp - nargs], (int32_t)nargs);
 
