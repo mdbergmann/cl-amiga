@@ -327,6 +327,22 @@ cat > "$WORK/skh.lisp" <<'LISPEOF'
 LISPEOF
 run_case "no_leak_after_string_key_hooks" "$WORK/skh.lisp"
 
+# --- a method-filtered dispatcher (AMIGA.FFI:MAKE-DISPATCHER :METHODS) ------
+# The callback slot parks the method table off-heap; FREE-DISPATCHER hands
+# it back, and a dispatcher with an empty list holds none.
+cat > "$WORK/dispfilter.lisp" <<'LISPEOF'
+(require "amiga/ffi")
+(dotimes (i 3)
+  (let ((d (amiga.ffi:make-dispatcher (lambda (c o m) c o m 0)
+                                      :methods '(#x80426D66 #x8C1A0002 #x103))))
+    (amiga.ffi:dispatcher-stats d)
+    (amiga.ffi:free-dispatcher d)))
+(amiga.ffi:free-dispatcher (amiga.ffi:make-dispatcher (lambda (c o m) c o m 0) :methods '()))
+(gc)
+(quit)
+LISPEOF
+run_case "no_leak_after_method_dispatchers" "$WORK/dispfilter.lisp"
+
 # --- AArch64 JIT: stubs installed, replaced and swept ----------------------
 # The code heap maps its chunks itself, but its chunk bookkeeping is
 # platform_alloc'd and goes back in cl_jit_shutdown; a stub replaced or

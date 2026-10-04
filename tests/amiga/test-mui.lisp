@@ -561,6 +561,57 @@ STRING-CELL for the notification test.  Returns the application."
                   (and raw-ok t)))))                       ; the generated struct rows agree
       '(t t t t t t t)))
 
+;; the same class with a method list (CREATE-CUSTOM-CLASS :METHODS): the
+;; Lisp function is entered for MUIM_AskMinMax and MUIM_Draw alone, and
+;; everything else MUI sends the object -- OM_NEW, MUIM_Setup, MUIM_Show,
+;; OM_GET ... -- reaches Area natively, so the object still comes up and
+;; draws at the size the Lisp method asked for.
+(check "mui-custom-class-method-list-keeps-other-methods-out-of-lisp" '(t t t t t)
+  (if *mui-p*
+      (let ((methods '()) (draw-width nil) (stats nil))
+        (amiga.mui:with-foreign-pool ()
+          (let* ((ask-id (%m "+MUIM-ASK-MIN-MAX+"))
+                 (draw-id (%m "+MUIM-DRAW+"))
+                 (mcc (amiga.mui:create-custom-class
+                       :area
+                       (lambda (class object message)
+                         (let ((id (amiga.mui:method-id message)))
+                           (pushnew id methods)
+                           (cond ((= id ask-id)
+                                  (amiga.mui:do-super-method class object message)
+                                  (amiga.mui:add-min-max message :min-width 100 :def-width 120 :max-width 500
+                                                                 :min-height 40 :def-height 90 :max-height 300)
+                                  0)
+                                 (t
+                                  (amiga.mui:do-super-method class object message)
+                                  (setf draw-width (amiga.mui:area-mwidth object))
+                                  0))))
+                       :methods (list ask-id draw-id)))
+                 (obj (amiga.mui:new-object (amiga.mui:custom-class-class mcc)
+                                            (%m "+MUIA-FRAME+") (%m "+MUIV-FRAME-TEXT+")))
+                 (win (amiga.mui:new-object :window
+                                            (%m "+MUIA-WINDOW-TITLE+") "AMIGA.MUI method list"
+                                            (%m "+MUIA-WINDOW-ROOT-OBJECT+")
+                                            (amiga.mui:new-object :group (%m "+MUIA-GROUP-CHILD+") obj)))
+                 (app (amiga.mui:new-object :application
+                                            (%m "+MUIA-APPLICATION-BASE+") "CLAMIGAMUIMETHODS"
+                                            (%m "+MUIA-APPLICATION-WINDOW+") win)))
+            (unwind-protect
+                 (progn
+                   (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") t)
+                   (amiga.mui:do-application-events ((id) app :timeout 1) id))
+              (amiga.mui:set-attrs win (%m "+MUIA-WINDOW-OPEN+") nil)
+              (amiga.mui:dispose-object app))
+            (setf stats (multiple-value-list (amiga.mui:custom-class-stats mcc)))
+            (list (and (not (ffi:null-pointer-p obj)) t)    ; OM_NEW reached Area natively
+                  (null (set-difference methods (list ask-id draw-id)))  ; nothing else entered Lisp
+                  (and (member ask-id methods) (member draw-id methods) t)
+                  (and (integerp draw-width) (>= draw-width 100))        ; ADD-MIN-MAX honoured
+                  ;; more messages were passed on than the two kinds handled
+                  (and (= (third stats) 2) (> (second stats) 2)
+                       (> (first stats) (second stats)))))))
+      '(t t t t t)))
+
 ;; a custom layout hook: MUIA_Group_LayoutHook makes MUI ask a Lisp
 ;; function both of its layout questions.  MUILM_MINMAX is answered with
 ;; SET-MIN-MAX over the children's AREA-MIN-WIDTH / AREA-MIN-HEIGHT (the

@@ -6304,6 +6304,42 @@ check_contains "cell-error name: apply of a symbol" \
   'CE-APPLY:(UNDEFINED-FUNCTION CE-NO-SUCH-FN-3 ' "$out"
 check_contains "cell-error name: uninterned name survives compaction" "CE-FRESH:20" "$out"
 
+# --- a method-filtered BOOPSI dispatcher (AMIGA.FFI:MAKE-DISPATCHER :METHODS) ---
+# The listed methods enter Lisp through the callback boundary (arguments
+# boxed under compaction), the others go to the "superclass" natively --
+# itself a Lisp callback here, entered from inside the first one's C frame.
+cat > "$WORK/dispfilter.lisp" <<'EOF'
+(require "amiga/ffi")
+(let* ((super-seen 0) (lisp-seen 0)
+       (entry (ffi:make-callback :uint32 '(:pointer :pointer :pointer)
+                                 (lambda (h o m) h o
+                                   (make-list 3)
+                                   (incf super-seen (ffi:peek-u32 m 0)) 1)))
+       (super (ffi:alloc-foreign 32))
+       (class (ffi:alloc-foreign 48))
+       (message (ffi:alloc-foreign 8))
+       (dispatcher (amiga.ffi:make-dispatcher
+                    (lambda (c o m) c o
+                      (make-list 3)
+                      (incf lisp-seen (ffi:peek-u32 m 0)) 2)
+                    :methods (list #x80426D66 7))))
+  (ffi:poke-pointer super entry 8)
+  (ffi:poke-pointer class super 24)
+  (let ((sum 0))
+    (dotimes (i 10)
+      (dolist (id '(7 9 #x80426D66 11))
+        (ffi:poke-u32 message id 0)
+        (incf sum (ffi:call-foreign dispatcher :uint32 '(:pointer :pointer :pointer)
+                                    (list class class message)))))
+    (format t "DISP:~D:~D:~D:~S~%" sum super-seen lisp-seen
+            (multiple-value-list (amiga.ffi:dispatcher-stats dispatcher))))
+  (amiga.ffi:free-dispatcher dispatcher)
+  (ffi:free-callback entry))
+EOF
+out=$(run_stress "$WORK/dispfilter.lisp")
+check_contains "method-filtered dispatcher routes under GC stress" \
+  "DISP:60:200:21518370370:(40 20 2)" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

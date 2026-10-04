@@ -2575,3 +2575,14 @@ int platform_amiga_push_method_prepare(void)
 {
     return 1;
 }
+
+uint32_t platform_amiga_do_super_method(void *cl, void *object, void *message)
+{
+    void *super = NULL, *entry = NULL;
+    if (cl == NULL) return 0;
+    memcpy(&super, (const uint8_t *)cl + 24, sizeof super);
+    if (super == NULL) return 0;
+    memcpy(&entry, (const uint8_t *)super + 8, sizeof entry);
+    if (entry == NULL) return 0;
+    return ((uint32_t (*)(void *, void *, void *))entry)(super, object, message);
+}

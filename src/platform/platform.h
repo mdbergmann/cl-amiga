@@ -649,6 +649,18 @@ void     platform_amiga_push_method(uint32_t app, uint32_t push_method,
  * the host builds. */
 int      platform_amiga_push_method_prepare(void);
 
+/* DoSuperMethodA(CL, OBJECT, MESSAGE): hand a BOOPSI message to the
+ * dispatcher of CL's superclass and return its result.  Pure C -- what a
+ * method-filtered dispatcher (builtins_ffi.c) does with the methods its
+ * Lisp function did not ask for.  On AmigaOS the superclass's dispatcher
+ * Hook is called through utility.library's CallHookPkt, which
+ * platform_amiga_push_method_prepare must have opened.  On POSIX /
+ * Windows there is no BOOPSI: CL is read as a block holding a native
+ * pointer at offset 24 (cl_Super) to a block holding a native pointer at
+ * offset 8 (h_Entry), a C function of (hook, object, message) returning
+ * a uint32 -- the layout tests/test_amiga_boopsi.lisp builds by hand. */
+uint32_t platform_amiga_do_super_method(void *cl, void *object, void *message);
+
 /* Host builds only: the arguments of the most recent
  * platform_amiga_push_method into OUT[0..4] (app, push_method, object,
  * method, value).  Returns 0 when nothing was pushed since the last call

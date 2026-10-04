@@ -1882,7 +1882,11 @@ message)`, with `do-super-method`, `method-id`, `inst-data`,
 class that answers `MUIM_HandleInput`, and the `_rp(obj)` / `_mleft(obj)`
 / `_minwidth(obj)` shortcuts (`area-rastport`, `area-mleft`,
 `area-min-width`, …) for writing its methods; both live in the foreign
-pool and are released after the objects.  One hook cannot be Lisp: MUI
+pool and are released after the objects.  A class whose objects sit on
+an interactive path should name the methods it handles
+(`create-custom-class … :methods (list id …)`): MUI sends an object many
+methods per repaint and keystroke, and the ones not listed go to the
+superclass natively instead of calling into Lisp.  One hook cannot be Lisp: MUI
 3.8 edits an active `String` on input.device's task, where no Lisp can
 run, so a `MUIA_String_EditHook` that takes keys away from the gadget
 (TAB for completion, C-g, …) is `make-string-key-hook` — native, with a

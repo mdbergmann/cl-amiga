@@ -244,6 +244,143 @@
   (handler-case (amiga.boopsi:with-tags (tags 1 :keyword) (declare (ignore tags)) nil)
     (error (e) (and (search "ULONG" (format nil "~A" e)) t))))
 
+;;; --- a dispatcher with a method list (AMIGA.FFI:MAKE-DISPATCHER :METHODS) --
+;;; Only the listed methods enter Lisp; the rest go to the superclass in C.
+;;; The host has no BOOPSI, so the class is built by hand the way
+;;; platform_amiga_do_super_method reads it there: a native pointer at 24
+;;; (cl_Super) to a block whose native pointer at 8 (h_Entry) is a C
+;;; function of (hook, object, message) -- here a second callback, which
+;;; says what the superclass was handed.
+
+(defmacro with-fake-class ((class super super-seen) &body body)
+  "CLASS over SUPER; SUPER's dispatcher pushes (method-id object-address)
+onto SUPER-SEEN and answers the method id plus 1."
+  (let ((entry (gensym "ENTRY")))
+    `(let* ((,super-seen '())
+            (,entry (ffi:make-callback
+                     :uint32 '(:pointer :pointer :pointer)
+                     (lambda (hook object message)
+                       (declare (ignore hook))
+                       (push (list (ffi:peek-u32 message 0)
+                                   (ffi:foreign-pointer-address object))
+                             ,super-seen)
+                       (logand (1+ (ffi:peek-u32 message 0)) #xFFFFFFFF))))
+            (,super (ffi:alloc-foreign 32))
+            (,class (ffi:alloc-foreign 48)))
+       (unwind-protect
+            (progn
+              (ffi:poke-pointer ,super ,entry 8)
+              (ffi:poke-pointer ,class ,super 24)
+              ,@body)
+         (ffi:free-foreign ,class)
+         (ffi:free-foreign ,super)
+         (ffi:free-callback ,entry)))))
+
+(defun send-method (dispatcher class object id)
+  "Call DISPATCHER as the OS would with a message whose MethodID is ID."
+  (let ((message (ffi:alloc-foreign 8)))
+    (unwind-protect
+         (progn (ffi:poke-u32 message id 0)
+                (ffi:call-foreign dispatcher :uint32 '(:pointer :pointer :pointer)
+                                  (list class object message)))
+      (ffi:free-foreign message))))
+
+;; a listed method (one above the fixnum range, one below) runs the Lisp
+;; function; an unlisted one never does and comes back from the superclass
+(check "dispatcher-methods-listed-enter-lisp-others-go-to-super"
+    '((7 8 #x80426D68 #x105) (#x80426D66 #x103) ((#x80426D67 t) (#x104 t)) (4 2 2))
+  (with-fake-class (class super super-seen)
+    (let* ((lisp-seen '())
+           (object (ffi:alloc-foreign 4))
+           (dispatcher (amiga.ffi:make-dispatcher
+                        (lambda (class object message)
+                          (declare (ignore class object))
+                          (push (ffi:peek-u32 message 0) lisp-seen)
+                          (if (= (ffi:peek-u32 message 0) #x103) 8 7))
+                        :methods '(#x80426D66 #x103))))
+      (unwind-protect
+           (list (list (send-method dispatcher class object #x80426D66)
+                       (send-method dispatcher class object #x103)
+                       (send-method dispatcher class object #x80426D67)
+                       (send-method dispatcher class object #x104))
+                 (reverse lisp-seen)
+                 (mapcar (lambda (row)
+                           (list (first row)
+                                 (= (second row) (ffi:foreign-pointer-address object))))
+                         (reverse super-seen))
+                 (multiple-value-list (amiga.ffi:dispatcher-stats dispatcher)))
+        (amiga.ffi:free-dispatcher dispatcher)
+        (ffi:free-foreign object)))))
+
+;; an empty list is a class that handles nothing: all of it is the super's
+(check "dispatcher-methods-empty-list-passes-everything" '(#x105 nil (1 1 0))
+  (with-fake-class (class super super-seen)
+    (let* ((ran nil)
+           (dispatcher (amiga.ffi:make-dispatcher
+                        (lambda (class object message)
+                          (declare (ignore class object message))
+                          (setf ran t) 0)
+                        :methods '())))
+      (unwind-protect
+           (list (send-method dispatcher class (ffi:make-foreign-pointer 0) #x104) ran
+                 (multiple-value-list (amiga.ffi:dispatcher-stats dispatcher)))
+        (amiga.ffi:free-dispatcher dispatcher)))))
+
+;; without METHODS nothing changes: every method is the Lisp function's,
+;; and there is no account
+(check "dispatcher-without-methods-sees-every-method" '(5 (#x104) nil nil)
+  (with-fake-class (class super super-seen)
+    (let* ((lisp-seen '())
+           (dispatcher (amiga.ffi:make-dispatcher
+                        (lambda (class object message)
+                          (declare (ignore class object))
+                          (push (ffi:peek-u32 message 0) lisp-seen)
+                          5))))
+      (unwind-protect
+           (list (send-method dispatcher class (ffi:make-foreign-pointer 0) #x104)
+                 lisp-seen super-seen
+                 (multiple-value-list (amiga.ffi:dispatcher-stats dispatcher)))
+        (amiga.ffi:free-dispatcher dispatcher)))))
+
+;; a listed method keeps the callback boundary: its error is parked and
+;; re-signaled where the foreign call returns
+(check "dispatcher-methods-error-in-listed-method-is-deferred" '("method boom" nil)
+  (with-fake-class (class super super-seen)
+    (let ((dispatcher (amiga.ffi:make-dispatcher
+                       (lambda (class object message)
+                         (declare (ignore class object message))
+                         (error "method boom"))
+                       :methods '(#x103))))
+      (unwind-protect
+           (list (handler-case (progn (send-method dispatcher class (ffi:make-foreign-pointer 0) #x103)
+                                      :no-error)
+                   (error (e) (format nil "~A" e)))
+                 super-seen)
+        (amiga.ffi:free-dispatcher dispatcher)))))
+
+;; a class with no superclass (a null cl_Super) answers 0 instead of
+;; jumping through it
+(check "dispatcher-methods-null-super-answers-zero" 0
+  (let ((class (ffi:alloc-foreign 48))
+        (dispatcher (amiga.ffi:make-dispatcher (lambda (c o m) c o m 9) :methods '(1))))
+    (unwind-protect
+         (progn (dotimes (i 48) (ffi:poke-u8 class 0 i))
+                (send-method dispatcher class (ffi:make-foreign-pointer 0) 2))
+      (amiga.ffi:free-dispatcher dispatcher)
+      (ffi:free-foreign class))))
+
+(check "dispatcher-methods-validated" '(t t t)
+  (flet ((msg-has (needle thunk)
+           (handler-case (progn (funcall thunk) nil)
+             (error (e) (and (search needle (format nil "~A" e)) t)))))
+    (list (msg-has "METHODS must be a list"
+                   (lambda () (amiga.ffi:make-dispatcher (lambda (c o m) c o m 0) :methods 5)))
+          (msg-has "METHODS must be a list"
+                   (lambda () (amiga.ffi:make-dispatcher (lambda (c o m) c o m 0)
+                                                         :methods (list 1 (expt 2 32)))))
+          (msg-has "not a function"
+                   (lambda () (amiga.ffi:make-dispatcher 5 :methods '(1)))))))
+
 ;;; --- the layering, seen from AMIGA.REACTION -----------------------------
 
 (require "amiga/reaction")

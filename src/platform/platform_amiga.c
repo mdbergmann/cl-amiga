@@ -3766,6 +3766,16 @@ int platform_amiga_last_pushed_method(uint32_t out[5])
     return 0;
 }
 
+uint32_t platform_amiga_do_super_method(void *cl, void *object, void *message)
+{
+    struct IClass *super;
+    if (cl == NULL || UtilityBase == NULL) return 0;
+    super = ((struct IClass *)cl)->cl_Super;
+    if (super == NULL) return 0;
+    /* cl_Dispatcher is the Hook at the start of the IClass */
+    return (uint32_t)CallHookPkt((struct Hook *)super, (Object *)object, message);
+}
+
 /* platform_amiga_call() is implemented in ffi_dispatch_m68k.s
  * (68k assembly trampoline for register-based library calls).
  *

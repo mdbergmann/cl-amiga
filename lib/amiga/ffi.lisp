@@ -16,7 +16,7 @@
            ;; Lisp functions the OS calls back: struct Hook entries and
            ;; BOOPSI class dispatchers
            "MAKE-HOOK" "FREE-HOOK" "HOOK-ENTRY" "HOOK-DATA"
-           "MAKE-DISPATCHER" "FREE-DISPATCHER" "CALLBACK-ULONG"))
+           "MAKE-DISPATCHER" "FREE-DISPATCHER" "DISPATCHER-STATS" "CALLBACK-ULONG"))
 
 (in-package "AMIGA.FFI")
 
@@ -484,20 +484,44 @@ object that holds the hook is disposed; NIL is ignored."
     (ffi:free-foreign hook))
   nil)
 
-(defun make-dispatcher (function)
+(defun make-dispatcher (function &key (methods nil methods-p))
   "A BOOPSI class dispatcher -- what intuition's MakeClass and MUI's
 MUI_CreateCustomClass take -- that calls FUNCTION with the class, the
 object and the message (foreign pointers; the registers a0, a2, a1).  The
 message's MethodID is its first longword; FUNCTION returns the method's
 result (CALLBACK-ULONG), typically what DoSuperMethodA returned for the
-methods it does not handle itself.  Returns the entry as a foreign
-pointer; FREE-DISPATCHER releases it once the class is removed."
+methods it does not handle itself.
+
+With METHODS, a list of method ids (unsigned 32-bit integers), FUNCTION is
+called for those methods only: every other message goes to the superclass
+in native code, without entering Lisp.  An object is sent many methods the
+class has no interest in -- OM_SET, OM_GET, MUIM_Draw for every repaint --
+and each one that reaches FUNCTION costs a callback into Lisp, so a class
+on an interactive path should list what it handles.  DISPATCHER-STATS
+counts both kinds.
+
+Returns the entry as a foreign pointer; FREE-DISPATCHER releases it once
+the class is removed."
   (%check-callback-function function 'make-dispatcher)
-  (ffi:make-callback :uint32 '(:pointer :pointer :pointer)
-                     (lambda (class object message)
-                       (callback-ulong (funcall function class object message)
-                                       'make-dispatcher))
-                     '(:a0 :a2 :a1)))
+  (let ((entry (lambda (class object message)
+                 (callback-ulong (funcall function class object message)
+                                 'make-dispatcher))))
+    (cond (methods-p
+           (unless (and (listp methods)
+                        (every (lambda (id) (typep id '(unsigned-byte 32))) methods))
+             (error "AMIGA.FFI:MAKE-DISPATCHER: METHODS must be a list of unsigned 32-bit method ids, got ~S"
+                    methods))
+           (ffi::%make-method-dispatcher entry methods))
+          (t
+           (ffi:make-callback :uint32 '(:pointer :pointer :pointer) entry
+                              '(:a0 :a2 :a1))))))
+
+(defun dispatcher-stats (dispatcher)
+  "Three values for a MAKE-DISPATCHER entry made with METHODS: how many
+messages reached it, how many of those went to the superclass without
+entering Lisp, and how many method ids it lists.  NIL for a dispatcher
+made without METHODS."
+  (values-list (ffi::%method-dispatcher-stats dispatcher)))
 
 (defun free-dispatcher (dispatcher)
   "Release a MAKE-DISPATCHER entry (after the class is gone); NIL is ignored."

@@ -114,7 +114,7 @@
    "WINDOW-EDGE-DELTA"
    ;; Custom classes: MUI_CreateCustomClass with a Lisp dispatcher, and
    ;; what a dispatcher's methods need
-   "CREATE-CUSTOM-CLASS" "CUSTOM-CLASS-CLASS" "DO-SUPER-METHOD"
+   "CREATE-CUSTOM-CLASS" "CUSTOM-CLASS-CLASS" "CUSTOM-CLASS-STATS" "DO-SUPER-METHOD"
    "METHOD-ID" "INST-DATA" "MIN-MAX-INFO" "ADD-MIN-MAX" "SET-MIN-MAX"
    "DRAW-FLAGS" "REQUEST-IDCMP" "REJECT-IDCMP"
    ;; The mui.h shortcuts for custom-class methods: _rp(obj), _mleft(obj) ...
@@ -688,7 +688,12 @@ title bar."
 ;;; callback, the method returns 0 and the condition is re-signaled on the
 ;;; Lisp side when the call into MUI that dispatched the method returns.
 
-(defun create-custom-class (superclass function &key (data-size 0))
+;; struct MUI_CustomClass address -> its dispatcher entry, for
+;; CUSTOM-CLASS-STATS; an entry lives as long as the class.
+(defvar *class-dispatchers* (make-hash-table))
+
+(defun create-custom-class (superclass function &key (data-size 0)
+                                                   (methods nil methods-p))
   "MUI_CreateCustomClass(NULL, SUPERCLASS, ..., DATA-SIZE, dispatcher): a
 new private class over SUPERCLASS -- a class name (:AREA, \"Area.mui\", see
 CLASS-ID) or another custom class (a foreign pointer from this function)
@@ -696,7 +701,11 @@ CLASS-ID) or another custom class (a foreign pointer from this function)
 message (foreign pointers).  FUNCTION returns the method's result
 \(CALLBACK-ULONG): for the methods it does not handle, what
 \(DO-SUPER-METHOD class object message) returns.  DATA-SIZE bytes of
-zeroed instance data per object are reachable with INST-DATA.  Returns
+zeroed instance data per object are reachable with INST-DATA.  With
+METHODS, a list of method ids, FUNCTION is called for those methods only
+and every other message goes to SUPERCLASS natively, without entering
+Lisp (AMIGA.FFI:MAKE-DISPATCHER) -- list what the class handles when its
+objects sit on an interactive path; CUSTOM-CLASS-STATS counts.  Returns
 the struct MUI_CustomClass as a foreign pointer; NEW-OBJECT takes its
 CUSTOM-CLASS-CLASS.  The class is deleted (MUI_DeleteCustomClass) and
 the dispatcher released when the enclosing WITH-FOREIGN-POOL exits --
@@ -713,7 +722,9 @@ inside one."
   (unless amiga.boopsi::*foreign-pool*
     (error "AMIGA.MUI:CREATE-CUSTOM-CLASS: called outside WITH-FOREIGN-POOL -- the pool deletes the class after the objects are gone; wrap the GUI in (WITH-FOREIGN-POOL () ...)"))
   (%muimaster "CREATE-CUSTOM-CLASS")
-  (let ((dispatcher (amiga.ffi:make-dispatcher function))
+  (let ((dispatcher (if methods-p
+                        (amiga.ffi:make-dispatcher function :methods methods)
+                        (amiga.ffi:make-dispatcher function)))
         (mcc nil))
     (unwind-protect
          (setf mcc
@@ -726,10 +737,22 @@ inside one."
     (unless mcc
       (error "AMIGA.MUI:CREATE-CUSTOM-CLASS: MUI_CreateCustomClass returned NULL for superclass ~S -- the superclass is unknown to this MUI, or memory is exhausted"
              (if (ffi:foreign-pointer-p superclass) superclass (class-id superclass))))
+    (setf (gethash (ffi:foreign-pointer-address mcc) *class-dispatchers*) dispatcher)
     (pool-finalizer (lambda ()
                       (%delete-custom-class mcc)
+                      (remhash (ffi:foreign-pointer-address mcc) *class-dispatchers*)
                       (amiga.ffi:free-dispatcher dispatcher)))
     mcc))
+
+(defun custom-class-stats (mcc)
+  "Three values for a CREATE-CUSTOM-CLASS class made with METHODS: how
+many messages its dispatcher was sent, how many of them went to the
+superclass without entering Lisp, and how many method ids it lists.  NIL
+for a class made without METHODS."
+  (let ((dispatcher (gethash (ffi:foreign-pointer-address mcc) *class-dispatchers*)))
+    (unless dispatcher
+      (error "AMIGA.MUI:CUSTOM-CLASS-STATS: ~S is not a live CREATE-CUSTOM-CLASS class" mcc))
+    (amiga.ffi:dispatcher-stats dispatcher)))
 
 ;;; ----------------------------------------------------------------
 ;;; Struct layouts.  The custom-class support reads MUI's and intuition's

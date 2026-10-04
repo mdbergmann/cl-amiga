@@ -1596,6 +1596,14 @@ typedef struct {
     void     *plat_closure;
     uint32_t  code_handle; /* side-table handle from platform_ffi_register(code) */
     CL_Obj    lisp_fn;     /* GC root — registered in init */
+    /* A method-filtered BOOPSI dispatcher (%MAKE-METHOD-DISPATCHER): only
+     * the MethodIDs listed here enter Lisp, every other message goes to
+     * the superclass's dispatcher without leaving C.  filtered = 0 for an
+     * ordinary callback. */
+    int       filtered;
+    uint32_t  n_methods;
+    uint32_t *methods;     /* platform_alloc'd, NULL when n_methods == 0 */
+    volatile uint32_t calls, passed;   /* %METHOD-DISPATCHER-STATS */
 } FFICallback;
 
 static FFICallback ffi_callbacks[CL_FFI_MAX_CALLBACKS];
@@ -1668,6 +1676,27 @@ static void ffi_callback_handler(void *ud, const CLFFIValue *cargs, CLFFIValue *
     int saved_sp, saved_fp, saved_nlx_top;
     int saved_nlx_floor, saved_handler_floor, saved_restart_floor;
     int err;
+
+    if (cb->filtered) {
+        /* (class, object, message): the MethodID is the message's first
+         * longword.  A method the Lisp function did not ask for is the
+         * superclass's -- DoSuperMethodA, no Lisp, no allocation, safe on
+         * any task.  MUI sends an object dozens of methods per keystroke
+         * (OM_SET, OM_GET, MUIM_Draw, MUIM_DrawBackground ...) of which a
+         * class typically handles two or three. */
+        const uint8_t *msg = (const uint8_t *)cargs[2].p;
+        uint32_t id = 0, k;
+        cb->calls++;
+        if (msg != NULL) memcpy(&id, msg, 4);
+        for (k = 0; k < cb->n_methods; k++)
+            if (cb->methods[k] == id) break;
+        if (msg == NULL || k == cb->n_methods) {
+            cb->passed++;
+            cret->u32 = platform_amiga_do_super_method(cargs[0].p, cargs[1].p,
+                                                       cargs[2].p);
+            return;
+        }
+    }
 
     if (!cl_thread_current_is_registered()) {
         /* No VM, no Lisp state, a stack of unknown size: the only safe
@@ -1795,6 +1824,62 @@ static int8_t ffi_callback_reg(CL_Obj kw)
     return CL_FFI_REG_STACK;
 }
 
+/* Claim a callback slot for LISP_FN and build its entry.  METHODS (owned
+ * by the slot from here on, released by FREE-CALLBACK or on failure) makes
+ * it a method-filtered dispatcher when FILTERED is set.  WHO names the
+ * caller in the errors. */
+static CL_Obj ffi_callback_install(const char *who, CLFFIType ret_type, int n,
+                                   const CLFFIType *atypes, const int8_t *aregs,
+                                   CL_Obj lisp_fn, int filtered,
+                                   uint32_t *methods, uint32_t n_methods)
+{
+    int slot, i;
+    void *code, *plat = NULL;
+    FFICallback *cb;
+
+    /* Claim the slot under the lock (in_use=1 immediately) so a peer
+     * thread's scan cannot pick the same slot; release it on failure. */
+    if (ffi_callback_lock) platform_mutex_lock(ffi_callback_lock);
+    for (slot = 0; slot < CL_FFI_MAX_CALLBACKS; slot++)
+        if (!ffi_callbacks[slot].in_use) break;
+    if (slot == CL_FFI_MAX_CALLBACKS) {
+        if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
+        if (methods) platform_free(methods);
+        cl_error(CL_ERR_GENERAL, "%s: too many live callbacks (max %d)", who, CL_FFI_MAX_CALLBACKS);
+    }
+    cb = &ffi_callbacks[slot];
+    cb->in_use = 1;
+    if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
+
+    cb->ret_type = ret_type;
+    cb->nargs = n;
+    for (i = 0; i < n; i++) {
+        cb->arg_types[i] = atypes[i];
+        cb->arg_regs[i] = aregs[i];
+    }
+    cb->lisp_fn = lisp_fn;  /* rooted slot — survives the alloc below */
+    cb->filtered = filtered;
+    cb->methods = methods;
+    cb->n_methods = n_methods;
+    cb->calls = 0;
+    cb->passed = 0;
+
+    code = platform_ffi_make_closure(ret_type, n, atypes, cb->arg_regs,
+                                     ffi_callback_handler, cb, &plat);
+    if (!code) {
+        cb->lisp_fn = CL_NIL;
+        cb->filtered = 0;
+        cb->methods = NULL;
+        cb->n_methods = 0;
+        cb->in_use = 0;
+        if (methods) platform_free(methods);
+        cl_error(CL_ERR_GENERAL, "%s: callbacks are not supported on this platform", who);
+    }
+    cb->plat_closure = plat;
+    cb->code_handle = platform_ffi_register(code);
+    return cl_make_foreign_pointer(cb->code_handle, 0, 0);
+}
+
 /* (ffi:make-callback ret-type arg-types lisp-fn &optional regs) → foreign-pointer
  * Returns a C-callable function pointer that invokes LISP-FN.  REGS, a
  * list parallel to ARG-TYPES of :D0-:D7 / :A0-:A6 / NIL, names the 68k
@@ -1805,13 +1890,11 @@ static int8_t ffi_callback_reg(CL_Obj kw)
  * entry made there is simply a C function of (hook, object, message). */
 static CL_Obj bi_ffi_make_callback(CL_Obj *args, int nargs)
 {
-    int slot, i, n = 0, nregs = 0;
+    int i, n = 0, nregs = 0;
     CLFFIType ret_type;
     CLFFIType atypes[CL_FFI_MAX_ARGS];
     int8_t aregs[CL_FFI_MAX_ARGS];
     CL_Obj tlist;
-    void *code, *plat = NULL;
-    FFICallback *cb;
 
     ret_type = ffi_kw_to_type(args[0]);
     for (tlist = args[1]; !CL_NULL_P(tlist); tlist = cl_cdr(tlist)) {
@@ -1860,37 +1943,8 @@ static CL_Obj bi_ffi_make_callback(CL_Obj *args, int nargs)
     }
 #endif
 
-    /* Claim the slot under the lock (in_use=1 immediately) so a peer
-     * thread's scan cannot pick the same slot; release it on failure. */
-    if (ffi_callback_lock) platform_mutex_lock(ffi_callback_lock);
-    for (slot = 0; slot < CL_FFI_MAX_CALLBACKS; slot++)
-        if (!ffi_callbacks[slot].in_use) break;
-    if (slot == CL_FFI_MAX_CALLBACKS) {
-        if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
-        cl_error(CL_ERR_GENERAL, "FFI:MAKE-CALLBACK: too many live callbacks (max %d)", CL_FFI_MAX_CALLBACKS);
-    }
-    cb = &ffi_callbacks[slot];
-    cb->in_use = 1;
-    if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
-
-    cb->ret_type = ret_type;
-    cb->nargs = n;
-    for (i = 0; i < n; i++) {
-        cb->arg_types[i] = atypes[i];
-        cb->arg_regs[i] = aregs[i];
-    }
-    cb->lisp_fn = args[2];  /* rooted slot — survives the alloc below */
-
-    code = platform_ffi_make_closure(ret_type, n, atypes, cb->arg_regs,
-                                     ffi_callback_handler, cb, &plat);
-    if (!code) {
-        cb->lisp_fn = CL_NIL;
-        cb->in_use = 0;
-        cl_error(CL_ERR_GENERAL, "FFI:MAKE-CALLBACK: callbacks are not supported on this platform");
-    }
-    cb->plat_closure = plat;
-    cb->code_handle = platform_ffi_register(code);
-    return cl_make_foreign_pointer(cb->code_handle, 0, 0);
+    return ffi_callback_install("FFI:MAKE-CALLBACK", ret_type, n, atypes, aregs,
+                                args[2], 0, NULL, 0);
 }
 
 /* (ffi:free-callback fp) → nil
@@ -1919,6 +1973,12 @@ static CL_Obj bi_ffi_free_callback(CL_Obj *args, int nargs)
             cb->lisp_fn = CL_NIL;
             cb->plat_closure = NULL;
             cb->code_handle = 0;
+            /* No OS call can be inside the entry any more (the caller's
+             * contract: the class is gone), so the table goes with it. */
+            if (cb->methods) platform_free(cb->methods);
+            cb->methods = NULL;
+            cb->n_methods = 0;
+            cb->filtered = 0;
             cb->in_use = 0;
             if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
             return CL_NIL;
@@ -1927,6 +1987,77 @@ static CL_Obj bi_ffi_free_callback(CL_Obj *args, int nargs)
     if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
     cl_error(CL_ERR_GENERAL, "FFI:FREE-CALLBACK: not a live callback pointer");
     return CL_NIL;
+}
+
+/* (ffi::%make-method-dispatcher lisp-fn methods) → foreign-pointer
+ * A BOOPSI class dispatcher -- (class, object, message) in a0/a2/a1,
+ * result in d0 -- that calls LISP-FN only for the messages whose MethodID
+ * is in METHODS (a list of unsigned 32-bit integers, possibly empty) and
+ * hands every other one to the superclass natively (DoSuperMethodA).
+ * AMIGA.FFI:MAKE-DISPATCHER's :METHODS; released with FFI:FREE-CALLBACK. */
+static CL_Obj bi_ffi_make_method_dispatcher(CL_Obj *args, int nargs)
+{
+    static const char *who = "AMIGA.FFI:MAKE-DISPATCHER";
+    CLFFIType atypes[3] = { CL_FFI_POINTER, CL_FFI_POINTER, CL_FFI_POINTER };
+    int8_t aregs[3] = { 8, 10, 9 };   /* a0, a2, a1 */
+    uint32_t *methods = NULL, n = 0, i;
+    CL_Obj list;
+    (void)nargs;
+
+    if (!CL_FUNCTION_P(args[0]) && !CL_CLOSURE_P(args[0]) &&
+        !cl_funcallable_instance_p(args[0]))
+        cl_error(CL_ERR_TYPE, "%s: the dispatcher must be a function", who);
+    for (list = args[1]; !CL_NULL_P(list); list = cl_cdr(list)) {
+        if (!CL_CONS_P(list))
+            cl_error(CL_ERR_TYPE, "%s: METHODS must be a proper list of method ids", who);
+        if (!CL_INTEGER_P(cl_car(list)))
+            cl_error(CL_ERR_TYPE, "%s: METHODS must hold unsigned 32-bit method ids (MUIM_ / OM_ constants)", who);
+        n++;
+    }
+    if (!platform_amiga_push_method_prepare())
+        cl_error(CL_ERR_GENERAL, "%s: cannot open utility.library v36, which the superclass call needs", who);
+    if (n > 0) {
+        methods = (uint32_t *)platform_alloc(n * sizeof(uint32_t));
+        if (methods == NULL) cl_error(CL_ERR_GENERAL, "%s: out of memory", who);
+        for (list = args[1], i = 0; i < n; list = cl_cdr(list), i++)
+            methods[i] = (uint32_t)cl_ffi_obj_to_u64(cl_car(list));
+    }
+    return ffi_callback_install(who, CL_FFI_U32, 3, atypes, aregs, args[0],
+                                1, methods, n);
+}
+
+/* (ffi::%method-dispatcher-stats fp) → (calls passed count) or NIL: how
+ * many messages reached the dispatcher, how many of them went to the
+ * superclass without entering Lisp, and how many method ids it lists.
+ * NIL for a live callback that is not a method-filtered dispatcher. */
+static CL_Obj bi_ffi_method_dispatcher_stats(CL_Obj *args, int nargs)
+{
+    CL_ForeignPtr *fp;
+    uint32_t calls = 0, passed = 0, count = 0;
+    int slot, found = 0, filtered = 0;
+    (void)nargs;
+
+    if (!CL_FOREIGN_POINTER_P(args[0]))
+        cl_error(CL_ERR_TYPE, "AMIGA.FFI:DISPATCHER-STATS: expected a dispatcher (a foreign pointer)");
+    fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
+    if (ffi_callback_lock) platform_mutex_lock(ffi_callback_lock);
+    for (slot = 0; slot < CL_FFI_MAX_CALLBACKS; slot++) {
+        FFICallback *cb = &ffi_callbacks[slot];
+        if (cb->in_use && cb->code_handle == fp->address) {
+            found = 1;
+            filtered = cb->filtered;
+            calls = cb->calls; passed = cb->passed; count = cb->n_methods;
+            break;
+        }
+    }
+    if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
+    if (!found)
+        cl_error(CL_ERR_GENERAL, "AMIGA.FFI:DISPATCHER-STATS: not a live callback pointer");
+    if (!filtered) return CL_NIL;
+    /* counters wrap into the fixnum range rather than cons a bignum */
+    return cl_cons(CL_MAKE_FIXNUM((int32_t)(calls & 0x3FFFFFFF)),
+                   cl_cons(CL_MAKE_FIXNUM((int32_t)(passed & 0x3FFFFFFF)),
+                           cl_cons(CL_MAKE_FIXNUM((int32_t)count), CL_NIL)));
 }
 
 /* ================================================================
@@ -2055,4 +2186,8 @@ void cl_builtins_ffi_init(void)
     ffi_defun("CALL-FOREIGN",           bi_ffi_call_foreign,        4, 5);
     ffi_defun("MAKE-CALLBACK",          bi_ffi_make_callback,       3, 4);
     ffi_defun("FREE-CALLBACK",          bi_ffi_free_callback,       1, 1);
+    /* Internal (unexported): AMIGA.FFI:MAKE-DISPATCHER / DISPATCHER-STATS
+     * are the documented surface. */
+    cl_register_builtin("%MAKE-METHOD-DISPATCHER",  bi_ffi_make_method_dispatcher,  2, 2, cl_package_ffi);
+    cl_register_builtin("%METHOD-DISPATCHER-STATS", bi_ffi_method_dispatcher_stats, 1, 1, cl_package_ffi);
 }
