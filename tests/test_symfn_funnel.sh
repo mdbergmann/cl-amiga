@@ -26,13 +26,15 @@ ok()   { passed=$((passed + 1)); total=$((total + 1)); echo "  ok  $1"; }
 fail() { failed=$((failed + 1)); total=$((total + 1)); echo "  FAIL  $1"; }
 
 # Print file:line:text of each raw function-cell store under $1/src.
-# Comment lines and `==` comparisons are not stores.
+# Comment lines and `==` comparisons are not stores.  The $1 prefix is
+# stripped first: on Windows TMPDIR is `C:/...`, and the drive colon
+# would throw off the file:line: match of the comment filter.
 raw_writes() {
     grep -rnE --include='*.c' --include='*.h' \
          '(->|\.)function[[:space:]]*=([^=]|$)' "$1/src" 2>/dev/null \
+        | sed "s|^$1/||" \
         | grep -v 'symfn-raw:' \
-        | grep -vE '^[^:]*:[0-9]+:[[:space:]]*(\*|/\*|//)' \
-        | sed "s|^$1/||"
+        | grep -vE '^[^:]*:[0-9]+:[[:space:]]*(\*|/\*|//)'
 }
 
 # 1. The check still finds what it is for: the struct-pointer and the
