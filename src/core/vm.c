@@ -396,6 +396,15 @@ static CL_Obj get_func_name(CL_Obj func_obj);
 static int lookup_source_line(CL_Bytecode *bc, uint32_t ip);
 static CL_Bytecode *get_frame_bytecode(CL_Frame *f);
 
+/* m68k native frames carry no ip of their own: the JIT works it out from
+ * the stack (jit_m68k.c) before anything here reads a frame's ip. */
+static void bt_sync_native_ips(void)
+{
+#ifdef JIT_M68K
+    cl_jit_resolve_frame_ips();
+#endif
+}
+
 /* Summarize the NLX stack at an overflow.  Compiled in unconditionally because
  * an NLX overflow is fatal and we want this diagnostic in the field, not just
  * a bare "NLX stack overflow" error.  An overflow almost always means a frame
@@ -430,6 +439,7 @@ void cl_nlx_overflow_summary(const char *where)
     fprintf(stderr, "[NLX-OVERFLOW] most-repeated tag=0x%08x count=%d\n",
             top_tag, top_tag_cnt);
     /* Function owning the leaking frame (vm_fp of the top NLX entry). */
+    bt_sync_native_ips();
     if (cl_nlx_top > 0) {
         int lf = cl_nlx_stack[cl_nlx_top - 1].vm_fp - 1;
         if (lf >= 0 && lf < cl_vm.fp) {
@@ -962,6 +972,7 @@ static CL_Bytecode *get_frame_bytecode(CL_Frame *f)
 static const char *frame_site_brief(CL_Frame *f, uint32_t ip, char *buf, int n)
 {
     CL_Bytecode *bc;
+    bt_sync_native_ips();
     /* A stub frame (cl_vm_apply, cl_vm_call_bytecode) is not the caller:
      * the frame under it made the call -- a native function's, its ip at
      * the call (jit_a64.c), or an interpreted one that called a builtin. */
@@ -1201,6 +1212,7 @@ static void bt_render(int base, int max_show)
     bt_ensure_buf();
     cl_backtrace_buf[0] = '\0';
     if (base <= 0) return;
+    bt_sync_native_ips();
 
     /* BASE frames is the most that can ever be shown, so it doubles as the
      * "no limit" sentinel — and keeps limit+5 below from overflowing. */
@@ -1371,6 +1383,7 @@ CL_Obj cl_vm_backtrace_list(int max_frames)
         count = max_frames;
     if (count <= 0)
         return CL_NIL;
+    bt_sync_native_ips();
 
     /* result/entry/name/file_str all hold heap refs across cl_cons /
      * cl_make_string allocations below — protect all four. */

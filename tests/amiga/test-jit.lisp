@@ -2602,8 +2602,13 @@
         (when (eql di 1) (return r))))))
 #+m68k
 (check "jit-frames-on-by-default" t (clamiga::%jit-frames-p))
-(check "jit-site-frames-backtrace" '("JDS-BT-LEAF" "JDS-BT-CALLER" 1)
-  (jds-bt-hit))
+;; Forced compaction (CLAMIGA_GC_STRESS, make test-gc-stress) collects at
+;; every allocation, which empties the sites before any call can hit: there
+;; only the frames are checked.
+(check "jit-site-frames-backtrace" '("JDS-BT-LEAF" "JDS-BT-CALLER" t)
+  (let ((r (jds-bt-hit)))
+    (list (first r) (second r)
+          (or (eql (third r) 1) (not (null (ext:getenv "CLAMIGA_GC_STRESS")))))))
 ;; An m68k frame pushed by the hit path has no locals on the VM stack (the
 ;; arguments are on the m68k stack): FRAME-LOCALS answers with an empty
 ;; list, not with whatever the reused slot held before.  (AArch64 keeps its
@@ -2659,6 +2664,179 @@
         r))))
 ;; (A peer's stop-the-world collection while threads loop on direct calls:
 ;; jit-direct-native-callee-across-concurrent-gc above.)
+
+;; --- Tail calls into other functions (m68k: emit_tail_call_site).  A
+;; filled tail site hands the caller's activation and CL_Frame to the
+;; callee and jumps, so a chain of tail calls runs in constant stack, as in
+;; the interpreter.  100000 is far past the 1024 frames a chain of calls
+;; would need: each one would push a frame and fail with "Call stack
+;; overflow".  A tail call passing more arguments than its function
+;; received stays a call (the caller drops only what it pushed).
+(defun jtc-even (n) (if (= n 0) t (jtc-odd (- n 1))))
+(defun jtc-odd (n) (if (= n 0) nil (jtc-even (- n 1))))
+;; A state machine of three functions, consing as it goes, so collections
+;; and the loop poll land inside the chain.
+(defun jtc-st-a (n acc) (if (= n 0) (length acc) (jtc-st-b (- n 1) (cons n acc))))
+(defun jtc-st-b (n acc) (if (evenp n) (jtc-st-a n acc) (jtc-st-c n acc)))
+(defun jtc-st-c (n acc) (jtc-st-a n (cdr acc)))
+;; Fewer arguments than received is a jump too.
+(defun jtc-one (a) (list a))
+(defun jtc-drop (a b) (declare (ignore b)) (jtc-one a))
+;; More arguments than received: a call, and the right values.
+(defun jtc-wide (a b c) (list a b c))
+(defun jtc-grow (n) (if (= n 0) :done (jtc-grow2 n 1)))
+(defun jtc-grow2 (n k) (jtc-grow3 n k :x))
+(defun jtc-grow3 (n k x) (declare (ignore x)) (jtc-grow (- n k)))
+;; Nine arguments: the copy is a DBF loop above eight.
+(defun jtc-nine (n a b c d e f g h)
+  (if (= n 0) (list a b c d e f g h)
+      (jtc-nine2 (- n 1) b c d e f g h a)))
+(defun jtc-nine2 (n a b c d e f g h) (jtc-nine n a b c d e f g h))
+;; Into a closure (its upvalues come from the func the jump passes), an
+;; &optional, a &rest and a &key callee, and multiple values back out.
+(defun jtc-make-adder (k) (lambda (x) (+ x k)))
+(defun jtc-funcall (f x) (funcall f x))
+(defun jtc-opt (a &optional (b 10)) (list a b))
+(defun jtc-to-opt (a) (jtc-opt a))
+(defun jtc-rest (&rest r) r)
+(defun jtc-to-rest (a b) (jtc-rest a b))
+(defun jtc-key (a &key (k :dflt)) (list a k))
+(defun jtc-to-key (a b c) (jtc-key a b c))
+(defun jtc-mv (a) (values a (1+ a) (+ a 2)))
+(defun jtc-to-mv (a) (jtc-mv a))
+;; An error in a function reached by a jump unwinds cleanly.
+(defun jtc-err-a (n) (if (= n 0) (error "jtc bottom") (jtc-err-b (- n 1))))
+(defun jtc-err-b (n) (jtc-err-a n))
+;; A special binding around the tail-positioned call: the binding must be
+;; seen by the callee and undone after it, so this one never jumps.
+(defvar *jtc-special* :outer)
+(defun jtc-read-special () *jtc-special*)
+(defun jtc-bind (v) (let ((*jtc-special* v)) (jtc-read-special)))
+
+(check "jtc-all-native" t
+  (every (lambda (f) (not (null (clamiga::%jit-dump-bytes f))))
+         (list #'jtc-even #'jtc-odd #'jtc-st-a #'jtc-st-b #'jtc-st-c
+               #'jtc-grow #'jtc-grow2 #'jtc-grow3 #'jtc-nine #'jtc-nine2)))
+(check "jtc-mutual-small" '(t nil t) (list (jtc-even 10) (jtc-even 7) (jtc-odd 7)))
+(check "jtc-mutual-constant-stack" '(t nil)
+  (list (jtc-even 100000) (jtc-odd 100000)))
+(check "jtc-state-machine" '(5 10001 10001)
+  (list (jtc-st-a 10 nil) (jtc-st-a 20001 nil) (jtc-st-a 20001 nil)))
+(check "jtc-fewer-args" '((1) (2)) (list (jtc-drop 1 :x) (jtc-drop 2 :y)))
+(check "jtc-more-args-stays-a-call" '(:done :done) (list (jtc-grow 50) (jtc-grow 300)))
+(check "jtc-nine-args" '((b c d e f g h a) (a b c d e f g h))
+  (list (jtc-nine 1 'a 'b 'c 'd 'e 'f 'g 'h)
+        (jtc-nine 20000 'a 'b 'c 'd 'e 'f 'g 'h)))
+(check "jtc-closure-callee" '(15 107)
+  (list (jtc-funcall (jtc-make-adder 5) 10)
+        (jtc-funcall (jtc-make-adder 100) 7)))
+(check "jtc-optional-rest-key-callees" '((1 10) (1 10) (1 2) (1 2) (1 :v) (1 :v))
+  (list (jtc-to-opt 1) (jtc-to-opt 1) (jtc-to-rest 1 2) (jtc-to-rest 1 2)
+        (jtc-to-key 1 :k :v) (jtc-to-key 1 :k :v)))
+(check "jtc-multiple-values" '((1 2 3) (5 6 7))
+  (list (multiple-value-list (jtc-to-mv 1)) (multiple-value-list (jtc-to-mv 5))))
+(check "jtc-error-unwinds" '(:caught :caught t)
+  (list (handler-case (jtc-err-a 5000) (error () :caught))
+        (handler-case (jtc-err-a 5000) (error () :caught))
+        (jtc-even 100000)))
+(check "jtc-special-binding" '(:inner :inner :outer)
+  (list (jtc-bind :inner) (jtc-bind :inner) *jtc-special*))
+;; A jump makes the callee's frame the caller's own, as the interpreter's
+;; frame reuse does: the backtrace shows the callee where the caller was.
+(defun jtc-bt-leaf () (ext:backtrace))
+(defun jtc-bt-mid () (jtc-bt-leaf))
+(defun jtc-bt-top () (let ((r (jtc-bt-mid))) r))
+;; A collection between fill and call empties the sites, so best of three.
+(defun jtc-bt-names ()
+  (let ((r nil))
+    (dotimes (k 3 r)
+      (jtc-bt-top)                      ; fill the sites
+      (let ((bt (jtc-bt-top)))
+        (setq r (list (symbol-name (second (first bt)))
+                      (symbol-name (second (second bt)))))
+        (when (equal (second r) "JTC-BT-TOP") (return r))))))
+#+m68k
+(check "jtc-backtrace-frame-replaced" '("JTC-BT-LEAF" "JTC-BT-TOP")
+  (jtc-bt-names))
+;; Frames off: no site fills, so every tail call is a call again -- the
+;; values do not change (and stay within the frame stack).
+#+m68k
+(check "jtc-frames-off" '(t nil (1 10))
+  (progn
+    (clamiga::%jit-set-frames nil)
+    (unwind-protect (list (jtc-even 300) (jtc-odd 300) (jtc-to-opt 1))
+      (clamiga::%jit-set-frames t))))
+
+;; --- The line of a native frame in a backtrace: the line of the call the
+;; function is in, as for an interpreted one (m68k: the backtrace finds the
+;; frame's return address on the stack and looks it up in the function's
+;; line table; AArch64 stores the ip before each call).  Each native
+;; function below has an interpreted twin laid out the same way, the
+;; twin's DEFUN exactly 5 lines further down, so the twin's line is the
+;; native one's plus 5 -- wherever this file puts them.  A native frame
+;; stuck at its function's first line gives 6.
+(defun jln-name= (name) (lambda (e) (string= name (symbol-name (second e)))))
+(defun jln-line (name bt) (fourth (find-if (jln-name= name) bt)))
+(defun jln-leaf () (ext:backtrace))
+;; A direct call into a native leaf.
+(defun jln-outer (x)
+  (let ((a (car x)))
+    (list a
+          (jln-leaf))))
+(clamiga::%jit-set-active nil)
+(defun jln-outer-i (x)
+  (let ((a (car x)))
+    (list a
+          (jln-leaf-i))))
+(defun jln-leaf-i () (ext:backtrace))
+(clamiga::%jit-set-active t)
+;; A call to a builtin (the call site's miss path).
+(defun jln-builtin (x)
+  (let ((a (car x)))
+    (list a
+          (ext:backtrace))))
+(clamiga::%jit-set-active nil)
+(defun jln-builtin-i (x)
+  (let ((a (car x)))
+    (list a
+          (ext:backtrace))))
+(clamiga::%jit-set-active t)
+;; An error signalled by a builtin the native function calls, seen from
+;; the handler: there the frame is the innermost native one.
+(defun jln-err (h)
+  (let ((y (list h)))
+    (gethash
+     y h)))
+(clamiga::%jit-set-active nil)
+(defun jln-err-i (h)
+  (let ((y (list h)))
+    (gethash
+     y h)))
+(clamiga::%jit-set-active t)
+(defun jln-err-line (fn name)
+  (block nil
+    (handler-bind ((error (lambda (c) (declare (ignore c))
+                            (return (jln-line name (ext:backtrace))))))
+      (funcall fn 5))))
+
+(check "jln-native" '(t t t nil nil nil nil)
+  (mapcar (lambda (f) (not (null (clamiga::%jit-dump-bytes f))))
+          (list #'jln-outer #'jln-builtin #'jln-err
+                #'jln-outer-i #'jln-leaf-i #'jln-builtin-i #'jln-err-i)))
+(check "jln-direct-call-line" 5
+  (- (jln-line "JLN-OUTER-I" (second (jln-outer-i '(1))))
+     (jln-line "JLN-OUTER" (second (jln-outer '(1))))))
+(check "jln-builtin-call-line" 5
+  (- (jln-line "JLN-BUILTIN-I" (second (jln-builtin-i '(1))))
+     (jln-line "JLN-BUILTIN" (second (jln-builtin '(1))))))
+(check "jln-error-in-builtin-line" 5
+  (- (jln-err-line #'jln-err-i "JLN-ERR-I")
+     (jln-err-line #'jln-err "JLN-ERR")))
+;; A second backtrace resolves the same frames again.
+(check "jln-repeatable" t
+  (let ((a (jln-line "JLN-OUTER" (second (jln-outer '(1)))))
+        (b (jln-line "JLN-OUTER" (second (jln-outer '(1))))))
+    (and (integerp a) (= a b))))
 
 ;; --- &optional (the m68k walker: emit_opt_prologue; AArch64: its inline
 ;; prologue).  The caller passes the argument count -- in D1 on m68k, from

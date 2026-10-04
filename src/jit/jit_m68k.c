@@ -970,13 +970,29 @@ static uint32_t compute_landing_ip(int32_t offset, uint32_t base,
  * Also doubles as a structural validator: returns 0 if it sees an
  * opcode the walker doesn't know how to handle or a malformed
  * operand (e.g. a branch target outside the code).  In that case the
- * caller bails before emitting anything. */
-static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
+ * caller bails before emitting anything.
+ *
+ * *DYN_EXTENT is set when the function establishes something with
+ * dynamic extent -- an NLX frame (whose saved registers point into its
+ * activation), a handler, a restart or a special binding: its tail calls
+ * must stay calls (emit_tail_call_site). */
+static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target,
+                                  int *dyn_extent)
 {
     uint32_t ip = 0;
+    *dyn_extent = 0;
     while (ip < bc->code_len) {
         uint8_t op = bc->code[ip];
         uint32_t step;
+        switch (op) {
+        case OP_CATCH: case OP_UWPROT: case OP_BLOCK_PUSH:
+        case OP_TAGBODY_PUSH: case OP_HANDLER_PUSH: case OP_RESTART_PUSH:
+        case OP_HANDLER_CASE_PUSH: case OP_DYNBIND: case OP_PROGV_BIND:
+            *dyn_extent = 1;
+            break;
+        default:
+            break;
+        }
         switch (op) {
         case OP_NIL: case OP_T: case OP_POP: case OP_DUP: case OP_RET:
         case OP_CAR: case OP_CDR: case OP_CONS: case OP_NOT: case OP_EQ:
@@ -1327,30 +1343,45 @@ static void emit_chareq_compute(CodeBuf *cb, int cache_head, int cache_depth,
  * LEA (d16,PC),A1, whose displacement is patched once the walk is done.
  * The cells are data, read by native code and written only by C, and not
  * in native_relocs: the gen check makes relocating `func` unnecessary. */
+/* Every LEA (d16,PC) that addresses a cell, and the cell it addresses: a
+ * tail call's jump path and its fallback call share one cell (the miss
+ * helper fills the cell it is handed, and both paths must see the fill). */
 typedef struct {
-    uint32_t *lea_offs;   /* offset of each site's LEA (d16,PC) disp word */
-    uint32_t  count;
-    uint32_t  cap;
-    int       oom;
+    uint32_t lea_off;     /* offset of the LEA's disp word */
+    uint32_t cell;        /* index of the cell it addresses */
+} JitSiteRef;
+
+typedef struct {
+    JitSiteRef *refs;
+    uint32_t    count;
+    uint32_t    cap;
+    uint32_t    n_cells;
+    int         oom;
 } JitSites;
 
-static void jit_sites_record(JitSites *s, uint32_t off)
+/* Record the LEA whose disp word is at OFF.  CELL < 0 gives it a new cell;
+ * otherwise it shares that one.  Returns the cell's index. */
+static int32_t jit_sites_record(JitSites *s, uint32_t off, int32_t cell)
 {
-    if (s->oom) return;
+    if (cell < 0) cell = (int32_t)s->n_cells++;
+    if (s->oom) return cell;
     if (s->count == s->cap) {
         uint32_t new_cap = (s->cap == 0) ? 8 : (s->cap * 2);
-        uint32_t *grown = (uint32_t *)platform_alloc(
-            (unsigned long)new_cap * sizeof(uint32_t));
-        if (grown == NULL) { s->oom = 1; return; }
-        if (s->lea_offs) {
+        JitSiteRef *grown = (JitSiteRef *)platform_alloc(
+            (unsigned long)new_cap * sizeof(JitSiteRef));
+        if (grown == NULL) { s->oom = 1; return cell; }
+        if (s->refs) {
             uint32_t i;
-            for (i = 0; i < s->count; i++) grown[i] = s->lea_offs[i];
-            platform_free(s->lea_offs);
+            for (i = 0; i < s->count; i++) grown[i] = s->refs[i];
+            platform_free(s->refs);
         }
-        s->lea_offs = grown;
+        s->refs = grown;
         s->cap = new_cap;
     }
-    s->lea_offs[s->count++] = off;
+    s->refs[s->count].lea_off = off;
+    s->refs[s->count].cell    = (uint32_t)cell;
+    s->count++;
+    return cell;
 }
 
 /* The hit path compares A7 against CL_Thread.jit_c_floor through A3. */
@@ -1393,7 +1424,16 @@ static void emit_loop_poll(CodeBuf *cb)
  * frame, as the interpreter's OP_CALL would push one): EXT:BACKTRACE and
  * the error-time backtrace list native functions.  &frames[fp] is
  * frames + fp*34, computed as fp*32 + fp*2 -- a MULU.W costs a 68040 four
- * times as much. */
+ * times as much.
+ *
+ * JIT_FRAME_SP: a native function's frame keeps in its `constants` word
+ * the A7 it was entered with -- the address of its func slot, its A6 + 8
+ * once LINKed, the return address into its caller just below.  The hit
+ * path stores it, and cl_jit_enter for a frame cl_jit_invoke pushes.  An
+ * interpreted frame holds a constants pool there, never a stack address,
+ * so the word both marks a native activation and locates it: the tail
+ * jump checks it to know that the frame on top is its own
+ * (emit_tail_call_site). */
 #define JIT_VM_FP_DISP      ((int16_t)offsetof(CL_Thread, vm.fp))
 #define JIT_VM_FSIZE_DISP   ((int16_t)offsetof(CL_Thread, vm.frame_size))
 #define JIT_VM_FRAMES_DISP  ((int16_t)offsetof(CL_Thread, vm.frames))
@@ -1443,7 +1483,7 @@ typedef char jit_frame_fields_are_32bit[
  *         adda.l  d0,a1               ; &frames[fp]
  *         move.l  (a7),bytecode(a1)
  *         move.l  d1,code(a1)
- *         clr.l   constants(a1)
+ *         move.l  a7,constants(a1)    ; the activation (JIT_FRAME_SP)
  *         clr.l   ip(a1)              ; the function's first line
  *         clr.l   n_locals(a1)        ; its arguments are not on the VM stack
  *         addq.l  #1,vm.fp(a3)
@@ -1459,9 +1499,12 @@ typedef char jit_frame_fields_are_32bit[
  *         move.l  a0,-(a7)
  *         jsr     cl_jit_runtime_call[_global]_site
  *         lea     12|16+drop(a7),a7
- * .done: */
+ * .done:
+ *
+ * CELL is the site's cell: < 0 for a new one, else one a tail call's jump
+ * path (emit_tail_call_site) already addresses. */
 static void emit_call_site(CodeBuf *cb, JitRelocs *relocs, JitSites *sites,
-                           CL_Obj sym, int global, uint8_t nargs)
+                           CL_Obj sym, int global, uint8_t nargs, int32_t cell)
 {
     uint32_t helper = global
         ? (uint32_t)(uintptr_t)&cl_jit_runtime_call_global_site
@@ -1471,7 +1514,7 @@ static void emit_call_site(CodeBuf *cb, JitRelocs *relocs, JitSites *sites,
     int n_miss = 0, k;
     int32_t bra_done_pc, miss_off, done_off;
 
-    jit_sites_record(sites, cb_len(cb) + 2);
+    jit_sites_record(sites, cb_len(cb) + 2, cell);
     m68k_emit_lea_pc_disp_to_an(cb, 0, REG_A1);
     m68k_emit_move_l_postinc_an_to_dn(cb, REG_A1, REG_D0);
     m68k_emit_move_l_postinc_an_to_dn(cb, REG_A1, REG_D1);
@@ -1502,7 +1545,7 @@ static void emit_call_site(CodeBuf *cb, JitRelocs *relocs, JitSites *sites,
     m68k_emit_adda_l_dn_an(cb, REG_D0, REG_A1);
     m68k_emit_move_l_ind_an_to_disp_am(cb, REG_A7, JIT_FR_BYTECODE, REG_A1);
     m68k_emit_move_l_dn_to_disp_am(cb, REG_D1, JIT_FR_CODE, REG_A1);
-    m68k_emit_clr_l_disp_an(cb, JIT_FR_CONSTANTS, REG_A1);
+    m68k_emit_move_l_an_direct_to_disp_am(cb, REG_A7, JIT_FR_CONSTANTS, REG_A1);
     m68k_emit_clr_l_disp_an(cb, JIT_FR_IP, REG_A1);
     m68k_emit_clr_l_disp_an(cb, JIT_FR_NLOCALS, REG_A1);
     m68k_emit_addq_l_disp_an(cb, 1, JIT_VM_FP_DISP, REG_A3);
@@ -1535,22 +1578,231 @@ static void emit_call_site(CodeBuf *cb, JitRelocs *relocs, JitSites *sites,
                       (int16_t)(done_off - bra_done_pc));
 }
 
+/* A tail call to another function, OP_TAILCALL / OP_TAILCALL_GLOBAL with
+ * NARGS on the operand stack (the cache flushed): the jump path, which
+ * hands this function's activation to the callee instead of calling it,
+ * so chains of tail calls -- a state machine, mutually recursive
+ * functions -- run in constant m68k stack, as the interpreter's frame
+ * reuse does.  Every way off the jump path lands where the caller emits
+ * the ordinary call site (emit_call_site sharing the returned cell) and
+ * the return after it, so a tail call that cannot jump stays a call.
+ *
+ * The jump needs this function's own CL_Frame on top of the frame stack,
+ * to become the callee's: its `constants` word holds the activation's
+ * entry A7, A6 + 8 (the hit path's and cl_jit_enter's marker).  A
+ * function entered while frames were off has none, and calls.  Our
+ * caller drops 4 + 4 * (the count it pushed) after the return, which the
+ * callee's arguments can only fill when NARGS <= ARITY (the walker's
+ * condition), so the arguments go to 12(a6) upwards, the slots of the
+ * count the callee's own caller would push; the slots above stay as they
+ * are until the caller drops them.
+ *
+ *         subq.w  #1,jit_loop_ctr(a3) ; the loop poll: a tail call can be a
+ *         bcc.w   .skip               ; loop, through other functions
+ *         jsr     cl_jit_runtime_loop_poll
+ * .skip:  move.l  vm.fp(a3),d0
+ *         mulu.w  #34,d0
+ *         movea.l vm.frames(a3),a1
+ *         adda.l  d0,a1               ; &frames[fp]; ours is at -34(a1)
+ *         lea     8(a6),a0
+ *         cmpa.l  -34+constants(a1),a0
+ *         bne.w   .call               ; not our frame
+ *         move.l  a1,-(a7)
+ *         lea     cell(pc),a1
+ *         move.l  (a1)+,d0            ; gen, func and entry, read before
+ *         move.l  (a1)+,d1            ; gen is compared (emit_call_site)
+ *         movea.l (a1),a0
+ *         cmp.l   cl_call_gen,d0
+ *         bne.w   .miss
+ *       [ cmp.l   4+4n(a7),d1         ; OP_TAILCALL: the same function?
+ *         bne.w   .miss ]
+ *         move.l  4(a1),d0            ; the callee's bc->code
+ *         movea.l (a7)+,a1
+ *         move.l  d1,-34+bytecode(a1) ; our frame is the callee's now
+ *         move.l  d0,-34+code(a1)
+ *         clr.l   -34+n_locals(a1)    ; cl_jit_invoke's arguments are ours
+ *         move.l  d1,8(a6)            ; func
+ *         move.l  (a7)+,12(a6)        ; the arguments, the last at 12(a6)
+ *         ...                         ; (more than 8: a DBF loop)
+ *         move.l  saved_d7(a6),d7     ; our caller's D5-D7
+ *         move.l  saved_d6(a6),d6
+ *         move.l  saved_d5(a6),d5
+ *         unlk    a6
+ *         moveq   #nargs,d1
+ *         jmp     (a0)
+ * .miss:  addq.l  #4,a7
+ * .call:                              ; the caller's emit_call_site
+ *
+ * Returns the cell for that call site. */
+static int32_t emit_tail_call_site(CodeBuf *cb, JitSites *sites, int global,
+                                   uint8_t nargs, int16_t saved_d7_disp,
+                                   int16_t saved_d6_disp, int16_t saved_d5_disp)
+{
+    int32_t call_pc[2], miss_pc[2];
+    int n_call = 0, n_miss = 0, k;
+    int32_t cell, miss_off, call_off;
+    uint32_t i;
+
+    emit_loop_poll(cb);
+    m68k_emit_move_l_disp_an_to_dn(cb, JIT_VM_FP_DISP, REG_A3, REG_D0);
+    m68k_emit_mulu_w_imm_dn(cb, (uint16_t)sizeof(CL_Frame), REG_D0);
+    m68k_emit_movea_l_disp_an_to_am(cb, JIT_VM_FRAMES_DISP, REG_A3, REG_A1);
+    m68k_emit_adda_l_dn_an(cb, REG_D0, REG_A1);
+    m68k_emit_lea_disp_an_to_am(cb, 8, REG_A6, REG_A0);
+    m68k_emit_cmpa_l_disp_an_am(cb, (int16_t)(JIT_FR_CONSTANTS - 34),
+                                REG_A1, REG_A0);
+    call_pc[n_call++] = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bne_w(cb, 0);
+
+    m68k_emit_move_l_an_predec_am(cb, REG_A1, REG_A7);
+    cell = jit_sites_record(sites, cb_len(cb) + 2, -1);
+    m68k_emit_lea_pc_disp_to_an(cb, 0, REG_A1);
+    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A1, REG_D0);
+    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A1, REG_D1);
+    m68k_emit_movea_l_ind_an_to_am(cb, REG_A1, REG_A0);
+    m68k_emit_cmp_l_abs_dn(cb, (uint32_t)(uintptr_t)&cl_call_gen, REG_D0);
+    miss_pc[n_miss++] = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bne_w(cb, 0);
+    if (!global) {
+        m68k_emit_cmp_l_disp_an_dn(cb, (int16_t)(4 + 4 * (int32_t)nargs),
+                                   REG_A7, REG_D1);
+        miss_pc[n_miss++] = (int32_t)cb_len(cb) + 2;
+        m68k_emit_bne_w(cb, 0);
+    }
+    m68k_emit_move_l_disp_an_to_dn(cb, 4, REG_A1, REG_D0);
+    m68k_emit_movea_l_postinc_an_to_am(cb, REG_A7, REG_A1);
+    m68k_emit_move_l_dn_to_disp_am(cb, REG_D1, (int16_t)(JIT_FR_BYTECODE - 34),
+                                   REG_A1);
+    m68k_emit_move_l_dn_to_disp_am(cb, REG_D0, (int16_t)(JIT_FR_CODE - 34),
+                                   REG_A1);
+    m68k_emit_clr_l_disp_an(cb, (int16_t)(JIT_FR_NLOCALS - 34), REG_A1);
+    m68k_emit_move_l_dn_to_disp_am(cb, REG_D1, 8, REG_A6);
+    if (nargs <= 8) {
+        for (i = 0; i < nargs; i++)
+            m68k_emit_move_l_postinc_an_to_disp_am(cb, REG_A7,
+                (int16_t)(12 + 4 * (int32_t)i), REG_A6);
+    } else {
+        int32_t loop_off;
+        m68k_emit_lea_disp_an_to_am(cb, 12, REG_A6, REG_A1);
+        if (nargs - 1 <= 127)
+            m68k_emit_moveq(cb, (int8_t)(nargs - 1), REG_D0);
+        else
+            m68k_emit_move_l_imm32(cb, (uint32_t)(nargs - 1), REG_D0);
+        loop_off = (int32_t)cb_len(cb);
+        m68k_emit_move_l_postinc_an_to_postinc_am(cb, REG_A7, REG_A1);
+        m68k_emit_dbf_w(cb, REG_D0,
+                        (int16_t)(loop_off - ((int32_t)cb_len(cb) + 2)));
+    }
+    m68k_emit_move_l_disp_an_to_dn(cb, saved_d7_disp, REG_A6, REG_D7);
+    m68k_emit_move_l_disp_an_to_dn(cb, saved_d6_disp, REG_A6, REG_D6);
+    m68k_emit_move_l_disp_an_to_dn(cb, saved_d5_disp, REG_A6, REG_D5);
+    m68k_emit_unlk_an(cb, REG_A6);
+    if (nargs <= 127)
+        m68k_emit_moveq(cb, (int8_t)nargs, REG_D1);
+    else
+        m68k_emit_move_l_imm32(cb, (uint32_t)nargs, REG_D1);
+    m68k_emit_jmp_ind_an(cb, REG_A0);
+
+    miss_off = (int32_t)cb_len(cb);
+    m68k_emit_addq_l_an(cb, 4, REG_A7);
+    call_off = (int32_t)cb_len(cb);
+    for (k = 0; k < n_miss; k++)
+        m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)miss_pc[k],
+                          (int16_t)(miss_off - miss_pc[k]));
+    for (k = 0; k < n_call; k++)
+        m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)call_pc[k],
+                          (int16_t)(call_off - call_pc[k]));
+    return cell;
+}
+
+/* The line table (JIT_FRAME_SP's other use): which bytecode IP a return
+ * address in this function's code belongs to, for the backtrace's line of
+ * a native frame (cl_jit_resolve_frame_ips).  Native code stores no IP:
+ * the backtrace finds the frame's return address on the m68k stack and
+ * looks it up here, so the table costs memory, not time.  An entry
+ * (native offset << 16 | IP) starts at an opcode that emitted a call --
+ * only those leave a return address -- and only where the source line
+ * changes; IP is the opcode's own + 1, the resume point lookup_source_line
+ * expects.  The table and a trailer follow the cells:
+ *
+ *     [code][cells][entries: u32 ...][u32 code_end][u32 table_off][u32 magic]
+ *
+ * A function without calls, without a line map or past 64 KB (code or
+ * bytecode) gets none, and its frames keep the first line. */
+#define JIT_LINES_MAGIC 0x4A4C494EUL    /* "JLIN" */
+
+typedef struct {
+    uint32_t *ents;
+    uint32_t  count;
+    uint32_t  cap;
+    int       off;          /* too large or out of memory: no table */
+    int32_t   last_line;    /* the last entry's line; -1 before the first */
+    uint32_t  lm;           /* cursor into bc->line_map */
+} JitLines;
+
+/* After the opcode at bytecode OP_IP, emitted from native OP_NATIVE on. */
+static void jit_lines_note(JitLines *L, const CL_Bytecode *bc,
+                           const CodeBuf *cb, uint32_t op_native, uint32_t op_ip)
+{
+    int32_t line;
+    if (L->off || bc->line_map == NULL || bc->line_map_count == 0) return;
+    if (cb->last_call <= op_native) return;        /* no call in it */
+    if (op_native > 0xFFFF || op_ip + 1 > 0xFFFF) { L->off = 1; return; }
+    while (L->lm + 1 < bc->line_map_count &&
+           bc->line_map[L->lm + 1].pc <= op_ip)
+        L->lm++;
+    line = (bc->line_map[L->lm].pc <= op_ip) ? bc->line_map[L->lm].line : 0;
+    if (line == L->last_line) return;
+    L->last_line = line;
+    if (L->count == L->cap) {
+        uint32_t new_cap = (L->cap == 0) ? 8 : (L->cap * 2);
+        uint32_t *grown = (uint32_t *)platform_alloc(
+            (unsigned long)new_cap * sizeof(uint32_t));
+        if (grown == NULL) { L->off = 1; return; }
+        if (L->ents) {
+            uint32_t i;
+            for (i = 0; i < L->count; i++) grown[i] = L->ents[i];
+            platform_free(L->ents);
+        }
+        L->ents = grown;
+        L->cap = new_cap;
+    }
+    L->ents[L->count++] = (op_native << 16) | (op_ip + 1);
+}
+
+/* Append the table and its trailer.  CODE_END is where the instructions
+ * end (the cells start). */
+static void emit_line_table(CodeBuf *cb, const JitLines *L, uint32_t code_end)
+{
+    uint32_t i, table_off;
+    if (L->off || L->count == 0) return;
+    if (cb_len(cb) & 3) m68k_emit_nop(cb);     /* never reached */
+    table_off = cb_len(cb);
+    for (i = 0; i < L->count; i++) cb_emit_u32(cb, L->ents[i]);
+    cb_emit_u32(cb, code_end);
+    cb_emit_u32(cb, table_off);
+    cb_emit_u32(cb, (uint32_t)JIT_LINES_MAGIC);
+}
+
 /* Append the cells of every site the walk recorded and point each site's
  * LEA at its own.  Returns 0 if a displacement does not fit. */
 static int emit_call_site_cells(CodeBuf *cb, const JitSites *sites)
 {
-    uint32_t i;
-    if (sites->count == 0) return 1;
+    uint32_t i, base;
+    if (sites->n_cells == 0) return 1;
     if (cb_len(cb) & 3) m68k_emit_nop(cb);     /* never reached: after an RTS */
-    for (i = 0; i < sites->count; i++) {
-        int32_t disp = (int32_t)cb_len(cb) - (int32_t)sites->lea_offs[i];
-        if (disp > 32767) return 0;
-        m68k_patch_disp16(cb_data(cb), cb_len(cb), sites->lea_offs[i],
-                          (int16_t)disp);
+    base = cb_len(cb);
+    for (i = 0; i < sites->n_cells; i++) {
         cb_emit_u32(cb, 0);     /* gen 0: never filled */
         cb_emit_u32(cb, 0);
         cb_emit_u32(cb, 0);
         cb_emit_u32(cb, 0);
+    }
+    for (i = 0; i < sites->count; i++) {
+        const JitSiteRef *r = &sites->refs[i];
+        int32_t disp = (int32_t)(base + 16 * r->cell) - (int32_t)r->lea_off;
+        if (disp > 32767) return 0;
+        m68k_patch_disp16(cb_data(cb), cb_len(cb), r->lea_off, (int16_t)disp);
     }
     return 1;
 }
@@ -1577,7 +1829,7 @@ static int emit_call_global(const CL_Bytecode *bc, uint32_t *ip, CodeBuf *cb,
     if (!CL_SYMBOL_P(sym)) return 0;
 
     cache_flush(cb, cache_head, cache_depth);
-    emit_call_site(cb, relocs, sites, sym, 1, nargs);
+    emit_call_site(cb, relocs, sites, sym, 1, nargs, -1);
     cache_push_dn(cb, cache_head, cache_depth, REG_D0);
     return 1;
 }
@@ -1694,7 +1946,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     BranchPatch *patches = NULL;
     uint32_t n_patches = 0;
     uint32_t cap_patches = 0;
-    JitSites sites = { NULL, 0, 0, 0 };
+    JitSites sites = { NULL, 0, 0, 0, 0 };
+    JitLines lines = { NULL, 0, 0, 0, -1, 0 };
+    uint32_t op_ip = 0, op_native = 0, code_end;
     int cache_head = 7;
     int cache_depth = 0;
     int result = 0;
@@ -1703,6 +1957,8 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     int is_rest;
     int in_frame;
     uint16_t slot_anchor;
+    int dyn_extent;
+    int tail_jumps;     /* emit_tail_call_site applies to this function */
 
     /* Conservative gate.  The walker handles three shapes:
      *
@@ -1797,7 +2053,8 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     is_target = (uint8_t *)platform_alloc((unsigned long)(bc->code_len + 1));
     if (is_target == NULL) { platform_free(bc_to_native); return 0; }
     for (i = 0; i <= bc->code_len; i++) is_target[i] = 0;
-    if (!prescan_branch_targets(bc, is_target)) goto fail;
+    if (!prescan_branch_targets(bc, is_target, &dyn_extent)) goto fail;
+    tail_jumps = !dyn_extent;
 
     /* Prologue: LINK frame, then save callee-clobbered cache regs
      * D5/D6/D7 below the frame.  Order matters: D7 first so it lives
@@ -1844,6 +2101,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     ip = 0;
     while (ip < bc->code_len) {
         uint8_t op;
+        if (ip > 0) jit_lines_note(&lines, bc, cb, op_native, op_ip);
         /* If this IP is a branch target, flush the cache so the
          * "depth=0 at every branch boundary" invariant holds for both
          * the falling-through path and the branch-arriving path. */
@@ -1851,6 +2109,8 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             cache_flush(cb, &cache_head, &cache_depth);
         }
         bc_to_native[ip] = (int32_t)cb_len(cb);
+        op_ip = ip;
+        op_native = cb_len(cb);
         /* A loop header: the backward branch lands on the poll. */
         if (is_target[ip] & JIT_LOOP_HEAD) emit_loop_poll(cb);
         op = bc->code[ip++];
@@ -2547,7 +2807,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             nargs = bc->code[ip++];
 
             cache_flush(cb, &cache_head, &cache_depth);
-            emit_call_site(cb, relocs, &sites, CL_NIL, 0, nargs);
+            emit_call_site(cb, relocs, &sites, CL_NIL, 0, nargs, -1);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
@@ -2595,6 +2855,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
              * bodies fit well under that limit in practice. */
             uint8_t nargs;
             int self_tco;
+            int32_t cell;
             int32_t guard_branch_pc = 0;
             if (ip >= bc->code_len) goto fail;
             nargs = bc->code[ip++];
@@ -2686,8 +2947,14 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                                   (int16_t)((int32_t)cb_len(cb) - guard_branch_pc));
             }
 
-            /* Fallback / non-self path: a call site, then return. */
-            emit_call_site(cb, relocs, &sites, CL_NIL, 0, nargs);
+            /* Another function: jump into it where emit_tail_call_site
+             * can, else (and on its way out) a call site, then return. */
+            cell = -1;
+            if (tail_jumps && nargs <= arity)
+                cell = emit_tail_call_site(cb, &sites, 0, nargs,
+                                           saved_d7_disp, saved_d6_disp,
+                                           saved_d5_disp);
+            emit_call_site(cb, relocs, &sites, CL_NIL, 0, nargs, cell);
 
             /* Result already in D0; restore callee-saved cache regs
              * from their A6-relative slots and return to our caller.
@@ -2758,6 +3025,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
             uint8_t nargs;
             CL_Obj sym;
             int self_tco;
+            int32_t cell;
             int32_t guard_branch_pc = 0;
             if (ip + 2 >= bc->code_len) goto fail;
             sym_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
@@ -2818,8 +3086,13 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
                                   (int16_t)((int32_t)cb_len(cb) - guard_branch_pc));
             }
 
-            /* Fallback / non-self path: as OP_CALL_GLOBAL, then return. */
-            emit_call_site(cb, relocs, &sites, sym, 1, nargs);
+            /* Another function: as OP_TAILCALL, but no func slot. */
+            cell = -1;
+            if (tail_jumps && nargs <= arity)
+                cell = emit_tail_call_site(cb, &sites, 1, nargs,
+                                           saved_d7_disp, saved_d6_disp,
+                                           saved_d5_disp);
+            emit_call_site(cb, relocs, &sites, sym, 1, nargs, cell);
 
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d7_disp, REG_A6, REG_D7);
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d6_disp, REG_A6, REG_D6);
@@ -4124,6 +4397,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
     }
     /* Falling off the end without any OP_RET = malformed bytecode. */
     if (!saw_ret) goto fail;
+    jit_lines_note(&lines, bc, cb, op_native, op_ip);
 
     for (i = 0; i < n_patches; i++) {
         BranchPatch *p = &patches[i];
@@ -4137,7 +4411,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
         m68k_patch_disp16(cb_data(cb), cb_len(cb),
                           p->patch_off, (int16_t)disp32);
     }
+    code_end = cb_len(cb);
     if (sites.oom || !emit_call_site_cells(cb, &sites)) goto fail;
+    emit_line_table(cb, &lines, code_end);
     result = 1;
     goto cleanup;
 
@@ -4147,7 +4423,8 @@ cleanup:
     if (bc_to_native) platform_free(bc_to_native);
     if (is_target)    platform_free(is_target);
     if (patches)      platform_free(patches);
-    if (sites.lea_offs) platform_free(sites.lea_offs);
+    if (sites.refs) platform_free(sites.refs);
+    if (lines.ents) platform_free(lines.ents);
     return result;
 }
 
@@ -4470,6 +4747,17 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
     } else if ((op & 0xFFF8) == 0x4E90) {           /* JSR (An) */
         snprintf(mnemonic, (size_t)msize, "jsr (a%d)", op & 7);
         matched = 1;
+    } else if ((op & 0xFFF8) == 0x4ED0) {           /* JMP (An) */
+        snprintf(mnemonic, (size_t)msize, "jmp (a%d)", op & 7);
+        matched = 1;
+    } else if ((op & 0xF1FF) == 0xC0FC) {           /* MULU.W #imm,Dn */
+        uint16_t imm;
+        if (pos + 2 > len) return 0;
+        imm = (uint16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
+        pos += 2;
+        snprintf(mnemonic, (size_t)msize, "mulu.w #%u,d%d", (unsigned)imm,
+                 (op >> 9) & 7);
+        matched = 1;
     } else if ((op & 0xFFF8) == 0x4868) {           /* PEA (d16,An) */
         int16_t d;
         if (pos + 2 > len) return 0;
@@ -4593,12 +4881,40 @@ static uint32_t disasm_u32(const uint8_t *p)
            ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
 }
 
+static uint32_t disasm_u16(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 8) | (uint32_t)p[1];
+}
+
+/* The line table's trailer (emit_line_table): 1 and the table's bounds
+ * when CODE carries one. */
+static int jit_line_table(const uint8_t *code, uint32_t len,
+                          uint32_t *code_end, uint32_t *table_off,
+                          uint32_t *count)
+{
+    uint32_t te, to;
+    if (code == NULL || len < 12 || disasm_u32(code + len - 4) != JIT_LINES_MAGIC)
+        return 0;
+    te = disasm_u32(code + len - 12);
+    to = disasm_u32(code + len - 8);
+    if (to > len - 12 || te > to || ((len - 12 - to) & 3) != 0) return 0;
+    *code_end  = te;
+    *table_off = to;
+    *count     = (len - 12 - to) / 4;
+    return 1;
+}
+
 void cl_jit_disassemble(const uint8_t *code, uint32_t len)
 {
     uint32_t off = 0;
     uint32_t cells = len;   /* where the call-site cells begin (= the end) */
+    uint32_t sites_end = len, code_end, table_off = len, n_lines = 0;
     char mnem[80];
     char line[160];
+    if (jit_line_table(code, len, &code_end, &table_off, &n_lines)) {
+        cells = code_end;
+        sites_end = table_off;
+    }
     while (off < len && off < cells) {
         uint32_t n = disasm_one(code, len, off, mnem, sizeof mnem);
         char hex[40];
@@ -4630,7 +4946,8 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
         }
         off += n;
     }
-    for (off = cells; off + 16 <= len; off += 16) {
+    if (cells & 3) cells += 2;                  /* the cells' alignment NOP */
+    for (off = cells; off + 16 <= sites_end; off += 16) {
         snprintf(line, sizeof line,
                  "  site #%lu: gen=%lu func=$%08lx entry=$%08lx code=$%08lx\n",
                  (unsigned long)((off - cells) / 16),
@@ -4638,6 +4955,12 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
                  (unsigned long)disasm_u32(code + off + 4),
                  (unsigned long)disasm_u32(code + off + 8),
                  (unsigned long)disasm_u32(code + off + 12));
+        cl_write_cstring_to_stdout(line);
+    }
+    for (off = 0; off < n_lines; off++) {
+        uint32_t e = disasm_u32(code + table_off + 4 * off);
+        snprintf(line, sizeof line, "  line: from %04lu ip %lu\n",
+                 (unsigned long)(e >> 16), (unsigned long)(e & 0xFFFF));
         cl_write_cstring_to_stdout(line);
     }
 }
@@ -4683,6 +5006,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     void   *prev_top;
     char   *prev_floor;
     int   pushed_frame = 0;
+    void *sp_slot = NULL;
 
     if (bc == NULL || bc->native_code == NULL) return CL_NIL;
     cl_jitc_invoke_count++;
@@ -4738,7 +5062,8 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
      * (the VM stack is GC-rooted), so frame-locals can recover the
      * arguments; interior let-bound locals stay on the m68k stack and
      * remain invisible.  ip = 0 maps to the function's first source line.
-     * A full frame stack is the interpreter's "Call stack overflow", so
+     * `constants` is the native frame's marker (JIT_FRAME_SP), which
+     * cl_jit_enter writes.  A full frame stack is the interpreter's "Call stack overflow", so
      * runaway native recursion stops at the same depth.  On a non-local
      * exit (longjmp) the error/NLX unwind resets cl_vm.fp wholesale to a
      * pre-call snapshot, so skipping the pop below cannot leak the frame. */
@@ -4746,13 +5071,14 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         CL_Frame *sf = &cl_vm.frames[cl_vm.fp++];
         sf->bytecode  = func_obj;
         sf->code      = bc->code;
-        sf->constants = bc->constants;
+        sf->constants = NULL;
         sf->ip        = 0;
         sf->bp        = (uint32_t)(cl_vm.sp - nargs);
         sf->n_locals  = nargs;
         sf->nargs     = (uint16_t)nargs;
         sf->nlx_level = cl_nlx_top;
         sf->fslot     = 0;
+        sp_slot       = &sf->constants;
         pushed_frame  = 1;
     }
 
@@ -4763,7 +5089,8 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
      * call. */
     if (nargs >= 0 && nargs <= CL_JIT_MAX_POSITIONAL)
         result = cl_jit_enter(bc->native_code, t, func_obj,
-                              &cl_vm.stack[cl_vm.sp - nargs], (int32_t)nargs);
+                              &cl_vm.stack[cl_vm.sp - nargs], (int32_t)nargs,
+                              sp_slot);
 
     if (pushed_frame) cl_vm.fp--;
     t->jit_depth     = prev_depth;
@@ -4775,6 +5102,90 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         t->jit_c_floor = prev_floor;
     }
     return result;
+}
+
+/* --- The line of a native frame (the backtrace's) ---------------------
+ *
+ * Native code never writes a frame's ip, so a native frame would always
+ * show its function's first line.  The backtrace calls this first: for
+ * every native frame of the current thread (JIT_FRAME_SP marks them and
+ * gives each activation's A6) it finds the return address of the call
+ * the function is in -- the call that leads to the next frame, or to the
+ * helper that is running -- and stores the IP the line table
+ * (emit_line_table) has for it.  Nothing is left in the frame that the
+ * interpreter would read: it never resumes a native frame.
+ *
+ * The return address is the lowest word of the activation: everything
+ * the function pushed lies between it and its frame.  So the scan goes
+ * down from below the frame slots and the saved D5-D7 (the function's
+ * first instruction, LINK a6,#size, gives where that is; a slot not yet
+ * stored to still holds whatever was there before) and takes the first
+ * word that is a return address into the function's code -- right after
+ * a JSR -- stopping at the next deeper native frame's return-address slot
+ * (or the resolver's own frame for the innermost one).  Every word it
+ * passes, the operand stack and a helper's arguments, was written by this
+ * activation; a stale word below the return address is never reached. */
+static const CL_Bytecode *jit_frame_bytecode(const CL_Frame *f)
+{
+    CL_Obj o = f->bytecode;
+    if (CL_CLOSURE_P(o)) o = ((CL_Closure *)CL_OBJ_TO_PTR(o))->bytecode;
+    return CL_BYTECODE_P(o) ? (const CL_Bytecode *)CL_OBJ_TO_PTR(o) : NULL;
+}
+
+/* At most this far below the frame: an operand stack and a helper's
+ * arguments are far smaller. */
+#define JIT_LINE_SCAN_MAX 16384
+
+static uint32_t jit_scan_frame_ip(const CL_Bytecode *bc, const char *a6,
+                                  const char *lower)
+{
+    const uint8_t *code = bc->native_code;
+    uint32_t code_end, table_off, n, k;
+    const char *p;
+    if (!jit_line_table(code, bc->native_len, &code_end, &table_off, &n) ||
+        disasm_u16(code) != 0x4E56)                     /* link a6,#size */
+        return 0;
+    /* Below the frame slots and the saved D7/D6/D5 (walker_compile). */
+    p = a6 + (int16_t)disasm_u16(code + 2) - 16;
+    if (p - lower > JIT_LINE_SCAN_MAX) lower = p - JIT_LINE_SCAN_MAX;
+    for (; p >= lower; p -= 4) {
+        uint32_t off = *(const uint32_t *)p - (uint32_t)(uintptr_t)code;
+        uint32_t ip = 0;
+        if (off < 2 || off > code_end) continue;
+        if ((disasm_u16(code + off - 2) & 0xFFF8) != 0x4E90 &&    /* jsr (An) */
+            !(off >= 6 && disasm_u16(code + off - 6) == 0x4EB9))  /* jsr abs.l */
+            continue;
+        for (k = 0; k < n; k++) {
+            uint32_t e = disasm_u32(code + table_off + 4 * k);
+            if ((e >> 16) > off - 1) break;
+            ip = e & 0xFFFF;
+        }
+        return ip;
+    }
+    return 0;
+}
+
+void cl_jit_resolve_frame_ips(void)
+{
+    CL_Thread *t = cl_get_current_thread();
+    const char *top = (const char *)t->jit_stack_top;
+    const char *lower = (const char *)CL_CAPTURE_SP();
+    int i;
+    /* Not in native code, or in a nested entry on another task's stack
+     * (cl_jit_invoke parks the floor): no activation to read. */
+    if (t->jit_depth == 0 || top == NULL || lower > top ||
+        t->jit_c_floor == (char *)~(uintptr_t)0)
+        return;
+    for (i = cl_vm.fp - 1; i >= 0; i--) {
+        CL_Frame *f = &cl_vm.frames[i];
+        const char *sp = (const char *)f->constants;
+        const CL_Bytecode *bc;
+        if (sp <= lower || sp > top || ((uintptr_t)sp & 1)) continue;
+        bc = jit_frame_bytecode(f);
+        if (bc == NULL || bc->native_code == NULL) continue;
+        f->ip = jit_scan_frame_ip(bc, sp - 8, lower);
+        lower = sp - 4;
+    }
 }
 
 /* Every m68k code buffer is platform_alloc'd and goes back with its

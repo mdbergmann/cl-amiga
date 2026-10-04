@@ -1364,13 +1364,48 @@ frame (a full frame stack is the interpreter's "Call stack overflow", so
 runaway native recursion stops at the same depth as interpreted code), and
 a direct call's hit path (`emit_call_site`) pushes the callee's frame inline
 through A3: `bytecode` = the callee, `code` = its `bc->code` (a fourth word
-of the call-site cell, filled with the other three), `constants`, `ip` and
-`n_locals` cleared, `fp` + 1 around the JSR.  `ip` 0 gives the function's
+of the call-site cell, filled with the other three), `ip` and `n_locals`
+cleared, `constants` the activation (below), `fp` + 1 around the JSR.  `ip` 0 gives the function's
 first line; `n_locals` 0 because a direct call's arguments are on the m68k
 stack, not the VM stack -- `FRAME-LOCALS` shows the arguments only for a
 frame entered through `cl_jit_invoke`.  `%JIT-SET-FRAMES NIL` turns the
 pushes off, and the call sites then refuse to fill (the hit path is the
 one that pushes), so frames-off runs every call through the miss helper.
+
+**2026-10-04: the frame's `constants` word, tail calls, lines.**  A native
+frame keeps in `constants` the A7 its function was entered with (the hit
+path's `move.l a7,constants(a1)`, `cl_jit_enter`'s `sp_slot` for a frame
+`cl_jit_invoke` pushes): the address of its func slot, A6 + 8 once LINKed,
+the return address just below.  An interpreted frame holds a constants
+pool there, never a stack address, so the word marks a native activation
+and locates it.  Two things use it:
+
+- **Tail calls into other functions** (`emit_tail_call_site`).  A filled
+  `OP_TAILCALL[_GLOBAL]` site whose frame on top is its own (`constants`
+  == A6 + 8) rewrites that frame for the callee (`bytecode`, `code`,
+  `n_locals` 0), copies the arguments over its own at `12(a6)`, restores
+  D5-D7, UNLKs and JMPs: constant stack and frames for mutual recursion
+  and state machines, as the interpreter's frame reuse gives.  Only when
+  the call passes no more arguments than the function's required count
+  (the caller drops what it pushed) and the function establishes nothing
+  with dynamic extent (an NLX frame's saved registers point into the
+  activation; a special binding must be undone after the call).  Every
+  other case, a miss included, takes the ordinary call site that follows,
+  which shares the cell.  The jump path polls first (a chain of tail calls
+  can loop through other functions).
+- **The line of a native frame** (`cl_jit_resolve_frame_ips`).  Native
+  code stores no ip.  Before the backtrace reads one, the resolver scans
+  each native activation, innermost first, down from below its frame
+  slots and saved registers (the size is in the function's leading LINK)
+  to the first word that is a return address into its code (right after
+  a JSR), stopping at the next deeper native frame's return-address slot;
+  the function's line table maps that address to an ip.  The table
+  follows the call-site cells, `[entries][code_end][table_off]["JLIN"]`,
+  one u32 `native offset << 16 | ip` per call-bearing opcode where the
+  source line changes (`jit_lines_note`); a function without calls, line
+  map or with more than 64 KB gets none and keeps its first line.  It
+  costs no time at run time, only those bytes (native code is not saved in
+  heap images).
 
 `EXT:BACKTRACE` and `EXT:FRAME-LOCALS` (the Sly/SLDB backend) walk
 `cl_vm.frames`. JIT'd functions run native code via `cl_jit_invoke` and

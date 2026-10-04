@@ -20,6 +20,7 @@ void cb_init(CodeBuf *cb, uint32_t initial_cap)
     cb->pos = 0;
     cb->cap = 0;
     cb->oom = 0;
+    cb->last_call = 0;
     cb->buf = NULL;
     if (initial_cap > 0) {
         cb->buf = (uint8_t *)platform_alloc(initial_cap);
@@ -38,6 +39,7 @@ void cb_free(CodeBuf *cb)
     cb->pos = 0;
     cb->cap = 0;
     cb->oom = 0;
+    cb->last_call = 0;
 }
 
 /* Ensure room for `n` more bytes.  Sets cb->oom on failure and
@@ -118,13 +120,13 @@ uint8_t *cb_finish(CodeBuf *cb, uint32_t *out_len)
     uint8_t *out;
     if (cb->oom) {
         if (cb->buf) { platform_free(cb->buf); cb->buf = NULL; }
-        cb->pos = cb->cap = 0;
+        cb->pos = cb->cap = cb->last_call = 0;
         if (out_len) *out_len = 0;
         return NULL;
     }
     out = cb->buf;
     if (out_len) *out_len = cb->pos;
     cb->buf = NULL;
-    cb->pos = cb->cap = 0;
+    cb->pos = cb->cap = cb->last_call = 0;
     return out;
 }

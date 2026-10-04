@@ -233,6 +233,7 @@ void m68k_emit_cmpa_l_disp_an_am(CodeBuf *cb, int16_t disp, M68kReg an,
 void m68k_emit_jsr_ind_an(CodeBuf *cb, M68kReg an)
 {
     cb_emit_u16(cb, (uint16_t)(0x4E90 | (an & 7)));
+    cb->last_call = cb_len(cb);
 }
 
 /* PEA (d16,An): 0100 1000 01 101 an + 16-bit disp.  See M68000 PRM
@@ -373,6 +374,7 @@ void m68k_emit_jsr_abs_l(CodeBuf *cb, uint32_t addr)
 {
     cb_emit_u16(cb, 0x4EB9);
     cb_emit_u32(cb, addr);
+    cb->last_call = cb_len(cb);
 }
 
 /* MOVE.L An,Am: dst mode = 001 (An), src mode = 001 (An).
@@ -514,6 +516,53 @@ void m68k_emit_subq_l_disp_an(CodeBuf *cb, uint8_t imm, int16_t disp,
                               M68kReg an)
 {
     emit_addsubq_l_disp_an(cb, 0x0100, imm, disp, an);
+}
+
+/* MOVE.L An,(d16,Am): 0010 am 101 001 an + d16.  4 bytes. */
+void m68k_emit_move_l_an_direct_to_disp_am(CodeBuf *cb, M68kReg an,
+                                           int16_t disp, M68kReg am)
+{
+    cb_emit_u16(cb, (uint16_t)(0x2000 | ((am & 7) << 9) | (5 << 6) |
+                               (1 << 3) | (an & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* MULU.W #imm,Dn: 1100 dn 011 111100 + imm16.  Dn.L = Dn.W * imm.
+ * 4 bytes. */
+void m68k_emit_mulu_w_imm_dn(CodeBuf *cb, uint16_t imm, M68kReg dn)
+{
+    cb_emit_u16(cb, (uint16_t)(0xC0FC | ((dn & 7) << 9)));
+    cb_emit_u16(cb, imm);
+}
+
+/* JMP (An): 0100 1110 11 010 an.  2 bytes. */
+void m68k_emit_jmp_ind_an(CodeBuf *cb, M68kReg an)
+{
+    cb_emit_u16(cb, (uint16_t)(0x4ED0 | (an & 7)));
+}
+
+/* MOVE.L (An)+,(d16,Am): 0010 am 101 011 an + d16.  4 bytes. */
+void m68k_emit_move_l_postinc_an_to_disp_am(CodeBuf *cb, M68kReg an,
+                                            int16_t disp, M68kReg am)
+{
+    cb_emit_u16(cb, (uint16_t)(0x2000 | ((am & 7) << 9) | (5 << 6) |
+                               (3 << 3) | (an & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* MOVE.L (An)+,(Am)+: 0010 am 011 011 an.  2 bytes. */
+void m68k_emit_move_l_postinc_an_to_postinc_am(CodeBuf *cb, M68kReg an,
+                                               M68kReg am)
+{
+    cb_emit_u16(cb, (uint16_t)(0x2000 | ((am & 7) << 9) | (3 << 6) |
+                               (3 << 3) | (an & 7)));
+}
+
+/* MOVEA.L (An)+,Am: 0010 am 001 011 an.  2 bytes. */
+void m68k_emit_movea_l_postinc_an_to_am(CodeBuf *cb, M68kReg an, M68kReg am)
+{
+    cb_emit_u16(cb, (uint16_t)(0x2000 | ((am & 7) << 9) | (1 << 6) |
+                               (3 << 3) | (an & 7)));
 }
 
 #endif /* JIT_M68K */

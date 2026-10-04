@@ -188,7 +188,10 @@ the old `cl_jit_runtime_call[_global]` helpers are gone.
 
 `OP_TAILCALL_GLOBAL`'s fallback is "call, then UNLK/RTS", as it is today;
 only the call part changes.  The self-tail-call `bra` stays first and is
-not affected.
+not affected.  (Since 2026-10-04 a tail site into another function jumps
+instead where it can -- `emit_tail_call_site`, specs/native-backend.md,
+"the frame's `constants` word, tail calls, lines" -- and falls back to this
+call site, which shares its cell.)
 
 Multiple values need no extra work: the callee sets `mv_count` /
 `mv_values` exactly as it does under `cl_jit_invoke`, and the caller reads

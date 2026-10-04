@@ -133,6 +133,15 @@
          (defun bjc-r7 (n) (let ((s 0)) (dotimes (i n) (setq s (bjc-same-add s 1))) s)))
   (bjc-r7 *bjc-n*))
 
+;; Tail calls between two functions, in chains of 10 (a chain as deep as
+;; the iteration count would need one frame per call where they are
+;; calls).  Per iteration: one tail call plus a tenth of the outer call.
+(bjc-bench "tail call ping-pong (x10)"
+  (progn (defun bjc-tp-a (k s) (if (= k 0) s (bjc-tp-b (- k 1) (+ s 1))))
+         (defun bjc-tp-b (k s) (if (= k 0) s (bjc-tp-a (- k 1) (+ s 1))))
+         (defun bjc-r16 (n) (let ((s 0)) (dotimes (i (floor n 10)) (setq s (+ s (bjc-tp-a 10 0)))) s)))
+  (bjc-r16 *bjc-n*))
+
 (bjc-bench "funcall native leaf"
   (defun bjc-r8 (n f) (let ((s 0)) (dotimes (i n) (setq s (funcall f s 1))) s))
   (bjc-r8 *bjc-n* *bjc-fn*))

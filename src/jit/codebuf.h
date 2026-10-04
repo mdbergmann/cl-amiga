@@ -19,6 +19,9 @@ typedef struct {
     uint32_t  pos;     /* bytes written */
     uint32_t  cap;     /* allocated capacity */
     int       oom;     /* sticky: once set, every emit is a no-op */
+    uint32_t  last_call; /* pos just past the latest call instruction (a
+                            return address); the m68k JSR emitters set it,
+                            for the walker's line table */
 } CodeBuf;
 
 /* Initialise with the given initial capacity.  Cap may be 0 — the

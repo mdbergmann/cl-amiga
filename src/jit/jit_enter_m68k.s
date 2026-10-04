@@ -1,7 +1,7 @@
 | jit_enter_m68k.s -- the C-to-native entry of the m68k JIT  (AmigaOS)
 |
 | CL_Obj cl_jit_enter(void *entry, CL_Thread *thread, CL_Obj func,
-|                     const CL_Obj *argv, int32_t nargs);
+|                     const CL_Obj *argv, int32_t nargs, void *sp_slot);
 |
 | Calls the native function at `entry` with A3 = `thread`, the stack laid
 | out the way a native call site lays it out (specs/jit-direct-calls.md §4):
@@ -23,6 +23,12 @@
 | caller's A3.  A longjmp out of native code lands in a C frame whose
 | setjmp saved its own A3, so nothing here needs to be unwound.
 |
+| SP_SLOT, when not NULL, receives the stack pointer the callee is entered
+| with (the address of `func`): the CL_Frame cl_jit_invoke pushed keeps it
+| in its `constants` word, as a native call site's hit path does, which
+| marks the frame as a native activation and locates it (its A6 is that
+| address - 8).
+|
 | D2 is ours too (the pop count); native code preserves it like every
 | callee-saved register.  D1 carries nargs into the callee, as a native call
 | site's hit path passes it: an &optional function's prologue reads it.  dbf counts a word, which is plenty: the walker
@@ -42,6 +48,7 @@ _cl_jit_enter:
 	move.l	24(sp),d1		| d1 = func
 	movea.l	28(sp),a0		| a0 = argv
 	move.l	32(sp),d2		| d2 = nargs
+	movea.l	36(sp),a1		| a1 = sp_slot
 	move.l	d2,d0
 	bra.s	.Lnext
 .Lpush:
@@ -49,6 +56,10 @@ _cl_jit_enter:
 .Lnext:
 	dbf	d0,.Lpush
 	move.l	d1,-(sp)		| func at 8(a6) of the callee
+	move.l	a1,d0
+	beq.s	.Lnoslot
+	move.l	sp,(a1)			| the frame's marker: the callee's A6 + 8
+.Lnoslot:
 	move.l	d2,d1			| d1 = nargs (an &optional prologue's)
 	jsr	(a2)			| D0 = the result
 	lsl.l	#2,d2

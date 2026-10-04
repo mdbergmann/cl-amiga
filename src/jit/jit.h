@@ -111,11 +111,17 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs);
 #ifdef JIT_M68K
 /* src/jit/jit_enter_m68k.s: call native `entry` with A3 = `thread`,
  * argv[0..nargs-1] pushed in that order (argv[0] highest, i.e. the
- * operand-stack order of a native call site), then `func`.  Only
- * cl_jit_invoke calls it.  See specs/jit-direct-calls.md §4. */
+ * operand-stack order of a native call site), then `func`; a non-NULL
+ * `sp_slot` receives the stack pointer the callee is entered with (a
+ * native CL_Frame's marker, jit_m68k.c).  Only cl_jit_invoke calls it.
+ * See specs/jit-direct-calls.md §4. */
 struct CL_Thread_s;
 CL_Obj cl_jit_enter(void *entry, struct CL_Thread_s *thread, CL_Obj func,
-                    const CL_Obj *argv, int32_t nargs);
+                    const CL_Obj *argv, int32_t nargs, void *sp_slot);
+/* Give the current thread's native frames the ip of the call each one is
+ * in (native code stores none), for the backtrace's lines.  vm.c calls it
+ * before it reads frame ips. */
+void   cl_jit_resolve_frame_ips(void);
 #endif
 
 /* Release the native code of a dead or recompiled function (mem.c's

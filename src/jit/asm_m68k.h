@@ -297,6 +297,29 @@ void m68k_emit_addq_l_disp_an(CodeBuf *cb, uint8_t imm, int16_t disp,
 void m68k_emit_subq_l_disp_an(CodeBuf *cb, uint8_t imm, int16_t disp,
                               M68kReg an);
 
+/* MOVE.L An,(d16,Am) — the register itself, not (An).  4 bytes. */
+void m68k_emit_move_l_an_direct_to_disp_am(CodeBuf *cb, M68kReg an,
+                                           int16_t disp, M68kReg am);
+
+/* The cross-function tail jump (jit_m68k.c, emit_tail_call_site). */
+
+/* MULU.W #imm,Dn — 4 bytes. */
+void m68k_emit_mulu_w_imm_dn(CodeBuf *cb, uint16_t imm, M68kReg dn);
+
+/* JMP (An) — 2 bytes. */
+void m68k_emit_jmp_ind_an(CodeBuf *cb, M68kReg an);
+
+/* MOVE.L (An)+,(d16,Am) — 4 bytes. */
+void m68k_emit_move_l_postinc_an_to_disp_am(CodeBuf *cb, M68kReg an,
+                                            int16_t disp, M68kReg am);
+
+/* MOVE.L (An)+,(Am)+ — 2 bytes. */
+void m68k_emit_move_l_postinc_an_to_postinc_am(CodeBuf *cb, M68kReg an,
+                                               M68kReg am);
+
+/* MOVEA.L (An)+,Am — 2 bytes. */
+void m68k_emit_movea_l_postinc_an_to_am(CodeBuf *cb, M68kReg an, M68kReg am);
+
 /* Overwrite a 16-bit big-endian field already written to `code` at byte
  * offset `patch_off`.  Used to fill in forward-branch displacements
  * once the target's native offset is known.  No-op if patch_off+2
