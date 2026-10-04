@@ -10,16 +10,22 @@
 
 void   cl_jit_runtime_init(void);
 
-/* A direct-call site's cell (specs/jit-direct-calls.md §2): 12 bytes the
+/* A direct-call site's cell (specs/jit-direct-calls.md §2): 16 bytes the
  * walker appends after the function's code, one per OP_CALL / OP_TAILCALL /
  * OP_CALL_GLOBAL / OP_TAILCALL_GLOBAL.  Native code only reads it; the
  * _site helpers below fill it on a miss.  Valid only while gen equals
  * cl_call_gen, so `func` needs neither GC rooting nor relocation.  The
- * offsets are baked into the emitted hit path: gen 0, func 4, entry 8. */
+ * offsets are baked into the emitted hit path: gen 0, func 4, entry 8,
+ * code 12.  `code` goes into the CL_Frame the hit path pushes; it is read
+ * after gen is compared, so a fill racing that read can pair it with
+ * another func -- harmless: nothing dereferences a native frame's code,
+ * the UWPROT staleness checks only compare it with itself (runtime_nlx.c),
+ * and it is never the frame's own stub_code. */
 typedef struct {
     volatile uint32_t gen;     /* cl_call_gen at fill time; 0 = never filled */
     volatile CL_Obj   func;    /* the callee (bytecode or closure)          */
     void * volatile   entry;   /* its bc->native_code                       */
+    uint8_t * volatile code;   /* its bc->code, for the frame               */
 } CL_JitCallSite;
 
 /* The miss path of a call site.  Builtins, FFI stubs and native callees are

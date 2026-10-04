@@ -1357,6 +1357,21 @@ disclaimer from the GC interaction story.
 
 ## Backtrace / frame introspection under JIT (opt-in shadow frames, 2026-05-22)
 
+**Status 2026-10-03: frames are on by default, as on arm64.**  Everything
+below about opt-in and cost describes the 2026-05 design.  Now
+`cl_jit_backend_init` turns the flag on, `cl_jit_invoke` always pushes the
+frame (a full frame stack is the interpreter's "Call stack overflow", so
+runaway native recursion stops at the same depth as interpreted code), and
+a direct call's hit path (`emit_call_site`) pushes the callee's frame inline
+through A3: `bytecode` = the callee, `code` = its `bc->code` (a fourth word
+of the call-site cell, filled with the other three), `constants`, `ip` and
+`n_locals` cleared, `fp` + 1 around the JSR.  `ip` 0 gives the function's
+first line; `n_locals` 0 because a direct call's arguments are on the m68k
+stack, not the VM stack -- `FRAME-LOCALS` shows the arguments only for a
+frame entered through `cl_jit_invoke`.  `%JIT-SET-FRAMES NIL` turns the
+pushes off, and the call sites then refuse to fill (the hit path is the
+one that pushes), so frames-off runs every call through the miss helper.
+
 `EXT:BACKTRACE` and `EXT:FRAME-LOCALS` (the Sly/SLDB backend) walk
 `cl_vm.frames`. JIT'd functions run native code via `cl_jit_invoke` and
 **do not push a `CL_Frame`** — so by default they are invisible to the

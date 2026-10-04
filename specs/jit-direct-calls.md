@@ -342,7 +342,7 @@ frame's snapshot, so the parking ends with the callback
 | `jit_depth` / `jit_stack_top` / `cl_jit_active_threads` | The caller is native, so `jit_depth > 0` already.  The scan window runs from the outermost entry's `jit_stack_top` down to the current SP, which covers nested direct frames.  Error/NLX unwind restores depth from snapshots taken in C, which direct calls never enter. |
 | `jit_current_nargs` | Only `OP_ARGC` read it, and the walker rejected `&optional`, the only shape that emits it.  Gone since the walker takes `&optional`: the count comes in D1 (§"&optional callees"). |
 | VM-stack argument copy | The positional native ABI reads its arguments from the m68k stack.  Arguments are conservatively scanned and pinned there, the same as every value in a native frame today. |
-| Shadow `CL_Frame` | Fill refuses while shadow frames are on; toggling bumps. |
+| Shadow `CL_Frame` | Not skipped since 2026-10-03: the hit path pushes the callee's frame inline (frames are on by default), and fill refuses while they are off; toggling bumps. |
 | `jit_invoke_count++` | Diagnostic only.  Test `jit-direct-native-callee-invokes` counts it and is rewritten against the new site statistics. |
 
 ### 7. Diagnostics
@@ -415,7 +415,7 @@ bound as the existing `jit-direct-*` block does):
   site.  The result is the new closure's.
 - **TRACE:** trace the callee after the site has filled.  The trace output
   appears; after untrace the site fills again.
-- **shadow frames:** with them on, the callee appears in `EXT:BACKTRACE`.
+- **frames:** a callee reached through a filled site appears in `EXT:BACKTRACE`; with `%JIT-SET-FRAMES NIL` no site fills.
 - **multiple values** through a filled site, plus `(values)` → 0 values.
 - **arity mismatch** at a filled site's callee after redefinition with a
   different arity.  The error message is identical to today's `OP_CALL`

@@ -275,6 +275,28 @@ void m68k_emit_clr_l_postinc(CodeBuf *cb, M68kReg an);
  * -1.  disp is relative to the displacement word.  4 bytes. */
 void m68k_emit_dbf_w(CodeBuf *cb, M68kReg dn, int16_t disp);
 
+/* The CL_Frame push of a direct call (jit_m68k.c, emit_call_site). */
+
+/* LSL.L #cnt,Dn — cnt in 1..8.  2 bytes. */
+void m68k_emit_lsl_l_imm_dn(CodeBuf *cb, uint8_t cnt, M68kReg dn);
+
+/* MOVEA.L (d16,An),Am — 4 bytes. */
+void m68k_emit_movea_l_disp_an_to_am(CodeBuf *cb, int16_t disp, M68kReg an,
+                                     M68kReg am);
+
+/* MOVE.L (An),(d16,Am) — memory to memory.  4 bytes. */
+void m68k_emit_move_l_ind_an_to_disp_am(CodeBuf *cb, M68kReg an,
+                                        int16_t disp, M68kReg am);
+
+/* CLR.L (d16,An) — 4 bytes. */
+void m68k_emit_clr_l_disp_an(CodeBuf *cb, int16_t disp, M68kReg an);
+
+/* ADDQ.L / SUBQ.L #imm,(d16,An) — imm in 1..8.  4 bytes. */
+void m68k_emit_addq_l_disp_an(CodeBuf *cb, uint8_t imm, int16_t disp,
+                              M68kReg an);
+void m68k_emit_subq_l_disp_an(CodeBuf *cb, uint8_t imm, int16_t disp,
+                              M68kReg an);
+
 /* Overwrite a 16-bit big-endian field already written to `code` at byte
  * offset `patch_off`.  Used to fill in forward-branch displacements
  * once the target's native offset is known.  No-op if patch_off+2

@@ -910,10 +910,10 @@ example of the mapping.
   256 call frames) are far below the main task's — a worker that runs deep
   call chains, nested `catch`es, or `load`s from source should request larger
   budgets, e.g. `(mp:make-thread #'game-loop :stack-size 200000 :vm-frames
-  1024)`. With the m68k JIT enabled each active call level also crosses a
-  C-stack trampoline and books a backtrace shadow frame — roughly 1 KB of
-  `:stack-size` and two `:vm-frames` per level — so budget both for the
-  deepest call chain the thread will run. The main task's own
+  1024)`. With the m68k JIT enabled, natively compiled code nests on the C
+  stack and books one call frame per level, as interpreted code does, so
+  budget both `:stack-size` and `:vm-frames` for the deepest call chain the
+  thread will run. The main task's own
   catch/unwind budget is also platform-sized: 68k AmigaOS reserves 512
   nested `catch`/`block`/`handler-case` frames and 128 nested
   `unwind-protect`s (MorphOS and the host: 2048 / 256); going past either

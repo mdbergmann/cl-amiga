@@ -66,6 +66,9 @@ void cl_jit_backend_init(void)
 {
     cl_jit_runtime_init();
     cl_jit_codegen_init();
+    /* Native functions push their CL_Frame (cl_jit_invoke, and inline at a
+     * direct call's hit path): backtraces list them, as on arm64. */
+    cl_jit_set_shadow_frames(1);
     {
         /* CLAMIGA_JIT_DIRECT=0: no native-to-native direct calls (A/B runs,
          * bisection); %JIT-SET-DIRECT-CALLS toggles it at run time. */
@@ -1386,6 +1389,31 @@ static void emit_loop_poll(CodeBuf *cb)
     m68k_emit_jsr_abs_l(cb, (uint32_t)(uintptr_t)&cl_jit_runtime_loop_poll);
 }
 
+/* The hit path pushes the callee's CL_Frame through A3 (cl_jit_invoke's
+ * frame, as the interpreter's OP_CALL would push one): EXT:BACKTRACE and
+ * the error-time backtrace list native functions.  &frames[fp] is
+ * frames + fp*34, computed as fp*32 + fp*2 -- a MULU.W costs a 68040 four
+ * times as much. */
+#define JIT_VM_FP_DISP      ((int16_t)offsetof(CL_Thread, vm.fp))
+#define JIT_VM_FSIZE_DISP   ((int16_t)offsetof(CL_Thread, vm.frame_size))
+#define JIT_VM_FRAMES_DISP  ((int16_t)offsetof(CL_Thread, vm.frames))
+#define JIT_FR_BYTECODE     ((int16_t)offsetof(CL_Frame, bytecode))
+#define JIT_FR_CODE         ((int16_t)offsetof(CL_Frame, code))
+#define JIT_FR_CONSTANTS    ((int16_t)offsetof(CL_Frame, constants))
+#define JIT_FR_IP           ((int16_t)offsetof(CL_Frame, ip))
+#define JIT_FR_NLOCALS      ((int16_t)offsetof(CL_Frame, n_locals))
+typedef char jit_vm_disps_fit_d16[
+    (offsetof(CL_Thread, vm.fp) < 32768 &&
+     offsetof(CL_Thread, vm.frame_size) < 32768 &&
+     offsetof(CL_Thread, vm.frames) < 32768) ? 1 : -1];
+typedef char jit_frame_is_34_bytes[(sizeof(CL_Frame) == 34) ? 1 : -1];
+typedef char jit_frame_fields_are_32bit[
+    (sizeof(((CL_Frame *)0)->bytecode) == 4 && sizeof(((CL_Frame *)0)->code) == 4 &&
+     sizeof(((CL_Frame *)0)->constants) == 4 && sizeof(((CL_Frame *)0)->ip) == 4 &&
+     sizeof(((CL_Frame *)0)->n_locals) == 4 &&
+     sizeof(((CL_Thread *)0)->vm.fp) == 4 &&
+     sizeof(((CL_Thread *)0)->vm.frame_size) == 4) ? 1 : -1];
+
 /* Emit one call through a direct-call site.  The cache is flushed and the
  * NARGS arguments are on the operand stack ((a7) = the last); for OP_CALL /
  * OP_TAILCALL (GLOBAL == 0) the function value sits under them, for the
@@ -1393,18 +1421,35 @@ static void emit_loop_poll(CodeBuf *cb)
  * arguments (and function slot) dropped:
  *
  *         lea     cell(pc),a1
- *         move.l  (a1)+,d0            ; gen     -- all three words are read
- *         move.l  (a1)+,d1            ; func       before gen is compared,
- *         movea.l (a1),a0             ; entry      see runtime_m68k.c
+ *         move.l  (a1)+,d0            ; gen     -- gen, func and entry are
+ *         move.l  (a1)+,d1            ; func       read before gen is
+ *         movea.l (a1),a0             ; entry      compared, runtime_m68k.c
  *         cmp.l   cl_call_gen,d0
  *         bne.w   .miss
  *       [ cmp.l   4n(a7),d1           ; OP_CALL: the same function value?
  *         bne.w   .miss ]
  *         cmpa.l  jit_c_floor(a3),a7  ; C stack below the floor: the helper
  *         bls.w   .miss               ; path signals "C stack exhausted"
+ *         move.l  vm.fp(a3),d0
+ *         cmp.l   vm.frame_size(a3),d0
+ *         bge.w   .miss               ; no free frame: "Call stack overflow"
  *         move.l  d1,-(a7)            ; func -> the callee's 8(a6)
+ *         move.l  d0,d1
+ *         lsl.l   #5,d0
+ *         add.l   d1,d1
+ *         add.l   d1,d0               ; fp * sizeof(CL_Frame)
+ *         move.l  4(a1),d1            ; the callee's bc->code (cell word 3)
+ *         movea.l vm.frames(a3),a1
+ *         adda.l  d0,a1               ; &frames[fp]
+ *         move.l  (a7),bytecode(a1)
+ *         move.l  d1,code(a1)
+ *         clr.l   constants(a1)
+ *         clr.l   ip(a1)              ; the function's first line
+ *         clr.l   n_locals(a1)        ; its arguments are not on the VM stack
+ *         addq.l  #1,vm.fp(a3)
  *         moveq   #nargs,d1           ; the count, for an &optional callee
  *         jsr     (a0)
+ *         subq.l  #1,vm.fp(a3)
  *         lea     4+drop(a7),a7
  *         bra.w   .done
  * .miss:  move.l  a7,a0               ; operand_top
@@ -1422,7 +1467,7 @@ static void emit_call_site(CodeBuf *cb, JitRelocs *relocs, JitSites *sites,
         ? (uint32_t)(uintptr_t)&cl_jit_runtime_call_global_site
         : (uint32_t)(uintptr_t)&cl_jit_runtime_call_site;
     int16_t drop = (int16_t)(4 * ((int32_t)nargs + (global ? 0 : 1)));
-    int32_t miss_pc[3];
+    int32_t miss_pc[4];
     int n_miss = 0, k;
     int32_t bra_done_pc, miss_off, done_off;
 
@@ -1443,12 +1488,30 @@ static void emit_call_site(CodeBuf *cb, JitRelocs *relocs, JitSites *sites,
     m68k_emit_cmpa_l_disp_an_am(cb, JIT_C_FLOOR_DISP, REG_A3, REG_A7);
     miss_pc[n_miss++] = (int32_t)cb_len(cb) + 2;
     m68k_emit_bls_w(cb, 0);
+    m68k_emit_move_l_disp_an_to_dn(cb, JIT_VM_FP_DISP, REG_A3, REG_D0);
+    m68k_emit_cmp_l_disp_an_dn(cb, JIT_VM_FSIZE_DISP, REG_A3, REG_D0);
+    miss_pc[n_miss++] = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bge_w(cb, 0);
     m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+    m68k_emit_move_l_dn_to_dm(cb, REG_D0, REG_D1);
+    m68k_emit_lsl_l_imm_dn(cb, 5, REG_D0);
+    m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D1);
+    m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D0);
+    m68k_emit_move_l_disp_an_to_dn(cb, 4, REG_A1, REG_D1);
+    m68k_emit_movea_l_disp_an_to_am(cb, JIT_VM_FRAMES_DISP, REG_A3, REG_A1);
+    m68k_emit_adda_l_dn_an(cb, REG_D0, REG_A1);
+    m68k_emit_move_l_ind_an_to_disp_am(cb, REG_A7, JIT_FR_BYTECODE, REG_A1);
+    m68k_emit_move_l_dn_to_disp_am(cb, REG_D1, JIT_FR_CODE, REG_A1);
+    m68k_emit_clr_l_disp_an(cb, JIT_FR_CONSTANTS, REG_A1);
+    m68k_emit_clr_l_disp_an(cb, JIT_FR_IP, REG_A1);
+    m68k_emit_clr_l_disp_an(cb, JIT_FR_NLOCALS, REG_A1);
+    m68k_emit_addq_l_disp_an(cb, 1, JIT_VM_FP_DISP, REG_A3);
     if (nargs <= 127)
         m68k_emit_moveq(cb, (int8_t)nargs, REG_D1);
     else
         m68k_emit_move_l_imm32(cb, (uint32_t)nargs, REG_D1);
     m68k_emit_jsr_ind_an(cb, REG_A0);
+    m68k_emit_subq_l_disp_an(cb, 1, JIT_VM_FP_DISP, REG_A3);
     m68k_emit_lea_disp_an_to_am(cb, (int16_t)(4 + drop), REG_A7, REG_A7);
     bra_done_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bra_w(cb, 0);
@@ -1485,6 +1548,7 @@ static int emit_call_site_cells(CodeBuf *cb, const JitSites *sites)
         m68k_patch_disp16(cb_data(cb), cb_len(cb), sites->lea_offs[i],
                           (int16_t)disp);
         cb_emit_u32(cb, 0);     /* gen 0: never filled */
+        cb_emit_u32(cb, 0);
         cb_emit_u32(cb, 0);
         cb_emit_u32(cb, 0);
     }
@@ -4566,13 +4630,14 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
         }
         off += n;
     }
-    for (off = cells; off + 12 <= len; off += 12) {
+    for (off = cells; off + 16 <= len; off += 16) {
         snprintf(line, sizeof line,
-                 "  site #%lu: gen=%lu func=$%08lx entry=$%08lx\n",
-                 (unsigned long)((off - cells) / 12),
+                 "  site #%lu: gen=%lu func=$%08lx entry=$%08lx code=$%08lx\n",
+                 (unsigned long)((off - cells) / 16),
                  (unsigned long)disasm_u32(code + off),
                  (unsigned long)disasm_u32(code + off + 4),
-                 (unsigned long)disasm_u32(code + off + 8));
+                 (unsigned long)disasm_u32(code + off + 8),
+                 (unsigned long)disasm_u32(code + off + 12));
         cl_write_cstring_to_stdout(line);
     }
 }
@@ -4633,6 +4698,8 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
      * via cl_jit_restore_depth, which also keeps the global counter
      * in sync — so we do not need to wrap this in setjmp/CL_CATCH. */
     t = cl_get_current_thread();
+    if (cl_jitc_shadow_frames && cl_vm.fp >= cl_vm.frame_size)
+        cl_error(CL_ERR_OVERFLOW, "Call stack overflow");   /* OP_CALL's */
     prev_depth = t->jit_depth;
     prev_top   = t->jit_stack_top;
     prev_floor = t->jit_c_floor;
@@ -4663,17 +4730,19 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     }
     t->jit_depth = prev_depth + 1;
 
-    /* Push a shadow CL_Frame so EXT:BACKTRACE / EXT:FRAME-LOCALS and the
-     * error-time backtrace can see this JIT'd function: native code keeps
-     * its operand stack and interior locals on the m68k stack and never
-     * pushes a VM frame on its own.  bp points at the argument vector still
-     * live on cl_vm.stack (the VM stack is GC-rooted), so frame-locals can
-     * recover the arguments; interior let-bound locals stay on the m68k
-     * stack and remain invisible.  ip = 0 maps to the function's first
-     * source line.  On a non-local exit (longjmp) the error/NLX unwind
-     * resets cl_vm.fp wholesale to a pre-call snapshot, so skipping the pop
-     * below cannot leak the frame. */
-    if (cl_jitc_shadow_frames && cl_vm.fp < cl_vm.frame_size) {
+    /* Push the function's CL_Frame so EXT:BACKTRACE / EXT:FRAME-LOCALS and
+     * the error-time backtrace can see it (a direct call's hit path pushes
+     * the same frame inline, emit_call_site).  On by default;
+     * %JIT-SET-FRAMES NIL turns it off, and the call sites then stop
+     * filling.  bp points at the argument vector still live on cl_vm.stack
+     * (the VM stack is GC-rooted), so frame-locals can recover the
+     * arguments; interior let-bound locals stay on the m68k stack and
+     * remain invisible.  ip = 0 maps to the function's first source line.
+     * A full frame stack is the interpreter's "Call stack overflow", so
+     * runaway native recursion stops at the same depth.  On a non-local
+     * exit (longjmp) the error/NLX unwind resets cl_vm.fp wholesale to a
+     * pre-call snapshot, so skipping the pop below cannot leak the frame. */
+    if (cl_jitc_shadow_frames) {
         CL_Frame *sf = &cl_vm.frames[cl_vm.fp++];
         sf->bytecode  = func_obj;
         sf->code      = bc->code;

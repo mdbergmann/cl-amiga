@@ -2580,23 +2580,55 @@
   (let ((f0 (jds-stat :fills)))
     (list (jds-tr-caller 4) (> (jds-stat :fills) f0))))
 
-;; Shadow frames: while on, no site fills and the callee is in EXT:BACKTRACE.
+;; Native frames, on by default: a filled site's hit path pushes the
+;; callee's CL_Frame, so EXT:BACKTRACE lists both native functions.  The
+;; leaf's call is a hit when it costs no cl_jit_invoke entry: the caller's
+;; own entry (from this interpreted form) is the only one.  A collection
+;; between fill and call empties the site, so best of three.
 (defun jds-bt-leaf () (ext:backtrace))
 (defun jds-bt-caller () (let ((r (jds-bt-leaf))) r))
-(jds-bt-caller) (jds-bt-caller)   ; the site is filled
-;; Restored below: off by default on m68k, on on AArch64 (whose sites fill
-;; only while it is on).
-(defparameter *jds-frames-were* (clamiga::%jit-frames-p))
-(clamiga::%jit-set-frames t)
-(let ((bt (jds-bt-caller)))
-  (check "jit-site-shadow-frames-backtrace" '("JDS-BT-LEAF" "JDS-BT-CALLER")
-    (list (symbol-name (second (first bt))) (symbol-name (second (second bt))))))
+(defun jds-fl-leaf (x) (declare (ignore x)) (ext:frame-locals 0))
+(defun jds-fl-caller () (let ((r (jds-fl-leaf 7))) r))
+(defun jds-bt-hit ()
+  (let ((r nil))
+    (dotimes (k 3 r)
+      (jds-bt-caller)                   ; fill the site
+      (let* ((i0 (clamiga::%jit-invoke-count))
+             (bt (jds-bt-caller))
+             (di (- (clamiga::%jit-invoke-count) i0)))
+        (setq r (list (symbol-name (second (first bt)))
+                      (symbol-name (second (second bt)))
+                      di))
+        (when (eql di 1) (return r))))))
 #+m68k
-(check "jit-site-shadow-frames-refused" t
-  (let ((r0 (jds-stat :refused-shadow)))
-    (jds-loop 3)
-    (> (jds-stat :refused-shadow) r0)))
-(clamiga::%jit-set-frames *jds-frames-were*)
+(check "jit-frames-on-by-default" t (clamiga::%jit-frames-p))
+(check "jit-site-frames-backtrace" '("JDS-BT-LEAF" "JDS-BT-CALLER" 1)
+  (jds-bt-hit))
+;; An m68k frame pushed by the hit path has no locals on the VM stack (the
+;; arguments are on the m68k stack): FRAME-LOCALS answers with an empty
+;; list, not with whatever the reused slot held before.  (AArch64 keeps its
+;; locals on the VM stack and shows them.)
+#+m68k
+(check "jit-site-frame-locals-empty" '(nil nil)
+  (progn (jds-fl-caller) (list (jds-fl-caller) (jds-fl-caller))))
+;; Frames off: no frame to push, so no site fills.
+#+m68k
+(check "jit-site-frames-off-refused" '(t 3)
+  (progn
+    (clamiga::%jit-set-frames nil)
+    (unwind-protect
+         (let ((r0 (jds-stat :refused-shadow)))
+           (list (progn (jds-loop 3) (> (jds-stat :refused-shadow) r0))
+                 (jds-loop 3)))
+      (clamiga::%jit-set-frames t))))
+;; Runaway native recursion now fills the frame stack, the interpreter's
+;; limit, before it reaches the C-stack floor -- the same error either way.
+(defun jds-runaway (n) (if (= n 0) 0 (+ 1 (jds-runaway (- n 1)))))
+(check "jit-site-recursion-frame-limit" '(500 t 500)
+  (list (jds-runaway 500)
+        (handler-case (progn (jds-runaway 400000) nil)
+          (error (e) (and (search "Call stack overflow" (princ-to-string e)) t)))
+        (jds-runaway 500)))
 
 ;; Runaway recursion through filled sites still meets the C-stack guard:
 ;; below CL_Thread.jit_c_floor every site misses, and the miss path

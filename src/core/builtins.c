@@ -1599,11 +1599,10 @@ static CL_Obj bi_jit_active_p(CL_Obj *args, int n)
     return cl_jit_enabled() ? CL_T : CL_NIL;
 }
 
-/* (%JIT-SET-FRAMES BOOL) — enable/disable the per-call shadow CL_Frame that
- * makes JIT'd functions visible to EXT:BACKTRACE / EXT:FRAME-LOCALS.  Off by
- * default (the push costs a few percent on call-heavy code); turn it on for
- * a debug session (Sly/SLDB) or before introspecting a JIT'd call stack.
- * Returns the new state as T/NIL. */
+/* (%JIT-SET-FRAMES BOOL) — enable/disable the per-call CL_Frame that makes
+ * JIT'd functions visible to EXT:BACKTRACE / EXT:FRAME-LOCALS.  On by
+ * default; off, native code pushes no frames and its call sites stop
+ * going native-to-native (jit_common.c).  Returns the new state as T/NIL. */
 static CL_Obj bi_jit_set_frames(CL_Obj *args, int n)
 {
     int on;

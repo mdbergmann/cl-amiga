@@ -212,8 +212,8 @@ static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
                               uint32_t nargs)
 {
     if (!jit_direct_calls) return;
-    if (cl_jit_shadow_frames_enabled()) {
-        jit_ds[CL_JIT_DS_REFUSED_SHADOW]++;     /* the frame is cl_jit_invoke's */
+    if (!cl_jit_shadow_frames_enabled()) {
+        jit_ds[CL_JIT_DS_REFUSED_SHADOW]++;     /* the hit path pushes a frame */
         return;
     }
     if (cl_traced_function_count != 0 || thr->trace_count != 0) {
@@ -233,6 +233,7 @@ static void jit_site_try_fill(CL_Thread *thr, CL_JitCallSite *site,
         site->gen   = 0;
         site->func  = func;
         site->entry = bc->native_code;
+        site->code  = bc->code;
         site->gen   = g;
         jit_ds[CL_JIT_DS_FILLS]++;
     }

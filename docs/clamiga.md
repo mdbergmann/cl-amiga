@@ -49,8 +49,8 @@ isolating JIT bugs around a single `defun`.
 |-----------|------|-------------|
 | `(%jit-set-active enable)` | function | Enable/disable JIT translation for subsequent definitions |
 | `(%jit-active-p)` | function | Whether JIT translation is currently on |
-| `(%jit-set-frames enable)` | function | Enable JIT shadow frames so the backtrace can see JIT'd frames (~5% FPS cost) |
-| `(%jit-frames-p)` | function | Whether shadow frames are on |
+| `(%jit-set-frames enable)` | function | Native functions push a call frame so the backtrace sees them (on by default; off also stops native-to-native direct calls) |
+| `(%jit-frames-p)` | function | Whether native call frames are on |
 | `(%jit-disassemble fn)` | function | Disassemble a function's native m68k code |
 | `(%jit-invoke-count)` | function | How many times the JIT path was entered |
 | `(%jit-set-direct-calls enable)` | function | Enable/disable direct native-to-native calls (on by default; `CLAMIGA_JIT_DIRECT=0` starts with them off) — for A/B runs and bisecting |

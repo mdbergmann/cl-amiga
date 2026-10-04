@@ -24,12 +24,11 @@
 
 int      cl_jitc_active = 0;
 
-/* Opt-in: when set, cl_jit_invoke pushes a shadow CL_Frame per call so
- * EXT:BACKTRACE / EXT:FRAME-LOCALS and the error-time backtrace can see
- * JIT'd functions.  Off by default — the push costs a few % on call-heavy
- * code, and only matters when something actually reads a backtrace (an
- * error, the SLDB debugger, an explicit (ext:backtrace)).  A debug session
- * (Sly/SLDB) or a test that needs JIT frame introspection turns it on. */
+/* When set, every native call pushes a CL_Frame (cl_jit_invoke, and the
+ * direct-call hit paths) so EXT:BACKTRACE / EXT:FRAME-LOCALS and the
+ * error-time backtrace see JIT'd functions.  Both backends turn it on at
+ * init; %JIT-SET-FRAMES NIL turns it off, which also stops call sites
+ * from filling (their hit path is the one that pushes). */
 int      cl_jitc_shadow_frames = 0;
 
 /* Bumped on every cl_jit_invoke entry.  Lets Lisp-side tests prove

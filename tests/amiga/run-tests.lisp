@@ -9920,10 +9920,9 @@ y" 1))
 ; optimization does not collapse the intermediate frames.  Backtrace entries
 ; are (INDEX NAME FILE LINE), innermost first; frame-locals returns
 ; (PLACEHOLDER-NAME . VALUE) pairs.
-; JIT shadow frames are opt-in (they cost a few % on call-heavy code), so a
-; debug/introspection session enables them.  Turn them on for this section so
-; EXT:BACKTRACE / EXT:FRAME-LOCALS can see the JIT'd bt-* calls; restore after.
-; No-op on host / --no-jit (no native frames to begin with).
+; JIT'd functions push call frames by default, so EXT:BACKTRACE /
+; EXT:FRAME-LOCALS see the JIT'd bt-* calls.  Asserted on here in case an
+; earlier section left them off.  No-op on host / --no-jit.
 (clamiga::%jit-set-frames t)
 (defun bt-c (z) (declare (ignore z)) (ext:backtrace))
 (defun bt-b (y) (let ((r (bt-c (* y 2)))) r))
@@ -10044,7 +10043,8 @@ y" 1))
 (check "backtrace: (setf f) flet local does not corrupt sibling names"
   '(7 "#<CLOSURE BT-SF-OK>") (bt-sf-host))
 
-(check "jit shadow frames toggle off" nil (clamiga::%jit-set-frames nil))
+(check "jit frames stay on after the backtrace section" t
+  (or (clamiga::%jit-frames-p) (not (clamiga::%jit-active-p))))
 
 ; --- docstrings are recorded by the defining forms ---
 ; The compiler emits a load-time %SET-DOCUMENTATION call per documented
@@ -10997,9 +10997,8 @@ y" 1))
 ; whole window to survive.  Captured from a HANDLER-BIND handler, which runs
 ; BEFORE any unwinding, so these are the error-time frames still live: exactly
 ; the state the interactive debugger renders `:bt [n|all]` from.
-; JIT shadow frames are opt-in (they cost a few % on call-heavy code), so —
-; as in the EXT:BACKTRACE section above — turn them on for these captures or
-; the JIT'd chain has no frames to report; restore after.  No-op on host.
+; JIT'd functions push call frames by default, so the JIT'd chain is in
+; these captures (asserted on, as in the EXT:BACKTRACE section above).
 (clamiga::%jit-set-frames t)
 (defparameter *amiga-deep-bt* nil)
 (defparameter *amiga-deep-bt5* nil)
@@ -11023,8 +11022,8 @@ y" 1))
 (check "deep backtrace has the outermost chain frame" t
   (and (member "BT-OVERFLOW-F1" *amiga-deep-names* :test #'equal) t))
 (check "backtrace max-frames caps the window" 5 (length *amiga-deep-bt5*))
-(check "deep backtrace jit shadow frames toggle off" nil
-  (clamiga::%jit-set-frames nil))
+(check "deep backtrace jit frames stay on" t
+  (or (clamiga::%jit-frames-p) (not (clamiga::%jit-active-p))))
 ; A deep capture must leave the runtime healthy — a buffer grown and then
 ; reused across captures is the path that would corrupt state if mismanaged.
 (check "evaluation still sane after deep backtrace captures" 3 (+ 1 2))

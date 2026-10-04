@@ -459,4 +459,61 @@ void m68k_emit_dbf_w(CodeBuf *cb, M68kReg dn, int16_t disp)
     cb_emit_u16(cb, (uint16_t)disp);
 }
 
+/* LSL.L #cnt,Dn: 1110 ccc 1 10 0 01 dn, count 8 encoded as 0.  2 bytes. */
+void m68k_emit_lsl_l_imm_dn(CodeBuf *cb, uint8_t cnt, M68kReg dn)
+{
+    M68K_CHECK_QIMM(cnt);
+    cb_emit_u16(cb, (uint16_t)(0xE188 | ((uint16_t)(cnt & 7) << 9) | (dn & 7)));
+}
+
+/* MOVEA.L (d16,An),Am: 0010 am 001 101 an + d16.  4 bytes. */
+void m68k_emit_movea_l_disp_an_to_am(CodeBuf *cb, int16_t disp, M68kReg an,
+                                     M68kReg am)
+{
+    cb_emit_u16(cb, (uint16_t)(0x2000 | ((am & 7) << 9) | (1 << 6) |
+                               (5 << 3) | (an & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* MOVE.L (An),(d16,Am): 0010 am 101 010 an + d16.  4 bytes. */
+void m68k_emit_move_l_ind_an_to_disp_am(CodeBuf *cb, M68kReg an,
+                                        int16_t disp, M68kReg am)
+{
+    cb_emit_u16(cb, (uint16_t)(0x2000 | ((am & 7) << 9) | (5 << 6) |
+                               (2 << 3) | (an & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* CLR.L (d16,An): 0100 0010 10 101 an + d16.  4 bytes. */
+void m68k_emit_clr_l_disp_an(CodeBuf *cb, int16_t disp, M68kReg an)
+{
+    cb_emit_u16(cb, (uint16_t)(0x42A8 | (an & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* ADDQ.L / SUBQ.L #imm,(d16,An): 0101 ddd s 10 101 an + d16, s = 0 for
+ * ADDQ, 1 for SUBQ.  imm in 1..8.  4 bytes. */
+static void emit_addsubq_l_disp_an(CodeBuf *cb, uint16_t sub, uint8_t imm,
+                                   int16_t disp, M68kReg an)
+{
+    uint8_t data;
+    M68K_CHECK_QIMM(imm);
+    data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
+    cb_emit_u16(cb, (uint16_t)(0x5000 | sub | ((uint16_t)data << 9) |
+                               (2 << 6) | (5 << 3) | (an & 7)));
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+void m68k_emit_addq_l_disp_an(CodeBuf *cb, uint8_t imm, int16_t disp,
+                              M68kReg an)
+{
+    emit_addsubq_l_disp_an(cb, 0x0000, imm, disp, an);
+}
+
+void m68k_emit_subq_l_disp_an(CodeBuf *cb, uint8_t imm, int16_t disp,
+                              M68kReg an)
+{
+    emit_addsubq_l_disp_an(cb, 0x0100, imm, disp, an);
+}
+
 #endif /* JIT_M68K */
