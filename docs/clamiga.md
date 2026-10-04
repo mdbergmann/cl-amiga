@@ -72,5 +72,5 @@ isolating JIT bugs around a single `defun`.
 
 Float bits: `tests/test_float.c`. Package-local nicknames: `tests/test_package.c`.
 `structurep`: `tests/test_struct.c`. JIT toggles/coverage:
-`tests/amiga/test-jit.lisp`. See also the [JIT](../README.md#jit-m68k) section of
+`tests/amiga/test-jit.lisp`. See also the [JIT](../README.md#jit-m68k-and-aarch64) section of
 the main README.
