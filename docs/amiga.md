@@ -790,7 +790,7 @@ host-side specification for the command layer;
 `examples/amiga/gfx/` holds the runnable graphics demos (bouncing lines,
 the NDK double-buffering example, the RKM hardware-sprite example, a
 screen grabber that saves any screen as a PPM file). See the
-[AmigaOS Native GUI](../README.md#amigaos-native-gui) and
+[AmigaOS and MorphOS APIs](../README.md#amigaos-and-morphos-apis) and
 [Raw FFI Access](../README.md#raw-ffi-access) sections of the main README.
 
 > The GUI bindings cover common cases (windows, drawing, gadgets, menus) but not

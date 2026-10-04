@@ -10,7 +10,7 @@ Maximize throughput and minimize latency of the CL-Amiga bytecode VM and runtime
 |-----------|--------|
 | CPU | 68020 — no hardware multiply (microcode, ~70 cycles), no hardware divide, limited branch prediction |
 | RAM | 8MB — GC pressure directly impacts usability |
-| Compiler | C89/C99, m68k-amigaos-gcc (GCC-based), vbcc as secondary |
+| Compiler | C89/C99, m68k-amigaos-gcc (GCC-based) |
 | Correctness | All 656+ host tests and Amiga test suite must continue to pass |
 | Code size | Binary must remain practical for floppy distribution (~100KB target) |
 

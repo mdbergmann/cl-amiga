@@ -317,4 +317,4 @@ See `tests/test_tty.c` for a complete usage example.
   `tests/amiga/run-tests.lisp`.
 
 See also the [Emacs (SLY) integration](../README.md#emacs-sly-integration) and
-[TCP networking](../README.md#architecture) sections of the main README.
+[Networking](../README.md#networking-tcp-tls-udp) sections of the main README.
