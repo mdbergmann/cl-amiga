@@ -102,6 +102,9 @@ void cl_mem_shutdown(void);
  * cl_mem_init).  Matters most on AmigaOS, where anything not returned before
  * the process exits is lost to the system until reboot. */
 extern int cl_mem_diag;
+/* Read it from the environment: what cl_mem_init does, for an exit that
+ * happens before there is a heap (main.c's early_exit). */
+void cl_mem_diag_from_env(void);
 
 /* Off-heap bytecode payload returned to the allocator since heap init: total
  * bytes and number of bytecode objects finalized.  A CL_Bytecode's body,

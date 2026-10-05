@@ -412,8 +412,8 @@ out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
     --eval '(handler-case (ext:save-image "x.img" :bogus t)
               (error (e) (format t "KWERR=~a~%" e)))' </dev/null 2>&1)
 ec=$?
-check "unknown_keyword_lists_quit_and_shake_bindings" 0 "$ec" "$out" \
-    "KWERR=.*:QUIT and :SHAKE-BINDINGS"
+check "unknown_keyword_lists_the_accepted_ones" 0 "$ec" "$out" \
+    "KWERR=.*:QUIT, :SHAKE-BINDINGS, :EXECUTABLE, :TOPLEVEL and :HEAP-SIZE"
 
 # --- Source files: each name once in the image, every function's back ----
 # A function keeps the file it was compiled from (EXT:FUNCTION-SOURCE-LOCATION,

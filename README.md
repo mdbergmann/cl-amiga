@@ -574,7 +574,8 @@ the runnable examples in `tests/test_exit_hooks.c` / `tests/test_exit_hooks.sh`.
 loaded, defined and computed — to one file, and `clamiga --image mysession.img`
 is back at that exact state in a single read, skipping boot and all loads.  On
 a 14MHz Amiga that turns a minutes-long quicklisp warm-up into a near-instant
-start; a game or app can ship as `clamiga` + `app.img`.
+start; a game or app can ship as `clamiga` + `app.img`, or as a single
+[standalone executable](#standalone-executables).
 
 ```lisp
 (load "my-big-system.lisp")
@@ -621,6 +622,32 @@ names it never referenced stop existing — the delivery trade, described in
 See [docs/ext.md](docs/ext.md#heap-images) and the runnable examples in
 `tests/test_image.sh` / `tests/test_image.c` (host) and
 `tests/amiga/image-save.lisp` / `image-verify.lisp` (Amiga).
+
+### Standalone executables
+
+`:executable t` turns the image into a program of its own — one file, a
+copy of clamiga with the image appended, that needs no `lib/`, no image
+file and no launcher beside it:
+
+```lisp
+(load "app.lisp")
+(ext:save-image "app" :executable t :toplevel 'app:main :quit t)
+```
+
+```
+app input.txt --verbose
+```
+
+The whole command line belongs to the program (`ext:*command-line-args*`;
+no clamiga option is parsed), `:toplevel` is the function it runs — its
+return ends the process with status 0, `(quit n)` with `n`, an unhandled
+error with 1 — and `:heap-size` sets the heap it starts with, in bytes.
+Without `:toplevel` the executable starts at the REPL with the program
+loaded.  It starts from a Workbench icon as well as from a Shell.  An
+executable runs on the kind of machine that saved it, so each platform
+builds its own.  [docs/ext.md](docs/ext.md#delivering-a-program-executable)
+has the details; `tests/test_executable.sh` (host) and
+`tests/amiga/exe-save.lisp` (Amiga) are the runnable examples.
 
 ## Libraries: ASDF, Quicklisp and ocicl
 

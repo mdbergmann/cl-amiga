@@ -65,6 +65,27 @@ typedef struct {
 
 #define CL_IMAGE_HEADER_BYTES (4 + 2 + 2 + CL_IMAGE_FPRINT_LEN + 5 * 4)
 
+/* --- Delivered executables: (EXT:SAVE-IMAGE path :EXECUTABLE T) ---
+ *
+ * A delivered executable is a copy of the running clamiga binary with the
+ * image appended and, as the file's last bytes, this trailer (native byte
+ * order -- the only reader is the binary the trailer is appended to):
+ *
+ *     u32 image offset   (from the start of the file)
+ *     u32 image length   (up to 3 zero bytes follow: the trailer starts
+ *                         on a longword)
+ *     u32 heap size      (:HEAP-SIZE, bytes; 0 = the default rule)
+ *     8 bytes            CL_IMAGE_EXE_MAGIC
+ *
+ * ELF, Mach-O and PE loaders ignore bytes behind the last section they
+ * were told about; AmigaOS LoadSeg does not, so there the image and the
+ * trailer are wrapped in a HUNK_DEBUG, which it skips (image.c).  clamiga
+ * looks at its own file's tail before it parses its command line: with a
+ * trailer there, the command line belongs to the program. */
+#define CL_IMAGE_EXE_MAGIC        "CLAMIEXE"
+#define CL_IMAGE_EXE_MAGIC_LEN    8
+#define CL_IMAGE_EXE_TRAILER_BYTES (3 * 4 + CL_IMAGE_EXE_MAGIC_LEN)
+
 /* --- Boot-time hookup (main.c) --- */
 
 /* Snapshot n_global_roots at the end of the full C init (after
@@ -87,6 +108,13 @@ void cl_image_note_boot_roots(void);
  * the image AND in this session. */
 void cl_image_save_request(const char *path, int quit, int shake);
 
+/* The same for a delivered executable: PATH becomes a copy of the running
+ * binary with the image appended (see CL_IMAGE_EXE_MAGIC).  HEAP_SIZE is
+ * the arena the executable starts with (0 = default).  Signals a Lisp
+ * error when the running binary cannot find or read its own file. */
+void cl_image_save_executable_request(const char *path, int quit, int shake,
+                                      uint32_t heap_size);
+
 /* Non-zero while a save is armed. */
 int cl_image_save_pending_p(void);
 
@@ -107,6 +135,26 @@ int cl_image_save_run_if_pending(void);
  * failure returns nonzero and (unless quiet) prints why.  Call after
  * platform_init and before cl_mem_init. */
 int cl_image_stage(const char *path, int quiet);
+
+/* Look for an image appended to the running executable and stage it.
+ * Returns 1 when there is one and it is staged, 0 when the executable
+ * carries none (the normal clamiga), -1 when it carries one that cannot be
+ * used (reason printed) -- fatal for the caller: a delivered program must
+ * not turn into a REPL.  Works before platform_init and before the command
+ * line is parsed, which is the point (see CL_IMAGE_EXE_MAGIC). */
+int cl_image_stage_embedded(void);
+
+/* Non-zero when the staged/restored image came out of the executable. */
+int cl_image_embedded_p(void);
+
+/* The :HEAP-SIZE a delivered executable was saved with (0 = none). */
+uint32_t cl_image_embedded_heap_size(void);
+
+/* Call the :TOPLEVEL function a delivered executable was saved with, in
+ * its own CL_CATCH.  Returns 0 when the image names none (nothing ran),
+ * 1 when it ran -- the caller then shuts down; cl_exit_code is 1 after an
+ * unhandled error, and whatever (QUIT n) set otherwise. */
+int cl_image_run_toplevel(void);
 
 /* Arena bytes the staged image needs (header bump).  0 if none staged. */
 uint32_t cl_image_staged_bump(void);

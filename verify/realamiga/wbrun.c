@@ -110,6 +110,7 @@ static int run(int argc, char **argv)
     struct WBArg *args;
     struct Process *proc;
     const char *toolname;
+    BPTR home;
     int rc = RETURN_FAIL;
 
     if (argc > first && strncmp(argv[first], "STACK=", 6) == 0) {
@@ -134,8 +135,12 @@ static int run(int argc, char **argv)
     }
     toolname = (const char *)args[0].wa_Name;
 
+    /* PROGDIR: is the tool's drawer, as Workbench sets it; DOS unlocks
+     * the lock when the process ends. */
+    home = DupLock(args[0].wa_Lock);
     proc = CreateNewProcTags(NP_Seglist, (ULONG)seg,
                              NP_FreeSeglist, FALSE,
+                             NP_HomeDir, (ULONG)home,
                              NP_Name, (ULONG)toolname,
                              NP_StackSize, stack,
                              NP_Cli, FALSE,
@@ -144,7 +149,11 @@ static int run(int argc, char **argv)
                              NP_CloseInput, FALSE,
                              NP_CloseOutput, FALSE,
                              TAG_END);
-    if (!proc) { say("wbrun: CreateNewProc failed\n"); goto out; }
+    if (!proc) {
+        if (home) UnLock(home);
+        say("wbrun: CreateNewProc failed\n");
+        goto out;
+    }
 
     wbs->sm_Message.mn_Node.ln_Type = NT_MESSAGE;
     wbs->sm_Message.mn_ReplyPort = reply;

@@ -267,7 +267,7 @@ test_batch test_repl_values test_repl_paste test_boot_log test_mx_error_context 
                 test_scan_opcodes test_runtime_forms test_compiler_buffers \
                 test_defvar_special_fasl test_defvar_init_once_fasl test_stack_depth test_argv_utf8 \
                 test_command_line_args \
-                test_utf8_filenames test_image test_boot_image_scripts test_install_layout \
+                test_utf8_filenames test_image test_executable test_boot_image_scripts test_install_layout \
                 test_finish_output_flush \
                 test_amiga_bindgen \
                 test_amiga_boopsi test_amiga_reaction test_amiga_mui test_amiga_curated_vs_raw \
@@ -379,6 +379,8 @@ test-gc-stress:
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_tls_loopback.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_image (CLAMIGA_GC_STRESS=1, forced compaction) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_image.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
+	@echo "--- test_executable (CLAMIGA_GC_STRESS=1, forced compaction) ---"
+	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_executable.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_command_line_args (CLAMIGA_GC_STRESS=1, forced compaction: the argument list is consed at boot) ---"
 	@$(TEST_TMPDIR_ENV) CLAMIGA_GC_STRESS=1 sh $(TEST_SRCDIR)/test_command_line_args.sh $(GC_STRESS_BUILDDIR)/clamiga$(EXE)
 	@echo "--- test_shutdown_leak (CLAMIGA_GC_STRESS=1, forced compaction) ---"
@@ -559,7 +561,7 @@ linux-test:
 	  set -e; \
 	  export DEBIAN_FRONTEND=noninteractive; \
 	  apt-get update -qq >/dev/null; \
-	  apt-get install -y -qq build-essential >/dev/null; \
+	  apt-get install -y -qq build-essential libffi-dev pkg-config >/dev/null; \
 	  make clean >/dev/null; \
 	  make host && make test'
 

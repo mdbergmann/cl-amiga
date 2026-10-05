@@ -914,6 +914,12 @@ int platform_file_delete(const char *path)
     return (unlink(path) == 0) ? 0 : -1;
 }
 
+int platform_file_make_executable(const char *path)
+{
+    (void)path;                         /* the .exe name is what counts */
+    return 0;
+}
+
 int platform_file_rename(const char *oldpath, const char *newpath)
 {
     /* NOT rename(3): the Windows CRT's fails when the destination exists,

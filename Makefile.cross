@@ -252,7 +252,7 @@ test-amiga: $(BUILDDIR)/clamiga $(BUILDDIR)/wbrun
 	@mkdir -p build/amiga
 	cp $(BUILDDIR)/clamiga build/amiga/clamiga
 	cp $(BUILDDIR)/wbrun build/amiga/wbrun
-	@rm -f build/amiga/clamiga-test.img build/amiga/boot.img
+	@rm -f build/amiga/clamiga-test.img build/amiga/boot.img build/amiga/exe-test build/amiga/exe-wb.log
 	@echo "=== Launching FS-UAE (high-end JIT config) — auto-quits when tests finish ==="
 	@# The suite flushes its log after every check and no check takes more
 	@# than ~80 s on this config, so 5 min of silence is a hang -- the 10 min
@@ -294,7 +294,7 @@ test-amiga-lowend: $(BUILDDIR)/clamiga $(BUILDDIR)/wbrun
 	@mkdir -p build/amiga
 	cp $(BUILDDIR)/clamiga build/amiga/clamiga
 	cp $(BUILDDIR)/wbrun build/amiga/wbrun
-	@rm -f build/amiga/clamiga-test.img build/amiga/boot.img
+	@rm -f build/amiga/clamiga-test.img build/amiga/boot.img build/amiga/exe-test build/amiga/exe-wb.log
 	@echo "=== Launching FS-UAE (lower-end 68020 baseline) — auto-quits when tests finish ==="
 	verify/realamiga/run-fs-uae.sh verify/realamiga/verify-lowend.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
@@ -360,6 +360,18 @@ verify-amiga:
 	@# as options, the project as EXT:*COMMAND-LINE-ARGS*, the WINDOW console.
 	@if ! grep -q "WORKBENCH-START-PASSED" build/amiga/test-results.log; then \
 		echo "=== Amiga verification FAILED (Workbench start) ==="; \
+		exit 1; \
+	fi
+	@# Delivered-executable leg (tests/amiga/exe-save.lisp): the runtime with
+	@# the image appended starts alone, owns its command line, exits with the
+	@# program's status -- from the Shell and from an icon.
+	@if ! grep -q "EXECUTABLE-PASSED" build/amiga/test-results.log || \
+	    ! grep -q "^exe rc=5" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (delivered executable) ==="; \
+		exit 1; \
+	fi
+	@if ! grep -q "EXECUTABLE-WB-PASSED" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (delivered executable, Workbench start) ==="; \
 		exit 1; \
 	fi
 	@# The driver (call-on-ustartup) writes "=== run end ===" only after

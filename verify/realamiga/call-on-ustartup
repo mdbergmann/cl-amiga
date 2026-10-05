@@ -79,6 +79,19 @@ build/amiga/clamiga --no-userinit --image build/amiga/boot.img --heap 8M --non-i
 unsetenv CLAMIGA_SUITE_QUICK
 delete >NIL: CLAmiga:build/amiga/clamiga-test.img
 delete >NIL: CLAmiga:build/amiga/boot.img
+; Delivered executable (tests/amiga/exe-save.lisp): EXT:SAVE-IMAGE
+; :EXECUTABLE T writes exe-test, the runtime with the image appended.  It
+; must start from another directory with nothing but itself, take the whole
+; command line as the program's (--help and --heap are arguments here), and
+; end with the status its :TOPLEVEL function quits with -- verify-amiga
+; wants EXECUTABLE-PASSED and "exe rc=5".
+echo "=== delivered executable ===" >>build/amiga/test-results.log
+delete >NIL: build/amiga/exe-test build/amiga/exe-test.info build/amiga/exe-wb.log
+build/amiga/clamiga --no-userinit --no-image --heap 8M --non-interactive --load tests/amiga/exe-save.lisp >>build/amiga/test-results.log
+cd CLAmiga:tests
+CLAmiga:build/amiga/exe-test --help --heap "two words" >>CLAmiga:build/amiga/test-results.log
+echo "exe rc=$RC" >>CLAmiga:build/amiga/test-results.log
+cd CLAmiga:
 ; The main stack: with `stack 8000` (twice a stock Shell's default) the
 ; runtime must swap to its own 128K (platform_run_main) -- verify-amiga
 ; requires SMALL-STACK-PASSED.  Last but one, so a crash here costs no
@@ -105,7 +118,21 @@ IF EXISTS build/amiga/wb-start.log
 ELSE
   echo "WORKBENCH-START-FAILED: no wb-start.log (clamiga never ran the check)" >>build/amiga/test-results.log
 ENDIF
-delete >NIL: build/amiga/wb-project.lisp build/amiga/wb-project.lisp.info build/amiga/clamiga.info
+delete >NIL: build/amiga/wb-project.lisp.info build/amiga/clamiga.info
+; The delivered executable from its icon: no command name to find its own
+; file by (the WBStartup message has it), the tool type's ARGS and the
+; project as the program's arguments -- EXECUTABLE-WB-PASSED.
+echo "=== delivered executable, workbench start ===" >>build/amiga/test-results.log
+build/amiga/wbrun MKICON TOOL build/amiga/exe-test "ARGS=wb-arg" "WINDOW=NIL:"
+build/amiga/wbrun MKICON PROJECT build/amiga/wb-project.lisp
+build/amiga/wbrun RUN STACK=8000 build/amiga/exe-test build/amiga/wb-project.lisp
+IF EXISTS build/amiga/exe-wb.log
+  type build/amiga/exe-wb.log >>build/amiga/test-results.log
+ELSE
+  echo "EXECUTABLE-WB-FAILED: no exe-wb.log (the executable never ran its toplevel)" >>build/amiga/test-results.log
+ENDIF
+delete >NIL: build/amiga/wb-project.lisp build/amiga/wb-project.lisp.info
+delete >NIL: build/amiga/exe-test build/amiga/exe-test.info build/amiga/exe-wb.log
 echo "=== run end ===" >>build/amiga/test-results.log
 date >>build/amiga/test-results.log
 ; Quit FS-UAE so `make test-amiga` returns without manual intervention.

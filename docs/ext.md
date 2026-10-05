@@ -217,16 +217,59 @@ module's FASL again re-attaches a table if you need it back.
 
 Use it for delivery, not for a development snapshot.
 
+### Delivering a program: `:executable`
+
+```lisp
+(load "app.lisp")
+(ext:save-image "app" :executable t :toplevel 'app:main :quit t)
+```
+
+writes **one file that is the program**: a copy of the running clamiga
+with the image appended.  It needs nothing beside it — no `lib/`, no image
+file, no launcher script — and starts like any other program, from a Shell
+or from a Workbench icon:
+
+```
+app input.txt --verbose
+```
+
+- **The command line is the program's.**  Every argument arrives in
+  `ext:*command-line-args*` verbatim; none is a clamiga option, so
+  `--help` or `--heap` mean whatever the program says they mean.  Started
+  from Workbench, the icon's `ARGS` tool type and the project icons arrive
+  the same way (see [Program arguments](#program-arguments)).
+- **`:toplevel`** names the function the program is — a symbol or a
+  function, called with no arguments once the restore hooks ran.  When it
+  returns the process exits with status 0; `(quit n)` exits with `n`; an
+  error nothing handled is printed and exits with 1.  `ext:*exit-hooks*`
+  run in every case.  Without `:toplevel` the executable is a clamiga that
+  starts at the REPL with the program loaded.
+- **`:heap-size`** is the heap the program starts with, in bytes — the
+  executable has no `--heap` option to give later.  Left out, it gets the
+  default heap, or as much as the image needs if that is more.
+- `~/.clamigarc` is not loaded and no banner is printed: nothing of the
+  development environment shows through.
+- Everything said about images above holds: threads and open streams must
+  be gone before the save, `ext:*restore-hooks*` rebuild OS state at
+  start, and `:shake-bindings t` trims the image.
+- The executable is for the machine type that saved it — it *contains*
+  that clamiga.  Build the AmigaOS program on AmigaOS (or in an emulator),
+  the MorphOS one on MorphOS, the host one on the host.  A delivered
+  executable can itself save the next one.
+- On Windows give the file its `.exe` name; elsewhere the name is free.
+
 | Signature | Kind | Description |
 |-----------|------|-------------|
-| `(save-image pathname &key quit shake-bindings)` | function | Arm a heap-image dump; it executes at the next top-level safe point.  With `:quit t` the process exits after writing; with `:shake-bindings t` the demand-interned binding tables are shed first (see above) |
+| `(save-image pathname &key quit shake-bindings executable toplevel heap-size)` | function | Arm a heap-image dump; it executes at the next top-level safe point.  With `:quit t` the process exits after writing; with `:shake-bindings t` the demand-interned binding tables are shed first; with `:executable t` the file is a self-contained program (see above) that runs `:toplevel` with a heap of `:heap-size` bytes |
 | `*save-hooks*` | variable | Functions funcalled (most recent first) right before the dump — close streams / tear down FFI state here |
 | `*restore-hooks*` | variable | Functions funcalled (most recent first) after a `--image` restore, following `~/.clamigarc` |
 | `*image-restored-p*` | variable | `T` when this session came from `--image` |
 
 Runnable end-to-end examples: `tests/test_image.sh` and
 `tests/test_image.c` (host), `tests/amiga/image-save.lisp` /
-`image-verify.lisp` (Amiga).
+`image-verify.lisp` (Amiga); for delivered executables
+`tests/test_executable.sh` (host) and `tests/amiga/exe-save.lisp` (Amiga,
+Shell and Workbench start).
 
 ## Bulk byte-vector operations
 

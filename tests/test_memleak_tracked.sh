@@ -21,6 +21,11 @@ case "$CLAMIGA" in
   /*) ;;
   *) CLAMIGA="$(pwd)/$CLAMIGA" ;;
 esac
+# A Windows program is found by its extension (the delivered executable).
+case "$CLAMIGA" in
+  *.exe) EXE_SUFFIX=.exe ;;
+  *) EXE_SUFFIX= ;;
+esac
 passed=0
 failed=0
 total=0
@@ -411,6 +416,75 @@ cat > "$WORK/imgrestore.lisp" <<'LISPEOF'
 (quit)
 LISPEOF
 run_case "no_leak_after_image_restore" "$WORK/imgrestore.lisp" --image "$WORK/leak.img"
+
+# --- delivered executable ----------------------------------------------------
+# (ext:save-image f :executable t) copies the runtime through a scratch
+# buffer; the executable it writes looks at its own tail before anything
+# else, restores from there and ends through its :TOPLEVEL function -- by
+# returning, by (quit), and by an error nothing handled.  The executable is a
+# copy of this tracked binary, so it reports its own leaks.
+cat > "$WORK/exesave.lisp" <<LISPEOF
+(load "$WORK/imgfns.lisp")
+(defun leak-exe-main ()
+  (let ((cmd (first ext:*command-line-args*)))
+    (format t "EXE-RAN ~a~%" (funcall (leak-img-a 40) (leak-img-b 1)))
+    (cond ((equal cmd "quit") (quit 3))
+          ((equal cmd "boom") (error "exe-boom")))))
+(ext:save-image "$WORK/leak-exe$EXE_SUFFIX" :executable t :toplevel 'leak-exe-main :quit t)
+LISPEOF
+run_case "no_leak_after_executable_save" "$WORK/exesave.lisp" --no-image
+
+# run_exe_case NAME WANT-RC [ARG...] — start the delivered executable.
+run_exe_case() {
+    name=$1
+    want=$2
+    shift 2
+    total=$((total + 1))
+    out=$(CLAMIGA_MEM_DIAG=1 "$WORK/leak-exe$EXE_SUFFIX" "$@" </dev/null 2>&1)
+    rc=$?
+    report=$(echo "$out" | sed -n 's/^\[mem\] leak report: \([0-9][0-9]*\) block(s), \([0-9][0-9]*\) bytes.*/\1 \2/p' | tail -1)
+    case "$out" in
+      *"EXE-RAN 42"*) ;;
+      *) echo "  FAIL  $name (the executable did not run its toplevel, rc=$rc)"
+         echo "$out" | tail -6
+         failed=$((failed + 1))
+         return ;;
+    esac
+    if [ "$rc" -ne "$want" ]; then
+        echo "  FAIL  $name (exit code $rc, want $want)"
+        failed=$((failed + 1))
+    elif [ "$report" = "0 0" ]; then
+        echo "  ok  $name"
+        passed=$((passed + 1))
+    else
+        echo "  FAIL  $name (leak report: ${report:-none} -- blocks bytes)"
+        echo "$out" | grep '^\[mem\]' | head -10
+        failed=$((failed + 1))
+    fi
+}
+run_exe_case "no_leak_after_executable_run" 0 some args
+run_exe_case "no_leak_after_executable_quit" 3 quit
+run_exe_case "no_leak_after_executable_error" 1 boom
+
+# A damaged executable (image bytes missing, trailer intact) leaves before
+# the command line is parsed -- with the file table its look at itself opened.
+total=$((total + 1))
+exe_size=$(wc -c < "$WORK/leak-exe$EXE_SUFFIX")
+head -c $((exe_size - 120)) "$WORK/leak-exe$EXE_SUFFIX" > "$WORK/leak-cut$EXE_SUFFIX"
+tail -c 20 "$WORK/leak-exe$EXE_SUFFIX" >> "$WORK/leak-cut$EXE_SUFFIX"
+chmod +x "$WORK/leak-cut$EXE_SUFFIX"
+out=$(CLAMIGA_MEM_DIAG=1 "$WORK/leak-cut$EXE_SUFFIX" </dev/null 2>&1)
+rc=$?
+report=$(echo "$out" | sed -n 's/^\[mem\] leak report: \([0-9][0-9]*\) block(s), \([0-9][0-9]*\) bytes.*/\1 \2/p' | tail -1)
+case "$rc:$report:$out" in
+  1:"0 0":*"cannot be used"*)
+    echo "  ok  no_leak_when_damaged_executable_refuses"
+    passed=$((passed + 1)) ;;
+  *)
+    echo "  FAIL  no_leak_when_damaged_executable_refuses (rc=$rc, leak report: ${report:-none})"
+    echo "$out" | tail -6
+    failed=$((failed + 1)) ;;
+esac
 
 # --- startup failures: the exits that never reach a REPL --------------------
 # run_fail_case NAME EXPECT [ENV=VAL ...] -- ARG...: the run must fail (rc 1),

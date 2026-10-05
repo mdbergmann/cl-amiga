@@ -320,6 +320,10 @@ int      platform_file_exists(const char *path);
 int      platform_file_is_directory(const char *path);
 int      platform_file_delete(const char *path);
 int      platform_file_rename(const char *oldpath, const char *newpath);
+/* Mark PATH as a program the user can start (EXT:SAVE-IMAGE :EXECUTABLE T
+ * wrote it).  POSIX sets the x bits the umask allows; AmigaOS and Windows
+ * have nothing to do (a new file is executable there).  0 on success. */
+int      platform_file_make_executable(const char *path);
 uint32_t platform_file_mtime(const char *path); /* Universal time of last mod, 0 on error */
 int      platform_mkdir(const char *path);       /* Create single directory, 0=success */
 

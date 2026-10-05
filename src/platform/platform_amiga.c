@@ -879,6 +879,14 @@ int platform_file_rename(const char *oldpath, const char *newpath)
     return Rename((STRPTR)oldpath, (STRPTR)newpath) ? 0 : -1;
 }
 
+int platform_file_make_executable(const char *path)
+{
+    /* All of rwed (the bits are "denied" flags): what a new file has
+     * anyway on a native filesystem, said explicitly for the ones that
+     * derive the bits from somewhere else (a host directory under UAE). */
+    return SetProtection((STRPTR)path, 0) ? 0 : -1;
+}
+
 uint32_t platform_file_mtime(const char *path)
 {
     BPTR lock;
@@ -964,6 +972,10 @@ const char *platform_executable_prefix(char *buf, int bufsize)
     return buf;
 }
 
+/* The tool's file name out of the WBStartup message (platform_startup_args):
+ * a Workbench-started process is no CLI, so GetProgramName has nothing. */
+static const char *wb_tool_name = NULL;
+
 const char *platform_executable_path(char *buf, int bufsize)
 {
     /* PROGDIR: plus the program's own file name (dos.library 36+ keeps the
@@ -973,7 +985,11 @@ const char *platform_executable_path(char *buf, int bufsize)
      * its directory, so only the last component goes after it. */
     char name[128];
     const char *file;
-    if (!GetProgramName((STRPTR)name, (LONG)sizeof(name)) || name[0] == '\0')
+    if (wb_tool_name) {
+        strncpy(name, wb_tool_name, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+    } else if (!GetProgramName((STRPTR)name, (LONG)sizeof(name)) ||
+               name[0] == '\0')
         return NULL;
     file = (const char *)FilePart((STRPTR)name);
     if (file[0] == '\0')
@@ -3234,8 +3250,10 @@ int platform_startup_args(int *argc, char ***argv)
 
     cl_argv_builder_init(&b, wb_argbuf, (int)sizeof(wb_argbuf),
                          wb_argv, (int)(sizeof(wb_argv) / sizeof(wb_argv[0])));
-    cl_argv_builder_add(&b, (wbs && wbs->sm_NumArgs > 0 && wbs->sm_ArgList[0].wa_Name)
-                            ? (const char *)wbs->sm_ArgList[0].wa_Name : "clamiga");
+    if (wbs && wbs->sm_NumArgs > 0 && wbs->sm_ArgList[0].wa_Name &&
+        wbs->sm_ArgList[0].wa_Name[0])
+        wb_tool_name = (const char *)wbs->sm_ArgList[0].wa_Name;
+    cl_argv_builder_add(&b, wb_tool_name ? wb_tool_name : "clamiga");
 
     IconBase = OpenLibrary((CONST_STRPTR)"icon.library", 36);
     if (wbs && wbs->sm_ArgList) {

@@ -388,6 +388,50 @@ names it, so a gap is a loud runtime error, not corruption.
   thread/stream/FFI preconditions), pointing at the test files per the
   documentation policy.
 
+## Delivered executables (added 2026-10-05)
+
+`(ext:save-image path :executable t [:toplevel fn] [:heap-size bytes])`
+writes the runtime and the image as one file:
+
+```
+[ the running executable, without an image it carries itself ]
+[ 68k AmigaOS only: HUNK_DEBUG id, length in longwords       ]
+[ the image, exactly as SAVE-IMAGE writes it to a file, +0..3 ]
+[ trailer: u32 image offset, u32 image length, u32 heap size,
+           8 bytes "CLAMIEXE"                                  ]
+```
+
+- ELF, Mach-O and PE loaders ignore bytes behind the last section, so
+  the file starts as the runtime does.  **AmigaOS LoadSeg does not**: it
+  reads hunk after hunk until the file ends and fails on anything else
+  (ERROR_BAD_HUNK / ERROR_FILE_NOT_OBJECT, measured in FS-UAE on 3.1).
+  The 68k build therefore wraps image + trailer in one `HUNK_DEBUG`
+  (id + longword count in front, patched after the write), which LoadSeg
+  skips; the image is padded so the trailer starts on a longword.
+- `main` looks at the last 20 bytes of its own file (`platform_executable_
+  path`) **before it parses the command line**.  With a valid trailer the
+  image is staged from that offset, no option is parsed (argv[1..] is
+  `EXT:*COMMAND-LINE-ARGS*`), the user init file is skipped, and a
+  trailer whose offsets do not add up to the file is fatal — a delivered
+  program never falls back to a REPL.  The image format itself is
+  unchanged; staging and the payload read take an offset.
+- `:toplevel` is stored as the value of the internal
+  `EXT::*IMAGE-TOPLEVEL*` (heap state, so no format change) and honoured
+  only by a start from an embedded image: `cl_image_run_toplevel` after
+  the restore hooks, then shutdown.  Unhandled error = exit status 1.
+- `:heap-size` lives in the trailer because the arena is sized before the
+  heap exists.
+- Because the tail is read before anything else, the early exits of the
+  option parser (`--help`, usage errors) release the platform file table
+  (`early_exit` in main.c).
+- A Workbench-started process is no CLI and has no program name:
+  `platform_executable_path` falls back to the tool name of the WBStartup
+  message.
+
+Tests: `tests/test_executable.sh` (+ gc-stress leg), the executable
+scenarios of `tests/test_memleak_tracked.sh`, and the Amiga legs
+`tests/amiga/exe-save.lisp` (Shell and Workbench start).
+
 ## Non-goal: portable images
 
 Cross-built images (host-built, Amiga-run) are not planned.  Recorded

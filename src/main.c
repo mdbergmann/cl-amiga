@@ -630,6 +630,17 @@ static CL_Obj eval_string_in_cl_user(const char *str)
     return result;
 }
 
+/* Leave before the runtime exists (usage errors, --help).  The look at
+ * the executable's own tail opened the platform's file table by then, and
+ * on AmigaOS nothing comes back by itself. */
+static void early_exit(int code)
+{
+    platform_release_resources();
+    cl_mem_diag_from_env();             /* the heap init never ran */
+    cl_mem_track_report();
+    platform_process_exit(code);
+}
+
 static int clamiga_main(int argc, char *argv[])
 {
     int batch = 0;
@@ -641,6 +652,7 @@ static int clamiga_main(int argc, char *argv[])
     int jit_eager = 0;
     int boot_log = 0;
     int no_image = 0;
+    int embedded = 0;              /* the image is appended to this binary */
     uint32_t image_ms = 0, image_t0;   /* --boot-log: stage + restore cost */
     const char *image_file = NULL;
     const char *script_file = NULL;
@@ -683,7 +695,23 @@ static int clamiga_main(int argc, char *argv[])
 #endif
 #endif
 
-    for (i = 1; i < argc; i++) {
+    /* A delivered executable (EXT:SAVE-IMAGE :EXECUTABLE T) carries its
+     * image behind the runtime.  Looked for before the command line is
+     * read, because then the command line is the program's: every argument
+     * goes to EXT:*COMMAND-LINE-ARGS* verbatim, none is a clamiga option,
+     * and the user init file is not the program's business either. */
+    embedded = cl_image_stage_embedded();
+    if (embedded < 0)
+        early_exit(1);                  /* damaged: never a REPL instead */
+    if (embedded) {
+        no_userinit = 1;
+        if (argc > 1) {
+            program_args = argv + 1;
+            program_argc = argc - 1;
+        }
+    }
+
+    for (i = 1; !embedded && i < argc; i++) {
         if (strcmp(argv[i], "--batch") == 0) {
             batch = 1;
         } else if (strcmp(argv[i], "--color") == 0) {
@@ -706,7 +734,7 @@ static int clamiga_main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --image requires a file argument\n");
                 print_usage();
-                platform_process_exit(1);
+                early_exit(1);
             }
             image_file = argv[++i];
         } else if (strcmp(argv[i], "--no-image") == 0) {
@@ -715,12 +743,12 @@ static int clamiga_main(int argc, char *argv[])
             cl_load_fasl_cache_off = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             print_usage();
-            platform_process_exit(0);
+            early_exit(0);
         } else if (strcmp(argv[i], "--load") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --load requires a file argument\n");
                 print_usage();
-                platform_process_exit(1);
+                early_exit(1);
             }
             if (action_count < MAX_ACTIONS) {
                 actions[action_count].is_eval = 0;
@@ -731,7 +759,7 @@ static int clamiga_main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --eval requires an expression argument\n");
                 print_usage();
-                platform_process_exit(1);
+                early_exit(1);
             }
             if (action_count < MAX_ACTIONS) {
                 actions[action_count].is_eval = 1;
@@ -742,7 +770,7 @@ static int clamiga_main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --script requires a file argument\n");
                 print_usage();
-                platform_process_exit(1);
+                early_exit(1);
             }
             script = 1;
             script_file = argv[++i];
@@ -750,26 +778,26 @@ static int clamiga_main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --heap requires a size argument\n");
                 print_usage();
-                platform_process_exit(1);
+                early_exit(1);
             }
             heap_size = parse_size(argv[++i]);
             if (heap_size == 0) {
                 fprintf(stderr, "Error: invalid heap size '%s'\n", argv[i]);
                 print_usage();
-                platform_process_exit(1);
+                early_exit(1);
             }
         } else if (strcmp(argv[i], "--vm-stack") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --vm-stack requires a size argument\n");
                 print_usage();
-                platform_process_exit(1);
+                early_exit(1);
             }
             {
                 uint32_t stack_bytes = parse_size(argv[++i]);
                 if (stack_bytes == 0) {
                     fprintf(stderr, "Error: invalid stack size '%s'\n", argv[i]);
                     print_usage();
-                    platform_process_exit(1);
+                    early_exit(1);
                 }
                 stack_entries = stack_bytes / 4; /* each entry is uint32_t */
             }
@@ -777,14 +805,14 @@ static int clamiga_main(int argc, char *argv[])
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --frames requires a number\n");
                 print_usage();
-                platform_process_exit(1);
+                early_exit(1);
             }
             {
                 uint32_t n = parse_size(argv[++i]);
                 if (n == 0) {
                     fprintf(stderr, "Error: invalid frame count '%s'\n", argv[i]);
                     print_usage();
-                    platform_process_exit(1);
+                    early_exit(1);
                 }
                 frame_count = (int)n;
             }
@@ -797,7 +825,7 @@ static int clamiga_main(int argc, char *argv[])
         } else if (strncmp(argv[i], "--", 2) == 0) {
             fprintf(stderr, "Error: unknown option '%s'\n", argv[i]);
             print_usage();
-            platform_process_exit(1);
+            early_exit(1);
         } else {
             /* Bare file argument: treat as --load */
             if (action_count < MAX_ACTIONS) {
@@ -810,7 +838,7 @@ static int clamiga_main(int argc, char *argv[])
 
     /* Default: color on for interactive, off for batch/script/non-interactive */
     if (!color_set)
-        cl_repl_color = !(batch || script || non_interactive);
+        cl_repl_color = !(batch || script || non_interactive || embedded);
 
     /* Boot progress lines ("; [boot] ...") are opt-in via --boot-log —
      * useful on a slow Amiga boot or when chasing a startup-time regression,
@@ -841,7 +869,9 @@ static int clamiga_main(int argc, char *argv[])
      * cl_repl_init_from_image, whose clock alone would report the restore
      * as 0 ms — the one number the comparison with a FASL boot is about. */
     image_t0 = platform_time_ms();
-    if (image_file) {
+    if (embedded) {
+        /* staged above, before the command line was looked at */
+    } else if (image_file) {
         if (cl_image_stage(image_file, 0) != 0) {
             platform_release_resources();   /* the file table staging opened */
             platform_process_exit(1);
@@ -855,7 +885,9 @@ static int clamiga_main(int argc, char *argv[])
          * --heap wins when it is already big enough. */
         uint32_t bump = cl_image_staged_bump();
         uint32_t need = bump + bump / 4u + (2u << 20);
-        uint32_t want = heap_size ? heap_size : CL_DEFAULT_HEAP_SIZE;
+        uint32_t want = heap_size ? heap_size
+                      : cl_image_embedded_heap_size() ? cl_image_embedded_heap_size()
+                      : CL_DEFAULT_HEAP_SIZE;
         heap_size = want > need ? want : need;
     }
 
@@ -954,8 +986,8 @@ static int clamiga_main(int argc, char *argv[])
         } else {
             /* Pre-arena verification failed (reason already printed). */
             cl_image_discard_staged();
-            if (image_file) {
-                /* explicit --image: never boot something else.  Through the
+            if (image_file || embedded) {
+                /* explicit --image, or the executable's own: never boot something else.  Through the
                  * normal teardown, not a bare exit: the arena and the rest
                  * of the C init are already allocated, and on AmigaOS what
                  * is not handed back stays gone until reboot. */
@@ -979,6 +1011,17 @@ static int clamiga_main(int argc, char *argv[])
         cl_gc_stress_ready = 1;
     }
 #endif
+
+    if (embedded) {
+        /* A delivered executable runs its :TOPLEVEL function and ends with
+         * it; one saved without is a clamiga that starts with the program
+         * loaded, at the REPL below. */
+        if (cl_image_run_toplevel()) {
+            cl_image_save_run_if_pending();
+            goto shutdown;
+        }
+        cl_repl_color = 1;
+    }
 
     if (script) {
         /* Script/batch: execute --load/--eval actions before mode entry */

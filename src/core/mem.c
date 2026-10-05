@@ -974,14 +974,17 @@ static void gen_reset(void)
  * pair it with `Avail` before and after a run to account for every byte. */
 int cl_mem_diag = 0;
 
+void cl_mem_diag_from_env(void)
+{
+    char dbuf[8];
+    const char *d = platform_getenv("CLAMIGA_MEM_DIAG", dbuf,
+                                    (int)sizeof(dbuf));
+    cl_mem_diag = (d && d[0] && !(d[0] == '0' && d[1] == '\0'));
+}
+
 int cl_mem_try_init(uint32_t heap_size)
 {
-    {
-        char dbuf[8];
-        const char *d = platform_getenv("CLAMIGA_MEM_DIAG", dbuf,
-                                        (int)sizeof(dbuf));
-        cl_mem_diag = (d && d[0] && !(d[0] == '0' && d[1] == '\0'));
-    }
+    cl_mem_diag_from_env();
 
     if (heap_size == 0)
         heap_size = CL_DEFAULT_HEAP_SIZE;

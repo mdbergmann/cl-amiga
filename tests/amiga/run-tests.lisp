@@ -12048,6 +12048,23 @@ y" 1))
   (handler-case (ext:save-image 42) (error () :error)))
 (check "save-image rejects unknown keywords" :error
   (handler-case (ext:save-image "T:img-x.img" :bogus t) (error () :error)))
+; Delivered executables (:EXECUTABLE T): the build-time refusals.  The
+; executable itself is saved and started by call-on-ustartup
+; (tests/amiga/exe-save.lisp).
+(check "save-image :toplevel needs :executable" :error
+  (handler-case (ext:save-image "T:img-x" :toplevel 'car) (error () :error)))
+(check "save-image :heap-size needs :executable" :error
+  (handler-case (ext:save-image "T:img-x" :heap-size 8388608) (error () :error)))
+(check "save-image refuses an undefined :toplevel" :error
+  (handler-case (ext:save-image "T:img-x" :executable t
+                                :toplevel 'no-such-toplevel-function-xyz)
+    (error () :error)))
+(check "save-image refuses a :toplevel that is no function" :error
+  (handler-case (ext:save-image "T:img-x" :executable t :toplevel 42)
+    (error () :error)))
+(check "save-image refuses a bad :heap-size" :error
+  (handler-case (ext:save-image "T:img-x" :executable t :heap-size -1)
+    (error () :error)))
 (check "save-image refuses with an open file stream" :error
   (let ((s (open "T:img-open.tmp" :direction :output
                  :if-exists :supersede)))

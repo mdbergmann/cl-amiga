@@ -215,6 +215,8 @@ static char image_pending_path[1024];
 static int  image_pending = 0;
 static int  image_pending_quit = 0;
 static int  image_pending_shake = 0;
+static int  image_pending_exe = 0;         /* :EXECUTABLE T */
+static uint32_t image_pending_heap = 0;    /* :HEAP-SIZE (executables) */
 
 /* Staged image awaiting restore.  Staging (before cl_mem_init) reads only
  * the header, which is all the arena sizing needs; the payload is read by
@@ -224,7 +226,13 @@ static int  image_pending_shake = 0;
  * 1.6 MB editor image left no 8 MB block where 11.8 MB had been free. */
 static char          *image_staged_path = NULL;   /* platform_alloc'd */
 static char          *image_staged_buf = NULL;    /* payload, once read */
-static unsigned long  image_staged_size = 0;      /* file size at staging */
+static unsigned long  image_staged_size = 0;      /* image bytes at staging */
+static uint32_t       image_staged_offset = 0;    /* where they start in the file */
+static unsigned long  image_staged_file_len = 0;  /* the whole file's length */
+/* The staged image is the one appended to the running executable (a
+ * delivered executable, image.h), and the :HEAP-SIZE its trailer names. */
+static int            image_embedded = 0;
+static uint32_t       image_embedded_heap = 0;
 static uint8_t        image_staged_head[CL_IMAGE_HEADER_BYTES];
 static CL_ImageHeader image_staged_hdr;
 
@@ -240,8 +248,14 @@ static CL_Obj SYM_RESTORE_HOOKS = CL_NIL;     /* EXT:*RESTORE-HOOKS* */
  * so no user code ever sees the zeroed foreign pointers of the image. */
 static CL_Obj SYM_SYSTEM_RESTORE_HOOKS = CL_NIL;
 static CL_Obj SYM_IMAGE_RESTORED_P = CL_NIL;  /* EXT:*IMAGE-RESTORED-P* */
+/* EXT::*IMAGE-TOPLEVEL* (internal): the :TOPLEVEL function designator of
+ * a delivered executable.  A symbol value, so it travels in the heap. */
+static CL_Obj SYM_IMAGE_TOPLEVEL = CL_NIL;
 static CL_Obj KW_QUIT_IMG = CL_NIL;
 static CL_Obj KW_SHAKE_BINDINGS = CL_NIL;
+static CL_Obj KW_EXECUTABLE = CL_NIL;
+static CL_Obj KW_TOPLEVEL = CL_NIL;
+static CL_Obj KW_HEAP_SIZE = CL_NIL;
 
 void cl_image_note_boot_roots(void)
 {
@@ -410,6 +424,7 @@ void cl_image_run_system_restore_hooks(void)
 typedef struct {
     PlatformFile fh;
     int error;
+    uint32_t written;   /* bytes so far (the executable trailer needs them) */
 } ImgWriter;
 
 static void iw_bytes(ImgWriter *w, const void *data, uint32_t len)
@@ -417,6 +432,7 @@ static void iw_bytes(ImgWriter *w, const void *data, uint32_t len)
     if (w->error || len == 0) return;
     if (platform_file_write_buf(w->fh, (const char *)data, len) < 0)
         w->error = 1;
+    w->written += len;
 }
 
 static void iw_u8(ImgWriter *w, uint8_t v)  { iw_bytes(w, &v, 1); }
@@ -527,9 +543,108 @@ static void image_write_bytecode_blob(ImgWriter *w, uint32_t off,
     iw_u16(w, sf_idx);
 }
 
-static int image_write_file(const char *path)
+/* What a delivered executable puts between the runtime and the image.
+ * ELF, Mach-O and PE loaders never look behind the last section; AmigaOS
+ * LoadSeg reads hunk after hunk until the file ends and refuses anything
+ * it does not know (ERROR_BAD_HUNK, seen in FS-UAE).  So on the hunk
+ * build the image and the trailer are the body of one HUNK_DEBUG, the
+ * hunk type LoadSeg skips: its id and its length in longwords. */
+#if defined(PLATFORM_AMIGA) && !defined(PLATFORM_MORPHOS)
+#define IMAGE_EXE_WRAP_BYTES 8u
+#define IMAGE_HUNK_DEBUG     0x000003F1u
+#else
+#define IMAGE_EXE_WRAP_BYTES 0u
+#endif
+
+/* Read the delivered-executable trailer at the end of PATH (image.h).
+ * Returns 1 with the three fields and the file's length when there is one,
+ * 0 when there is none, -1 when PATH cannot be opened. */
+static int image_probe_trailer(const char *path, uint32_t *off, uint32_t *len,
+                               uint32_t *heap, unsigned long *file_len)
+{
+    uint8_t t[CL_IMAGE_EXE_TRAILER_BYTES];
+    PlatformFile fh;
+    long flen;
+    int got = 0;
+
+    *file_len = 0;
+    fh = platform_file_open(path, PLATFORM_FILE_READ);
+    if (fh == PLATFORM_FILE_INVALID)
+        return -1;
+    flen = platform_file_length(fh);
+    if (flen >= (long)CL_IMAGE_EXE_TRAILER_BYTES &&
+        platform_file_set_position(
+            fh, flen - (long)CL_IMAGE_EXE_TRAILER_BYTES) == 0)
+        got = platform_file_read_buf(fh, (char *)t,
+                                     CL_IMAGE_EXE_TRAILER_BYTES);
+    platform_file_close(fh);
+    if (flen > 0) *file_len = (unsigned long)flen;
+    if (got != (int)CL_IMAGE_EXE_TRAILER_BYTES ||
+        memcmp(t + 12, CL_IMAGE_EXE_MAGIC, CL_IMAGE_EXE_MAGIC_LEN) != 0)
+        return 0;
+    memcpy(off, t, 4);
+    memcpy(len, t + 4, 4);
+    memcpy(heap, t + 8, 4);
+    return 1;
+}
+
+/* Copy the runtime -- the running executable without an image it may carry
+ * itself -- to the writer.  Returns its length, 0 on failure (said). */
+static uint32_t image_copy_runtime(ImgWriter *w)
+{
+    char path[1024];
+    char msg[400];
+    uint32_t off = 0, len = 0, heap = 0, left, total;
+    unsigned long flen = 0;
+    PlatformFile in;
+    char *buf;
+    int found;
+
+    if (!platform_executable_path(path, (int)sizeof(path))) {
+        platform_write_string("; SAVE-IMAGE: cannot locate the running "
+                              "clamiga executable\n");
+        return 0;
+    }
+    found = image_probe_trailer(path, &off, &len, &heap, &flen);
+    total = (found == 1 && off >= IMAGE_EXE_WRAP_BYTES && off < flen)
+                ? off - IMAGE_EXE_WRAP_BYTES : (uint32_t)flen;
+    buf = (char *)platform_alloc(16384);
+    in = (found >= 0 && total > 0 && buf)
+             ? platform_file_open(path, PLATFORM_FILE_READ)
+             : PLATFORM_FILE_INVALID;
+    if (in == PLATFORM_FILE_INVALID) {
+        if (buf) platform_free(buf);
+        snprintf(msg, sizeof(msg),
+                 "; SAVE-IMAGE: cannot read the running executable "
+                 "\"%.300s\"\n", path);
+        platform_write_string(msg);
+        return 0;
+    }
+    for (left = total; left > 0 && !w->error; ) {
+        uint32_t want = left < 16384u ? left : 16384u;
+        int got = platform_file_read_buf(in, buf, want);
+        if (got <= 0) break;
+        iw_bytes(w, buf, (uint32_t)got);
+        left -= (uint32_t)got;
+    }
+    platform_file_close(in);
+    platform_free(buf);
+    if (left > 0) {
+        snprintf(msg, sizeof(msg),
+                 "; SAVE-IMAGE: short read copying the running executable "
+                 "\"%.300s\"\n", path);
+        platform_write_string(msg);
+        return 0;
+    }
+    return total;
+}
+
+/* Write the image to PATH; with EXE, as a delivered executable: the
+ * runtime first, the image behind it, the trailer last (image.h). */
+static int image_write_file(const char *path, int exe, uint32_t exe_heap)
 {
     char tmp_path[1100];
+    uint32_t runtime_len = 0, image_off = 0;
     ImgWriter w;
     uint8_t fprint[CL_IMAGE_FPRINT_LEN];
     uint32_t n_blobs, n_roots, n_outbufs, h, lost;
@@ -551,12 +666,26 @@ static int image_write_file(const char *path)
 
     w.fh = platform_file_open(tmp_path, PLATFORM_FILE_WRITE);
     w.error = 0;
+    w.written = 0;
     if (w.fh == PLATFORM_FILE_INVALID) {
         char buf[256];
         snprintf(buf, sizeof(buf),
                  "; SAVE-IMAGE: cannot create \"%.180s\"\n", tmp_path);
         platform_write_string(buf);
         return -1;
+    }
+    if (exe) {
+        runtime_len = image_copy_runtime(&w);
+        if (runtime_len == 0) {
+            platform_file_close(w.fh);
+            platform_file_delete(tmp_path);
+            return -1;
+        }
+#if IMAGE_EXE_WRAP_BYTES
+        iw_u32(&w, IMAGE_HUNK_DEBUG);
+        iw_u32(&w, 0);                  /* longwords: patched below */
+#endif
+        image_off = w.written;
     }
 
     memset(&srcs, 0, sizeof(srcs));
@@ -657,6 +786,25 @@ static int image_write_file(const char *path)
     /* --- Section 6: ARENA --- */
     iw_bytes(&w, cl_heap.arena, cl_heap.bump);
 
+    if (exe) {
+        static const uint8_t zeros[4] = { 0, 0, 0, 0 };
+        uint32_t image_len = w.written - image_off;
+        /* The trailer starts on a longword (a hunk body is longwords). */
+        iw_bytes(&w, zeros, (4u - (image_len & 3u)) & 3u);
+        iw_u32(&w, image_off);
+        iw_u32(&w, image_len);
+        iw_u32(&w, exe_heap);
+        iw_bytes(&w, CL_IMAGE_EXE_MAGIC, CL_IMAGE_EXE_MAGIC_LEN);
+#if IMAGE_EXE_WRAP_BYTES
+        {
+            uint32_t longs = (w.written - image_off) / 4u;
+            if (platform_file_set_position(w.fh, (long)(runtime_len + 4u)) != 0)
+                w.error = 1;
+            iw_u32(&w, longs);
+        }
+#endif
+    }
+
     if (platform_file_flush(w.fh) < 0) w.error = 1;
     platform_file_close(w.fh);
 
@@ -677,6 +825,9 @@ static int image_write_file(const char *path)
                               "into place - image not saved\n");
         return -1;
     }
+    if (exe && platform_file_make_executable(path) != 0)
+        platform_write_string("; SAVE-IMAGE: note: could not mark the file "
+                              "executable - set the permission by hand\n");
     return 0;
 }
 
@@ -713,13 +864,41 @@ void cl_image_save_request(const char *path, int quit, int shake)
     strcpy(image_pending_path, path);
     image_pending_quit = quit;
     image_pending_shake = shake;
+    image_pending_exe = 0;
+    image_pending_heap = 0;
     image_pending = 1;
+}
+
+void cl_image_save_executable_request(const char *path, int quit, int shake,
+                                      uint32_t heap_size)
+{
+    char self[1024];
+    PlatformFile fh;
+
+    /* Synchronously, so a build script gets a catchable error: without the
+     * runtime's own file there is nothing to put the image behind. */
+    if (!platform_executable_path(self, (int)sizeof(self)))
+        cl_error(CL_ERR_FILE,
+                 "SAVE-IMAGE: :EXECUTABLE T needs the running clamiga's own "
+                 "file, and this process cannot tell where it was started "
+                 "from");
+    fh = platform_file_open(self, PLATFORM_FILE_READ);
+    if (fh == PLATFORM_FILE_INVALID)
+        cl_error(CL_ERR_FILE,
+                 "SAVE-IMAGE: :EXECUTABLE T cannot read the running "
+                 "executable \"%s\"", self);
+    platform_file_close(fh);
+
+    cl_image_save_request(path, quit, shake);
+    image_pending_exe = 1;
+    image_pending_heap = heap_size;
 }
 
 int cl_image_save_run_if_pending(void)
 {
     const char *pre;
-    int quit, shake;
+    int quit, shake, exe;
+    uint32_t exe_heap;
 
     if (!image_pending)
         return 0;
@@ -729,8 +908,12 @@ int cl_image_save_run_if_pending(void)
     image_pending = 0;
     quit = image_pending_quit;
     shake = image_pending_shake;
+    exe = image_pending_exe;
+    exe_heap = image_pending_heap;
     image_pending_quit = 0;
     image_pending_shake = 0;
+    image_pending_exe = 0;
+    image_pending_heap = 0;
 
     /* 1. Save hooks first — a hook may close the very streams that would
      * otherwise abort the save. */
@@ -814,10 +997,11 @@ int cl_image_save_run_if_pending(void)
     }
 
     /* 5. Write temp + rename. */
-    if (image_write_file(image_pending_path) == 0) {
+    if (image_write_file(image_pending_path, exe, exe_heap) == 0) {
         char buf[400];
         snprintf(buf, sizeof(buf),
-                 "; Image saved to \"%.300s\" (%u KB heap)\n",
+                 "; %s saved to \"%.300s\" (%u KB heap)\n",
+                 exe ? "Executable" : "Image",
                  image_pending_path,
                  (unsigned)(cl_heap.bump >> 10));
         platform_write_string(buf);
@@ -889,13 +1073,16 @@ static void image_stage_fail(int quiet, const char *fmt, const char *arg)
     }
 }
 
-int cl_image_stage(const char *path, int quiet)
+/* Stage the image that starts OFF bytes into PATH and is IMG_LEN bytes
+ * long (0 = it runs to the end of the file: a plain image file). */
+static int image_stage_at(const char *path, uint32_t off, uint32_t img_len,
+                          int quiet)
 {
     ImgReader r;
     uint8_t fprint[CL_IMAGE_FPRINT_LEN];
     PlatformFile fh;
     long len;
-    int got;
+    int got = -1;
     size_t plen;
 
     cl_image_discard_staged();
@@ -908,8 +1095,9 @@ int cl_image_stage(const char *path, int quiet)
         return -1;
     }
     len = platform_file_length(fh);
-    got = platform_file_read_buf(fh, (char *)image_staged_head,
-                                 CL_IMAGE_HEADER_BYTES);
+    if (off == 0 || platform_file_set_position(fh, (long)off) == 0)
+        got = platform_file_read_buf(fh, (char *)image_staged_head,
+                                     CL_IMAGE_HEADER_BYTES);
     platform_file_close(fh);
     plen = strlen(path) + 1;
     image_staged_path = (char *)platform_alloc((unsigned long)plen);
@@ -919,7 +1107,11 @@ int cl_image_stage(const char *path, int quiet)
         return -1;
     }
     memcpy(image_staged_path, path, plen);
-    image_staged_size = len > 0 ? (unsigned long)len : 0;
+    image_staged_file_len = len > 0 ? (unsigned long)len : 0;
+    image_staged_offset = off;
+    image_staged_size = img_len ? (unsigned long)img_len
+                      : image_staged_file_len > off ? image_staged_file_len - off
+                      : 0;
 
     r.data = image_staged_head;
     r.size = got > 0 ? (uint32_t)got : 0;
@@ -966,6 +1158,50 @@ int cl_image_stage(const char *path, int quiet)
     return 0;
 }
 
+int cl_image_stage(const char *path, int quiet)
+{
+    return image_stage_at(path, 0, 0, quiet);
+}
+
+int cl_image_stage_embedded(void)
+{
+    char path[1024];
+    char msg[512];
+    uint32_t off = 0, len = 0, heap = 0;
+    unsigned long flen = 0;
+
+    if (!platform_executable_path(path, (int)sizeof(path)))
+        return 0;
+    if (image_probe_trailer(path, &off, &len, &heap, &flen) != 1)
+        return 0;
+    if (len < CL_IMAGE_HEADER_BYTES ||
+        flen < CL_IMAGE_EXE_TRAILER_BYTES ||
+        len > flen - CL_IMAGE_EXE_TRAILER_BYTES ||
+        off > flen - CL_IMAGE_EXE_TRAILER_BYTES - len ||
+        flen - CL_IMAGE_EXE_TRAILER_BYTES - len - off > 3 || /* padding */
+        image_stage_at(path, off, len, 0) != 0) {
+        snprintf(msg, sizeof(msg),
+                 "; \"%.300s\": the program image appended to this "
+                 "executable cannot be used - the file is damaged or was "
+                 "altered after it was saved\n", path);
+        platform_write_string(msg);
+        return -1;
+    }
+    image_embedded = 1;
+    image_embedded_heap = heap;
+    return 1;
+}
+
+int cl_image_embedded_p(void)
+{
+    return image_embedded;
+}
+
+uint32_t cl_image_embedded_heap_size(void)
+{
+    return image_embedded_heap;
+}
+
 uint32_t cl_image_staged_bump(void)
 {
     return image_staged_path ? image_staged_hdr.bump : 0;
@@ -987,6 +1223,8 @@ void cl_image_discard_staged(void)
         image_staged_path = NULL;
     }
     image_staged_size = 0;
+    image_staged_offset = 0;
+    image_staged_file_len = 0;
 }
 
 /* Read the staged file's payload (restore time, after cl_mem_init) and
@@ -995,11 +1233,42 @@ void cl_image_discard_staged(void)
  * success. */
 static int image_load_staged_payload(void)
 {
-    unsigned long size = 0;
+    PlatformFile fh;
     char buf[400];
+    int changed = 0, got = -1;
 
     if (image_staged_buf) return 0;
-    image_staged_buf = platform_file_read(image_staged_path, &size);
+    fh = platform_file_open(image_staged_path, PLATFORM_FILE_READ);
+    if (fh != PLATFORM_FILE_INVALID) {
+        long flen = platform_file_length(fh);
+        if (flen < 0 || (unsigned long)flen != image_staged_file_len ||
+            (image_staged_offset != 0 &&
+             platform_file_set_position(fh, (long)image_staged_offset) != 0)) {
+            changed = 1;
+        } else {
+            image_staged_buf = (char *)platform_alloc(image_staged_size);
+            if (image_staged_buf)
+                got = platform_file_read_buf(fh, image_staged_buf,
+                                             (uint32_t)image_staged_size);
+        }
+        platform_file_close(fh);
+    }
+    if (!changed && image_staged_buf &&
+        (got < 0 || (unsigned long)got != image_staged_size ||
+         memcmp(image_staged_buf, image_staged_head,
+                CL_IMAGE_HEADER_BYTES) != 0))
+        changed = 1;
+    if (changed) {
+        snprintf(buf, sizeof(buf),
+                 "; --image: \"%.300s\" changed while clamiga was starting - "
+                 "start it again\n", image_staged_path);
+        platform_write_string(buf);
+        if (image_staged_buf) {
+            platform_free(image_staged_buf);
+            image_staged_buf = NULL;
+        }
+        return -1;
+    }
     if (!image_staged_buf) {
         snprintf(buf, sizeof(buf),
                  "; --image: cannot read \"%.300s\" (%lu bytes) after the "
@@ -1007,17 +1276,6 @@ static int image_load_staged_payload(void)
                  "file? try a smaller --heap\n",
                  image_staged_path, image_staged_size);
         platform_write_string(buf);
-        return -1;
-    }
-    if (size != image_staged_size ||
-        memcmp(image_staged_buf, image_staged_head,
-               CL_IMAGE_HEADER_BYTES) != 0) {
-        snprintf(buf, sizeof(buf),
-                 "; --image: \"%.300s\" changed while clamiga was starting - "
-                 "start it again\n", image_staged_path);
-        platform_write_string(buf);
-        platform_free(image_staged_buf);
-        image_staged_buf = NULL;
         return -1;
     }
     return 0;
@@ -1605,6 +1863,40 @@ int cl_image_restore_staged(void)
     return 0;
 }
 
+int cl_image_run_toplevel(void)
+{
+    CL_Obj fn;
+    int err;
+
+    if (!image_embedded || CL_NULL_P(SYM_IMAGE_TOPLEVEL))
+        return 0;
+    fn = cl_symbol_value(SYM_IMAGE_TOPLEVEL);
+    if (fn == CL_UNBOUND || CL_NULL_P(fn))
+        return 0;
+
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+    CL_GC_PROTECT(fn);
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        fn = cl_coerce_funcdesig(fn, "the executable's :TOPLEVEL");
+        cl_vm_apply(fn, NULL, 0);
+        CL_UNCATCH();
+    } else if (err == CL_ERR_EXIT) {
+        CL_UNCATCH();                   /* (QUIT n): cl_exit_code is set */
+    } else {
+        /* An error nothing handled ends the program, and says so in the
+         * exit status: this is a program now, not a session to recover. */
+        cl_error_print();
+        cl_vm.sp = 0;
+        cl_vm.fp = 0;
+        CL_UNCATCH();
+        cl_exit_code = 1;
+    }
+    CL_GC_UNPROTECT(1);
+    return 1;
+}
+
 /* ================================================================
  * Lisp surface: EXT:SAVE-IMAGE + hook variables
  * ================================================================ */
@@ -1638,7 +1930,9 @@ static const char *image_coerce_path(CL_Obj obj, char *buf, uint32_t buflen)
 static CL_Obj bi_save_image(CL_Obj *args, int nargs)
 {
     char path[1024];
-    int quit = 0, shake = 0;
+    int quit = 0, shake = 0, exe = 0;
+    int toplevel_at = 0, heap_given = 0;   /* args[] index / flag */
+    uint32_t heap = 0;
     int i;
 
     if (!image_coerce_path(args[0], path, sizeof(path)))
@@ -1651,15 +1945,56 @@ static CL_Obj bi_save_image(CL_Obj *args, int nargs)
             quit = !CL_NULL_P(args[i + 1]);
         else if (args[i] == KW_SHAKE_BINDINGS)
             shake = !CL_NULL_P(args[i + 1]);
-        else
+        else if (args[i] == KW_EXECUTABLE)
+            exe = !CL_NULL_P(args[i + 1]);
+        else if (args[i] == KW_TOPLEVEL)
+            toplevel_at = CL_NULL_P(args[i + 1]) ? 0 : i + 1;
+        else if (args[i] == KW_HEAP_SIZE) {
+            if (!CL_NULL_P(args[i + 1])) {
+                if (!CL_FIXNUM_P(args[i + 1]) ||
+                    CL_FIXNUM_VAL(args[i + 1]) <= 0 ||
+                    (int64_t)CL_FIXNUM_VAL(args[i + 1]) > (int64_t)UINT32_MAX)
+                    cl_error(CL_ERR_TYPE,
+                             "SAVE-IMAGE: :HEAP-SIZE must be a positive "
+                             "number of bytes, e.g. (* 16 1024 1024)");
+                heap = (uint32_t)CL_FIXNUM_VAL(args[i + 1]);
+                heap_given = 1;
+            }
+        } else
             cl_error(CL_ERR_ARGS,
-                     "SAVE-IMAGE: unknown keyword argument (only :QUIT and "
-                     ":SHAKE-BINDINGS are accepted)");
+                     "SAVE-IMAGE: unknown keyword argument (:QUIT, "
+                     ":SHAKE-BINDINGS, :EXECUTABLE, :TOPLEVEL and :HEAP-SIZE "
+                     "are accepted)");
     }
     if (i != nargs)
         cl_error(CL_ERR_ARGS, "SAVE-IMAGE: odd number of keyword arguments");
+    if (!exe && (toplevel_at || heap_given))
+        cl_error(CL_ERR_ARGS,
+                 "SAVE-IMAGE: :TOPLEVEL and :HEAP-SIZE describe a delivered "
+                 "executable - add :EXECUTABLE T");
+    /* A typo in the entry point must fail the build, not the first start
+     * of the shipped program. */
+    if (toplevel_at) {
+        CL_Obj tl = args[toplevel_at];
+        if (CL_SYMBOL_P(tl)) {
+            CL_Obj fn = ((CL_Symbol *)CL_OBJ_TO_PTR(tl))->function;
+            if (fn == CL_UNBOUND || CL_NULL_P(fn))
+                cl_error(CL_ERR_UNDEFINED,
+                         "SAVE-IMAGE: the :TOPLEVEL function %s is not "
+                         "defined - load the program before saving it",
+                         cl_symbol_name(tl));
+        } else
+            cl_coerce_funcdesig(tl, "SAVE-IMAGE :TOPLEVEL");
+    }
 
-    cl_image_save_request(path, quit, shake);
+    if (exe)
+        cl_image_save_executable_request(path, quit, shake, heap);
+    else
+        cl_image_save_request(path, quit, shake);
+    /* The designator as given (a symbol stays a symbol), or NIL: a plain
+     * image saved after an executable must not inherit its entry point. */
+    ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_IMAGE_TOPLEVEL))->value =
+        toplevel_at ? args[toplevel_at] : CL_NIL;
 
     /* The dump itself runs after this top-level form finishes, at the
      * next safe point where the main thread is at rest (spec).  Return
@@ -1688,12 +2023,19 @@ void cl_image_builtins_init(void)
     image_defvar_ext("*RESTORE-HOOKS*", &SYM_RESTORE_HOOKS, 1);
     image_defvar_ext("*SYSTEM-RESTORE-HOOKS*", &SYM_SYSTEM_RESTORE_HOOKS, 0);
     image_defvar_ext("*IMAGE-RESTORED-P*", &SYM_IMAGE_RESTORED_P, 1);
+    image_defvar_ext("*IMAGE-TOPLEVEL*", &SYM_IMAGE_TOPLEVEL, 0);
 
     KW_QUIT_IMG = cl_intern_keyword("QUIT", 4);
     cl_gc_register_root(&KW_QUIT_IMG);
     KW_SHAKE_BINDINGS = cl_intern_keyword("SHAKE-BINDINGS", 14);
     cl_gc_register_root(&KW_SHAKE_BINDINGS);
+    KW_EXECUTABLE = cl_intern_keyword("EXECUTABLE", 10);
+    cl_gc_register_root(&KW_EXECUTABLE);
+    KW_TOPLEVEL = cl_intern_keyword("TOPLEVEL", 8);
+    cl_gc_register_root(&KW_TOPLEVEL);
+    KW_HEAP_SIZE = cl_intern_keyword("HEAP-SIZE", 9);
+    cl_gc_register_root(&KW_HEAP_SIZE);
 
-    cl_register_builtin_exported("SAVE-IMAGE", bi_save_image, 1, 5,
+    cl_register_builtin_exported("SAVE-IMAGE", bi_save_image, 1, 11,
                                  cl_package_ext);
 }

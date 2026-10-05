@@ -842,6 +842,19 @@ int platform_file_rename(const char *oldpath, const char *newpath)
     return (rename(oldpath, newpath) == 0) ? 0 : -1;
 }
 
+int platform_file_make_executable(const char *path)
+{
+    /* x wherever the file is readable: what the umask allowed at creation
+     * decides who may run it, as cc does for its output. */
+    struct stat st;
+    mode_t mode;
+    if (stat(path, &st) != 0)
+        return -1;
+    mode = st.st_mode & 07777;
+    mode |= (mode & 0444) >> 2;
+    return chmod(path, mode) == 0 ? 0 : -1;
+}
+
 uint32_t platform_file_mtime(const char *path)
 {
     struct stat st;
