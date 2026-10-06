@@ -17,10 +17,12 @@
 #   every icon: magic E310, version 1, OS 2.x revision in the gadget's
 #     UserData, a 48x24 two-plane image
 #   the launchers: project icons, default tool C:IconX, a WINDOW tool
-#     type, 128K stack, pinned to the first two rows of the package root
-#     (clamiga, then Clamacs; the FPU build in the second column)
+#     type, 128K stack, pinned to the first two columns of the package
+#     root's 3 x 3 grid (clamiga, Clamacs; soft-float, FPU, MorphOS as the
+#     rows), each with its IconX script that starts its own build's binary
+#     and nothing else -- no platform detection
 #   the root guide icons: project icons, default tool SYS:Utilities/MultiView,
-#     pinned to the third row, same columns as the launchers
+#     pinned to the third column
 #   Guide.info: the same, unpositioned (NO_ICON_POSITION)
 #   Drawer.info: type WBDRAWER (2), DrawerData at 78 with the window
 #     580x212 at 40/30 on the Workbench screen, the Image header at 134,
@@ -70,30 +72,47 @@ project() {
     [ "$tool" = "$2" ] || bad="$bad default-tool='$tool'"
     [ -z "$bad" ] && ok "project_$1" || fail "project_$1" "$bad"
 }
-# the three rows of the package root: columns 64/234/404, rows 8/60/112
+# the 3 x 3 grid of the package root: columns 64/234/404, rows 8/60/112
 X0=00000040; X1=000000ea; X2=00000194; Y0=00000008; Y1=0000003c; Y2=00000070
 NOPOS=80000000
 project CLAmiga            "C:IconX" $X0 $Y0 131072
-project CLAmiga-FPU        "C:IconX" $X1 $Y0 131072
-project Clamacs            "C:IconX" $X0 $Y1 131072
+project CLAmiga-FPU        "C:IconX" $X0 $Y1 131072
+project CLAmiga-MOS        "C:IconX" $X0 $Y2 131072
+project Clamacs            "C:IconX" $X1 $Y0 131072
 project Clamacs-FPU        "C:IconX" $X1 $Y1 131072
-project README-FIRST.guide "SYS:Utilities/MultiView" $X0 $Y2 16384
-project cl-amiga.guide     "SYS:Utilities/MultiView" $X1 $Y2 16384
+project Clamacs-MOS        "C:IconX" $X1 $Y2 131072
+project README-FIRST.guide "SYS:Utilities/MultiView" $X2 $Y0 16384
+project cl-amiga.guide     "SYS:Utilities/MultiView" $X2 $Y1 16384
 project clamacs.guide      "SYS:Utilities/MultiView" $X2 $Y2 16384
 project Guide              "SYS:Utilities/MultiView" $NOPOS $NOPOS 16384
 # the launchers carry their console window as a WINDOW= tool type
-for n in CLAmiga CLAmiga-FPU Clamacs Clamacs-FPU; do
+for n in CLAmiga CLAmiga-FPU CLAmiga-MOS Clamacs Clamacs-FPU Clamacs-MOS; do
     if LC_ALL=C grep -q "WINDOW=" "icons/$n.info"; then ok "tooltype_window_$n"; else fail "tooltype_window_$n"; fi
 done
-# every launcher icon has its IconX script beside it, and the two Clamacs
-# scripts start the editor from the bin/ of their own build
-for n in CLAmiga CLAmiga-FPU Clamacs Clamacs-FPU; do
-    if [ -f "icons/$n" ]; then ok "launcher_script_$n"; else fail "launcher_script_$n"; fi
-done
-if grep -q 'bin/aos3/clamiga --image bin/aos3/clamacs.img' icons/Clamacs \
-   && ! grep -q 'aos3-fpu' icons/Clamacs; then ok "clamacs_launcher_soft_float"; else fail "clamacs_launcher_soft_float"; fi
-if grep -q 'bin/aos3-fpu/clamiga --image bin/aos3-fpu/clamacs.img' icons/Clamacs-FPU \
-   && grep -q 'bin/mos/clamiga --image bin/mos/clamacs.img' icons/Clamacs-FPU; then ok "clamacs_fpu_launcher"; else fail "clamacs_fpu_launcher"; fi
+# every launcher icon has its IconX script beside it, and each script runs
+# the binary of its own build (and only that one: no If EXISTS SYS:MorphOS),
+# the Clamacs ones from the clamacs.img beside that binary
+launcher() {
+    f="icons/$1"; bad=""
+    [ -f "$f" ] || { fail "launcher_script_$1" "missing"; return; }
+    grep -v '^;' "$f" | grep -q "^[^;]*bin/$2/clamiga" || bad="$bad does-not-run-bin/$2"
+    for other in aos3 aos3-fpu mos; do
+        [ "$other" = "$2" ] && continue
+        grep -v '^;' "$f" | grep -q "bin/$other/" && bad="$bad runs-bin/$other"
+    done
+    grep -v '^;' "$f" | grep -qi 'MorphOS' && bad="$bad platform-detection"
+    case $1 in
+        Clamacs*) grep -q "bin/$2/clamiga --image bin/$2/clamacs.img" "$f" || bad="$bad no-editor-image" ;;
+        *) grep -v '^;' "$f" | grep -q 'clamacs' && bad="$bad starts-editor" ;;
+    esac
+    [ -z "$bad" ] && ok "launcher_script_$1" || fail "launcher_script_$1" "$bad"
+}
+launcher CLAmiga     aos3
+launcher CLAmiga-FPU aos3-fpu
+launcher CLAmiga-MOS mos
+launcher Clamacs     aos3
+launcher Clamacs-FPU aos3-fpu
+launcher Clamacs-MOS mos
 # the root guide icons are Guide.info with a position and nothing else
 for n in README-FIRST cl-amiga clamacs; do
     if [ "$(hex "icons/$n.guide.info" 66 382)" = "$(hex icons/Guide.info 66 382)" ]; then

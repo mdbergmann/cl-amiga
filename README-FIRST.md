@@ -10,7 +10,7 @@ icon or read on.  (This page is `README-FIRST.guide` on the Amiga and
 
 | File | Description |
 |------|-------------|
-| `CLAmiga`, `CLAmiga-FPU`, `Clamacs`, `Clamacs-FPU` | Workbench icons: a double-click starts the matching program from `bin/` (`bin/mos/` on MorphOS), see Workbench below |
+| `CLAmiga`, `CLAmiga-FPU`, `CLAmiga-MOS`, `Clamacs`, `Clamacs-FPU`, `Clamacs-MOS` | Workbench icons, one per binary: a double-click starts clamiga or the Clamacs editor from `bin/aos3`, `bin/aos3-fpu` or `bin/mos`, see Workbench below |
 | `README-FIRST.guide` | this page |
 | `cl-amiga.guide` | the manual: features, usage, the GUI libraries, the ARexx port, known limitations (the project's README) |
 | `clamacs.guide` | Clamacs, the editor/IDE: keys, windows, the REPL and debugger windows |
@@ -26,17 +26,19 @@ icon or read on.  (This page is `README-FIRST.guide` on the Amiga and
 
 ## Workbench
 
-Open this drawer on Workbench (or Ambient on MorphOS) and double-click
-`CLAmiga` to start clamiga in a console window, `CLAmiga-FPU` for the
-hard-float build, `Clamacs` for the editor, or `Clamacs-FPU` for the
-editor on the hard-float build (the same FPU requirement as `CLAmiga-FPU`:
-the editor and the clamiga it starts for its REPL are then both
-hard-float).  Each icon runs the small
-launcher script of the same name through IconX, from this drawer, with a
-128K stack -- the same as the shell quick start below.  On MorphOS the
-scripts start the `bin/mos` binaries.  The console's size and title are
-the WINDOW tool type of the CLAmiga icons (Icons > Information); closing
-that window ends clamiga.
+Open this drawer on Workbench (or Ambient on MorphOS).  The icons come
+in two columns -- clamiga on the left, the Clamacs editor on the right --
+and one row per binary: `CLAmiga` / `Clamacs` are the soft-float AmigaOS 3
+build that runs on every 68020+, `CLAmiga-FPU` / `Clamacs-FPU` the
+hard-float build (FPU required, see below; the editor and the clamiga it
+starts for its REPL are then both hard-float), `CLAmiga-MOS` /
+`Clamacs-MOS` the native MorphOS build.  Pick the row for your machine;
+the icons do no detection, so an AmigaOS icon on MorphOS (or the other
+way round) only fails to start.  Each icon runs the small launcher script
+of the same name through IconX, from this drawer, with a 128K stack --
+the same as the shell quick start below.  The console's size and title
+are the WINDOW tool type of the CLAmiga icons (Icons > Information);
+closing that window ends clamiga.
 
 Every `.guide` file has an icon too: a double-click opens it in
 MultiView.
@@ -130,8 +132,9 @@ same two forms at the REPL.  Then either:
 
 From a shell, files to edit go after `--`:
 `bin/aos3/clamiga --image bin/aos3/clamacs.img --non-interactive --eval "(clamacs::run)" -- Work:my.lisp`
-(that is what the `Clamacs` icon runs, without files; `Clamacs-FPU` runs
-the same from `bin/aos3-fpu/`).  `S:.clamacsrc`, if
+(that is what the `Clamacs` icon runs, without files; `Clamacs-FPU` and
+`Clamacs-MOS` run the same from `bin/aos3-fpu/` and `bin/mos/`).
+`S:.clamacsrc`, if
 you have one, is loaded before the first window opens.
 
 The editor's keys, windows and menus are in [clamacs.guide](clamacs/README.md);

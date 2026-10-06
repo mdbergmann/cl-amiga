@@ -266,15 +266,17 @@ quicklisp), the package API reference under `docs/`, `examples/`, the
 [AmigaGuide documentation](#amigaguide) (`README-FIRST.guide`,
 `cl-amiga.guide` and `clamacs.guide` in the package root, the reference
 guides under `docs/`, every guide with an icon that opens it in MultiView),
-and four Workbench icons in the package root (`CLAmiga`, `CLAmiga-FPU`,
-`Clamacs`, `Clamacs-FPU`: IconX launchers from `icons/`, drawn by
-`scripts/make-icons.py` like the guide icons, that start the matching
-binary from `bin/` on a double-click -- the editor on the soft-float or
-the hard-float build -- `bin/mos/` on MorphOS). The root icons carry
-fixed positions (the clamiga launchers in one row, the Clamacs launchers
-beneath them, the three guides in a third) and the archives carry the
+and six Workbench icons in the package root, one pair per binary
+(`CLAmiga` / `Clamacs`, `CLAmiga-FPU` / `Clamacs-FPU`, `CLAmiga-MOS` /
+`Clamacs-MOS`: IconX launchers from `icons/`, drawn by
+`scripts/make-icons.py` like the guide icons, that start clamiga or the
+editor from `bin/aos3`, `bin/aos3-fpu` or `bin/mos` on a double-click, with
+no platform detection in the scripts; a snapshot without `bin/mos` ships
+without the MOS pair). The root icons carry fixed positions (a 3 x 3 grid:
+clamiga launchers, Clamacs launchers and the three guides as the columns,
+soft-float, FPU and MorphOS as the rows) and the archives carry the
 package drawer's own icon (`clamiga-<version>.info` beside the drawer),
-whose window is sized for those three rows and shows
+whose window is sized for that grid and shows
 only files with icons — then it smoke-tests the deployed layout and
 produces `.zip` and `.lha` archives. The binaries find `lib/` relative to themselves, so the extracted
 tree runs from any directory without assigns or environment variables.
