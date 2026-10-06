@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """Generate the Workbench icons of the binary release (icons/*.info).
 
-Each icon is a classic (OS 1.3/2.x-style) DiskObject project icon.  Three
+Each icon is a classic (OS 1.3/2.x-style) DiskObject project icon.  Four
 have C:IconX as their default tool, so a double-click on Workbench or
 Ambient runs the launcher script of the same name next to it --
 `icons/CLAmiga` starts bin/aos3/clamiga in a console window,
-`icons/CLAmiga-FPU` the hard-float build, `icons/Clamacs` the editor.  The
-script, not the icon, picks bin/mos on MorphOS, so one icon serves both
-systems.  The guide icons have SYS:Utilities/MultiView as their default
+`icons/CLAmiga-FPU` the hard-float build, `icons/Clamacs` the editor on
+bin/aos3/clamiga and `icons/Clamacs-FPU` the editor on the hard-float
+build.  The script, not the icon, picks bin/mos on MorphOS, so one icon
+serves both systems.  The guide icons have SYS:Utilities/MultiView as their default
 tool, so a double-click opens the guide: `icons/Guide.info` is copied next
 to every reference guide under docs/ by scripts/make-binary-release.sh,
 and `README-FIRST.guide.info`, `cl-amiga.guide.info`,
 `clamacs.guide.info` are the same image with a fixed position for the
 three guides in the package root.
 
-The package root is laid out in two rows -- the three launchers, then the
+The package root is laid out in three rows -- the clamiga launchers, the
+Clamacs launchers (the FPU build in the second column of each), then the
 three guides -- by fixed icon positions (do_CurrentX/Y) instead of
 Workbench's own placement, and `icons/Drawer.info` is the icon OF the
 package drawer (shipped beside it in the archive as clamiga-<version>.info):
@@ -146,6 +148,15 @@ def art(kind):
             px[7][x] = BLACK
             px[10][x] = BLACK
         badge(px, "IDE")
+    elif kind == "clamacs-fpu":
+        # the editor's card with the hard-float build's badge
+        blit(px, LAMBDA, 8, 5, BLACK)
+        for y in range(6, 18):
+            px[y][27] = BLACK
+        for x in range(30, 42):
+            px[7][x] = BLACK
+            px[10][x] = BLACK
+        badge(px, "FPU")
     elif kind == "guide":
         # a small lambda and the "lines of text" of a document page
         blit(px, LAMBDA, 4, 4, BLACK)
@@ -305,32 +316,37 @@ MULTIVIEW = ("SYS:Utilities/MultiView", [], 16384)   # tool as installed by
 # AmigaOS 3.x and MorphOS; a project icon's stack is what Workbench starts
 # the tool with
 
-# The package root, two rows: the three launchers, then the three guides.
+# The package root, three rows: the two clamiga launchers, the two Clamacs
+# launchers (soft-float first, the FPU build in the second column), then
+# the three guides.
 # Columns 170 px apart so the longest label ("README-FIRST.guide", 144 px
 # in Topaz 8, centred under its 48 px image) clears its neighbours, and the
 # first column far enough in that that label is not clipped at the left
 # edge; rows 52 px apart (24 px image + label + gap).  Pixels from the
 # drawer window's inner top-left.
 COL = (64, 234, 404)
-ROW = (8, 60)
+ROW = (8, 60, 112)
 
 ICONS = {
     # name: (art kind, default tool, tool types, stack, position or None)
     "CLAmiga":     ("clamiga",) + iconx("CON:0/20/640/236/CLAmiga/CLOSE") + ((COL[0], ROW[0]),),
     "CLAmiga-FPU": ("clamiga-fpu",) + iconx("CON:0/20/640/236/CLAmiga-FPU/CLOSE") + ((COL[1], ROW[0]),),
-    "Clamacs":     ("clamacs",) + iconx("NIL:") + ((COL[2], ROW[0]),),
-    "README-FIRST.guide": ("guide",) + MULTIVIEW + ((COL[0], ROW[1]),),
-    "cl-amiga.guide":     ("guide",) + MULTIVIEW + ((COL[1], ROW[1]),),
-    "clamacs.guide":      ("guide",) + MULTIVIEW + ((COL[2], ROW[1]),),
+    "Clamacs":     ("clamacs",) + iconx("NIL:") + ((COL[0], ROW[1]),),
+    "Clamacs-FPU": ("clamacs-fpu",) + iconx("NIL:") + ((COL[1], ROW[1]),),
+    "README-FIRST.guide": ("guide",) + MULTIVIEW + ((COL[0], ROW[2]),),
+    "cl-amiga.guide":     ("guide",) + MULTIVIEW + ((COL[1], ROW[2]),),
+    "clamacs.guide":      ("guide",) + MULTIVIEW + ((COL[2], ROW[2]),),
     # the reference guides under docs/: Workbench places them
     "Guide":       ("guide",) + MULTIVIEW + (None,),
 }
 
 # The package drawer's own icon (clamiga-<version>.info beside the drawer):
-# a window on the Workbench screen big enough for the two rows above --
-# 580 x 160 outer, so ~550 x 130 inside the borders, title bar and
-# scrollers on a stock 3.x screen font (checked on a Vampire, OS 3.2.3).
-DRAWER = ("clamiga", 40, 30, 580, 160)
+# a window on the Workbench screen big enough for the three rows above --
+# 580 x 212 outer, so ~550 x 182 inside the borders, title bar and
+# scrollers on a stock 3.x screen font (the two-row 580 x 160 was checked
+# on a Vampire, OS 3.2.3; one more row of 52 px), still inside a 640 x 256
+# PAL Workbench at 40/30.
+DRAWER = ("clamiga", 40, 30, 580, 212)
 
 
 def main():

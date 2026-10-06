@@ -17,12 +17,13 @@
 #   every icon: magic E310, version 1, OS 2.x revision in the gadget's
 #     UserData, a 48x24 two-plane image
 #   the launchers: project icons, default tool C:IconX, a WINDOW tool
-#     type, 128K stack, pinned to the first row of the package root
+#     type, 128K stack, pinned to the first two rows of the package root
+#     (clamiga, then Clamacs; the FPU build in the second column)
 #   the root guide icons: project icons, default tool SYS:Utilities/MultiView,
-#     pinned to the second row, same columns as the launchers
+#     pinned to the third row, same columns as the launchers
 #   Guide.info: the same, unpositioned (NO_ICON_POSITION)
 #   Drawer.info: type WBDRAWER (2), DrawerData at 78 with the window
-#     580x160 at 40/30 on the Workbench screen, the Image header at 134,
+#     580x212 at 40/30 on the Workbench screen, the Image header at 134,
 #     dd_Flags 1 (show only files with icons) and dd_ViewModes 1 (view by
 #     icon) as the last six bytes, 448 bytes in all
 #   when python3 is available: the generator reproduces the committed
@@ -69,20 +70,30 @@ project() {
     [ "$tool" = "$2" ] || bad="$bad default-tool='$tool'"
     [ -z "$bad" ] && ok "project_$1" || fail "project_$1" "$bad"
 }
-# the two rows of the package root: columns 64/234/404, rows 8/60
-X0=00000040; X1=000000ea; X2=00000194; Y0=00000008; Y1=0000003c
+# the three rows of the package root: columns 64/234/404, rows 8/60/112
+X0=00000040; X1=000000ea; X2=00000194; Y0=00000008; Y1=0000003c; Y2=00000070
 NOPOS=80000000
 project CLAmiga            "C:IconX" $X0 $Y0 131072
 project CLAmiga-FPU        "C:IconX" $X1 $Y0 131072
-project Clamacs            "C:IconX" $X2 $Y0 131072
-project README-FIRST.guide "SYS:Utilities/MultiView" $X0 $Y1 16384
-project cl-amiga.guide     "SYS:Utilities/MultiView" $X1 $Y1 16384
-project clamacs.guide      "SYS:Utilities/MultiView" $X2 $Y1 16384
+project Clamacs            "C:IconX" $X0 $Y1 131072
+project Clamacs-FPU        "C:IconX" $X1 $Y1 131072
+project README-FIRST.guide "SYS:Utilities/MultiView" $X0 $Y2 16384
+project cl-amiga.guide     "SYS:Utilities/MultiView" $X1 $Y2 16384
+project clamacs.guide      "SYS:Utilities/MultiView" $X2 $Y2 16384
 project Guide              "SYS:Utilities/MultiView" $NOPOS $NOPOS 16384
 # the launchers carry their console window as a WINDOW= tool type
-for n in CLAmiga CLAmiga-FPU Clamacs; do
+for n in CLAmiga CLAmiga-FPU Clamacs Clamacs-FPU; do
     if LC_ALL=C grep -q "WINDOW=" "icons/$n.info"; then ok "tooltype_window_$n"; else fail "tooltype_window_$n"; fi
 done
+# every launcher icon has its IconX script beside it, and the two Clamacs
+# scripts start the editor from the bin/ of their own build
+for n in CLAmiga CLAmiga-FPU Clamacs Clamacs-FPU; do
+    if [ -f "icons/$n" ]; then ok "launcher_script_$n"; else fail "launcher_script_$n"; fi
+done
+if grep -q 'bin/aos3/clamiga --image bin/aos3/clamacs.img' icons/Clamacs \
+   && ! grep -q 'aos3-fpu' icons/Clamacs; then ok "clamacs_launcher_soft_float"; else fail "clamacs_launcher_soft_float"; fi
+if grep -q 'bin/aos3-fpu/clamiga --image bin/aos3-fpu/clamacs.img' icons/Clamacs-FPU \
+   && grep -q 'bin/mos/clamiga --image bin/mos/clamacs.img' icons/Clamacs-FPU; then ok "clamacs_fpu_launcher"; else fail "clamacs_fpu_launcher"; fi
 # the root guide icons are Guide.info with a position and nothing else
 for n in README-FIRST cl-amiga clamacs; do
     if [ "$(hex "icons/$n.guide.info" 66 382)" = "$(hex icons/Guide.info 66 382)" ]; then
@@ -99,7 +110,7 @@ f=icons/Drawer.info; bad=""
 [ "$(u32 "$f" 66)" -ne 0 ] || bad="$bad no-drawerdata"
 # DrawerData right after the DiskObject: NewWindow left/top/width/height
 [ "$(u16 "$f" 78)" -eq 40 ] && [ "$(u16 "$f" 80)" -eq 30 ] || bad="$bad window-pos=$(u16 "$f" 78)/$(u16 "$f" 80)"
-[ "$(u16 "$f" 82)" -eq 580 ] && [ "$(u16 "$f" 84)" -eq 160 ] || bad="$bad window-size=$(u16 "$f" 82)x$(u16 "$f" 84)"
+[ "$(u16 "$f" 82)" -eq 580 ] && [ "$(u16 "$f" 84)" -eq 212 ] || bad="$bad window-size=$(u16 "$f" 82)x$(u16 "$f" 84)"
 [ "$(u16 "$f" 124)" -eq 1 ] || bad="$bad newwindow-type-not-wbenchscreen"
 [ "$(hex "$f" 126 8)" = "0000000000000000" ] || bad="$bad dd_current-not-0"
 # then the Image header at 134
