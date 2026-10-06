@@ -105,30 +105,33 @@ and backtrace, and an inspector (`C-c I`).  It needs MUI 3.8 or newer
 `MUI:Libs/mui/` (MorphOS ships it; on AmigaOS 3 install both from
 Aminet).  The editor checks for them at startup.
 
-**clamiga does not open its ARexx port by itself.**  Put these two lines
-into `S:.clamigarc` (create the file if you have none):
+There are two ways to pair the editor with a clamiga.
+
+**Start Clamacs alone.**  The first command that needs clamiga asks "No
+clamiga ARexx port was found.  Start clamiga in its own console window?";
+Start launches the `clamiga` the editor itself runs on (`bin/aos3/clamiga`,
+`bin/aos3-fpu/clamiga` or `bin/mos/clamiga`, the one beside its
+`clamacs.img`) with a 128K stack, your `S:.clamigarc` loaded, and tells it
+to open its ARexx port -- no rc file is needed for this.  For a bare helper
+without your rc put `(setq *clamiga-options* '("--no-userinit"))` into
+`S:.clamacsrc`; `*clamiga-heap*` sets its heap (see clamacs.guide).
+
+**Start clamiga first, Clamacs second.**  The editor connects to a clamiga
+that already has its port open.  clamiga does not open the port by itself,
+so put these two lines into `S:.clamigarc` (create the file if you have
+none):
 
 ```lisp
 (require "amiga/arexx")
 (amiga.arexx:start)
 ```
 
-Every clamiga started from then on -- from the `CLAmiga` icon, from a
-shell, or by the editor -- opens the port `CLAMIGA` (a second instance
-takes `CLAMIGA.1`, and so on).  For the current session only, type the
-same two forms at the REPL.  Then either:
-
-- start clamiga first (icon or shell) and Clamacs second: the editor finds
-  the port and connects, or
-- start Clamacs alone: the first command that needs clamiga asks "No
-  clamiga ARexx port was found.  Start clamiga in its own console
-  window?"; Start launches the `clamiga` the editor itself runs on
-  (`bin/aos3/clamiga`, `bin/aos3-fpu/clamiga` or `bin/mos/clamiga`, the
-  one beside its `clamacs.img`) with a 128K stack and waits for the port
-  to appear.
-  That only happens when `S:.clamigarc` opens it -- without the two lines
-  the editor reports "Cannot start clamiga" after twenty seconds,
-  although a clamiga is running in the new console.
+Every clamiga started from then on -- from the `CLAmiga` icon or a shell --
+opens the port `CLAMIGA` (a second instance takes `CLAMIGA.1`, and so on);
+for the current session only, type the same two forms at the REPL.  Note
+that a session with the port open cannot `EXT:SAVE-IMAGE` -- the port runs
+on a thread -- so save images and executables from a clamiga started with
+`--no-userinit`.
 
 From a shell, files to edit go after `--`:
 `bin/aos3/clamiga --image bin/aos3/clamacs.img --non-interactive --eval "(clamacs::run)" -- Work:my.lisp`

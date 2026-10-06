@@ -925,19 +925,19 @@ Then run `icl --lisp clamiga`. ICL spawns clamiga, loads SLYNK via ASDF, and con
 
 More screenshots (the inspector, the diagnostics window) are in the submodule's [README](https://github.com/mdbergmann/clamacs#screenshots).
 
-Clamacs is written in Common Lisp and runs as a clamiga instance of its own. It lives in this repository as the `clamacs/` submodule and ships in the [binary release](#binary-release-amigaos--morphos) as a heap image next to each `clamiga` binary (`bin/aos3/clamacs.img`, `bin/mos/clamacs.img`, saved like `clamiga.img`) plus its sources and FASLs under `lib/clamacs/`. It needs MUI 3.8+ and `TextEditor.mcc` 15.29+ installed (MorphOS ships it). Open the port and start the editor:
+Clamacs is written in Common Lisp and runs as a clamiga instance of its own. It lives in this repository as the `clamacs/` submodule and ships in the [binary release](#binary-release-amigaos--morphos) as a heap image next to each `clamiga` binary (`bin/aos3/clamacs.img`, `bin/mos/clamacs.img`, saved like `clamiga.img`) plus its sources and FASLs under `lib/clamacs/`. It needs MUI 3.8+ and `TextEditor.mcc` 15.29+ installed (MorphOS ships it). Start the editor:
+
+```
+bin/aos3/clamiga --image bin/aos3/clamacs.img --non-interactive --eval "(clamacs::run)" -- file.lisp
+```
+
+(the `Clamacs` Workbench icon runs that line; from a checkout, `clamiga --heap 8M --non-interactive --load clamacs/lisp/clamacs.lisp -- file.lisp` loads it from source). `S:.clamacsrc` is loaded before the first window opens and can define commands and bind keys (see `clamacs.guide`). The editor connects to a clamiga whose ARexx port is open, or starts one itself (**Clamiga > Start clamiga**, offered by the first command that needs it): that clamiga runs on the same binary with your `S:.clamigarc` loaded and is told to open its port, so no rc setup is needed for it — `(setq *clamiga-options* '("--no-userinit"))` in `S:.clamacsrc` makes it a bare one. To have the editor connect to a clamiga you start yourself, let `S:.clamigarc` open the port:
 
 ```lisp
 ;; S:.clamigarc
 (require "amiga/arexx")
 (amiga.arexx:start)
 ```
-
-```
-bin/aos3/clamiga --image bin/aos3/clamacs.img --non-interactive --eval "(clamacs::run)" -- file.lisp
-```
-
-(the `Clamacs` Workbench icon runs that line; from a checkout, `clamiga --heap 8M --non-interactive --load clamacs/lisp/clamacs.lisp -- file.lisp` loads it from source). `S:.clamacsrc` is loaded before the first window opens and can define commands and bind keys (see `clamacs.guide`).
 
 **On the host.** The same editor runs on macOS and Linux, in one native window with the buffers as tabs (its menus on the screen's menu bar on a Mac): `clamacs/host/run.sh file.lisp` starts it from a checkout (`make host-app` in the submodule builds `Clamacs.app` on a Mac), and the Lisp behind it is a separate clamiga reached over the [TCP development port](#tcp-development-port-all-platforms) below, started by the editor itself or found through `CLAMACS_CLAMIGA=host:port`. The submodule's README has the details under [On the host](https://github.com/mdbergmann/clamacs#on-the-host-macos-linux).
 
