@@ -41,7 +41,7 @@
 #define CL_VERSION_PATCH 0
 
 /* Release date, DD.MM.YYYY — the format AmigaOS's Version command expects. */
-#define CL_VERSION_DATE "21.09.2026"
+#define CL_VERSION_DATE "06.10.2026"
 
 /* Two levels: the inner macro must see the expanded number, not the name. */
 #define CL_VERSION_STR_(x) #x
