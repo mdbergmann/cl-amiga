@@ -597,7 +597,12 @@ any other clamiga build (or platform/variant) refuse them cleanly — and can be
 restored into a larger `--heap` than they were saved with.  Worker threads and open file/socket streams must be closed before
 saving; `ext:*save-hooks*` / `ext:*restore-hooks*` exist to tear down and
 rebuild such OS state around the snapshot, and `ext:*image-restored-p*` lets
-`~/.clamigarc` skip loads the image already contains.  Process state is
+`~/.clamigarc` skip loads the image already contains.  The refusal names
+what is in the way — `SAVE-IMAGE: 1 worker thread(s) are still running
+("arexx-port") ...` is the [ARexx port](#arexx-port-amigaos--morphos) that
+`S:.clamigarc` opens for Clamacs — so the clean way to save an image or an
+executable is a clamiga started with `--no-userinit`: load the project, save,
+quit.  Process state is
 re-derived on restore, not carried over: `*default-pathname-defaults*` names
 the restoring process's directory, `*random-state*` is freshly seeded, and
 the libraries the `AMIGA.*` modules opened are opened again before
@@ -633,6 +638,10 @@ See [docs/ext.md](docs/ext.md#heap-images) and the runnable examples in
 copy of clamiga with the image appended, that needs no `lib/`, no image
 file and no launcher beside it:
 
+```
+clamiga --no-userinit
+```
+
 ```lisp
 (load "app.lisp")
 (ext:save-image "app" :executable t :toplevel 'app:main :quit t)
@@ -641,6 +650,11 @@ file and no launcher beside it:
 ```
 app input.txt --verbose
 ```
+
+(`--no-userinit` because the saving session must have no worker threads
+and no open file or socket streams, and an rc file that opens the ARexx
+port — or a `REPL-ATTACH`ed Clamacs — has started one; the refusal names
+the thread.)
 
 The whole command line belongs to the program (`ext:*command-line-args*`;
 no clamiga option is parsed), `:toplevel` is the function it runs — its

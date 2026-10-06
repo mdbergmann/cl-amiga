@@ -181,6 +181,11 @@ Rules and limits:
   foreign pointers are invalidated.  `ext:*save-hooks*` (run before the
   dump) and `ext:*restore-hooks*` (run after a restore, most recent
   first) are the supported way to tear such state down and rebuild it.
+  The refusal names the threads (`... still running ("arexx-port") ...`):
+  the ARexx port `S:.clamigarc` opens for Clamacs, a `REPL-ATTACH`ed
+  editor's REPL thread and the TCP development port all run on worker
+  threads, so save from a clamiga started with `--no-userinit` -- load
+  the project, save, quit -- or `(amiga.arexx:stop)` first.
   The Amiga library bases of the `AMIGA.*` modules need neither: they are
   reopened before `~/.clamigarc` runs (`amiga.ffi:define-library-variable`,
   [amiga.md](amiga.md)).
@@ -250,8 +255,9 @@ app input.txt --verbose
 - `~/.clamigarc` is not loaded and no banner is printed: nothing of the
   development environment shows through.
 - Everything said about images above holds: threads and open streams must
-  be gone before the save, `ext:*restore-hooks*` rebuild OS state at
-  start, and `:shake-bindings t` trims the image.
+  be gone before the save (start the saving clamiga with `--no-userinit`
+  so an rc file's ARexx port is not among them), `ext:*restore-hooks*`
+  rebuild OS state at start, and `:shake-bindings t` trims the image.
 - The executable is for the machine type that saved it — it *contains*
   that clamiga.  Build the AmigaOS program on AmigaOS (or in an emulator),
   the MorphOS one on MorphOS, the host one on the host.  A delivered

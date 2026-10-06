@@ -236,6 +236,36 @@ out=$("$TIMEOUT" 60 "$CLAMIGA" --no-userinit --image locks.img --non-interactive
 ec=$?
 check "restored_lock_and_condvar_are_free" 0 "$ec" "$out" "POST-RESTORE waiters=0 held=NIL ok=T"
 
+# --- Live worker threads: refused, and the refusal NAMES them -------------
+# "1 worker thread(s) are still running" told the user nothing when the
+# thread was a service a module started for them -- the ARexx port from
+# S:.clamigarc (thread "arexx-port") was exactly that, 2026-10-06.  The
+# message lists each live worker by name (an unnamed one by id), keeps the
+# main thread out, and says where the rc-started one comes from.
+cat > thrimg.lisp <<'EOF2'
+(defvar *im-go* nil)
+(defvar *im-named* (mp:make-thread (lambda () (loop until *im-go* do (sleep 0.02))) :name "arexx-port"))
+(defvar *im-anon* (mp:make-thread (lambda () (loop until *im-go* do (sleep 0.02)))))
+(sleep 0.1)
+(handler-case (ext:save-image "threads.img")
+  (error (e) (format t "REFUSED: ~a~%" e)))
+(setf *im-go* t)
+(mp:join-thread *im-named*)
+(mp:join-thread *im-anon*)
+(format t "SAVED-P ~a~%" (probe-file "threads.img"))
+EOF2
+out=$("$TIMEOUT" 60 "$CLAMIGA" $CLI --heap 8M --non-interactive \
+    --load thrimg.lisp </dev/null 2>&1)
+ec=$?
+check "save_refused_names_live_threads" 0 "$ec" "$out" \
+    "REFUSED: SAVE-IMAGE: 2 worker thread(s) are still running (" \
+    '"arexx-port"' "unnamed thread" "no-userinit" "SAVED-P NIL"
+desc="save_refusal_omits_main_thread"
+case $out in
+    *'"main"'*) fail "$desc" "main thread listed" "$out" ;;
+    *) ok ;;
+esac
+
 # --- Corrupt image: explicit --image refuses cleanly ---------------------
 
 # Flip a fingerprint byte (offset 12 is inside the 32-byte fingerprint).

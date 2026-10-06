@@ -287,13 +287,46 @@ static const char *image_save_preconditions(void)
         return "SAVE-IMAGE: internal error - boot root count was never "
                "snapshotted (cl_image_note_boot_roots)";
 
-    /* 1. No live worker threads (SBCL save-lisp-and-die doctrine). */
+    /* 1. No live worker threads (SBCL save-lisp-and-die doctrine).  Name
+     * them: "1 worker thread" tells the user nothing when the thread is a
+     * service a module started for them (the ARexx port from .clamigarc,
+     * a TCP dev port, a REPL thread) -- the name says what to stop. */
     if (cl_thread_count > 1) {
+        CL_Thread *t;
+        size_t n;
         snprintf(msg, sizeof(msg),
-                 "SAVE-IMAGE: %u worker thread(s) are still running - "
-                 "JOIN-THREAD or MP:DESTROY-THREAD them first "
-                 "(threads cannot survive into an image)",
+                 "SAVE-IMAGE: %u worker thread(s) are still running (",
                  (unsigned)(cl_thread_count - 1));
+        n = strlen(msg);
+        platform_mutex_lock(cl_thread_list_lock);
+        for (t = cl_thread_list; t; t = t->next) {
+            char one[72];
+            const char *sep = msg[n - 1] == '(' ? "" : ", ";
+            int w;
+            if (t == cl_main_thread_ptr) continue;
+            if (CL_STRING_P(t->name)) {
+                CL_String *s = (CL_String *)CL_OBJ_TO_PTR(t->name);
+                w = snprintf(one, sizeof(one), "%s\"%.*s\"", sep,
+                             (int)(s->length < 60 ? s->length : 60), s->data);
+            } else {
+                w = snprintf(one, sizeof(one), "%sunnamed thread %u", sep,
+                             (unsigned)t->id);
+            }
+            if (w < 0 || n + (size_t)w >= sizeof(msg) - 200) {
+                snprintf(msg + n, sizeof(msg) - n, ", ...");
+                n += 5;
+                break;
+            }
+            memcpy(msg + n, one, (size_t)w);
+            n += (size_t)w;
+            msg[n] = '\0';
+        }
+        platform_mutex_unlock(cl_thread_list_lock);
+        snprintf(msg + n, sizeof(msg) - n,
+                 ") - threads cannot survive into an image: JOIN-THREAD or "
+                 "MP:DESTROY-THREAD them, or stop the service that started "
+                 "them (the ARexx port from .clamigarc is one: save from a "
+                 "clamiga started with --no-userinit)");
         return msg;
     }
 
