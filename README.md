@@ -10,6 +10,7 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 
 **Contents**
 
+- [Getting started](#getting-started)
 - [Why CL-Amiga?](#why-cl-amiga)
 - [Status](#status)
 - [Building](#building)
@@ -22,6 +23,74 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 - [Architecture](#architecture)
 - [Known limitations](#known-limitations-and-future-work)
 - [Project structure](#project-structure)
+- [How it compares](#how-it-compares)
+
+## Getting started
+
+Five minutes from nothing to a running Lisp.  This is the host path (macOS
+or Linux); Amiga and MorphOS users can skip the build and take the
+ready-made binaries from Aminet instead — see
+[Binary release](#binary-release-amigaos--morphos).
+
+**1. Build it.**  You need a C compiler (gcc or clang), GNU make and
+libffi (found through `pkg-config`; `brew install libffi` on macOS,
+`apt install libffi-dev` on Debian/Ubuntu).  No submodules are needed for
+this:
+
+```
+git clone https://github.com/mdbergmann/cl-amiga.git
+cd cl-amiga
+make host
+```
+
+The binary is `build/host/clamiga`.  (Windows: see
+[Host (Windows)](#host-windows).)
+
+**2. Say hello.**  Evaluate one form and exit:
+
+```
+./build/host/clamiga --no-userinit --non-interactive --eval '(format t "Hello World~%")'
+```
+
+prints `Hello World`.  `--no-userinit` skips your `~/.clamigarc` (you
+don't have one yet, but it keeps the command reproducible) and
+`--non-interactive` exits instead of dropping into the REPL afterwards.
+
+**3. Start the REPL.**
+
+```
+./build/host/clamiga
+```
+
+```
+COMMON-LISP-USER> (defun fib (n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+FIB
+COMMON-LISP-USER> (fib 20)
+6765
+COMMON-LISP-USER> (quit)
+```
+
+**4. Run a file.**  Put the `fib` definition and a `(format t "~a~%" (fib 20))`
+into `fib.lisp`, then:
+
+```
+./build/host/clamiga --script fib.lisp     # load it and exit
+./build/host/clamiga fib.lisp              # load it, then stay in the REPL
+```
+
+From here: [Usage](#usage) lists every command-line option,
+[Libraries](#libraries-asdf-quicklisp-and-ocicl) gets you Quicklisp, and
+[Editors and IDEs](#editors-and-ides) connects Emacs (SLY) or the bundled
+[Clamacs](#clamacs-native-editor--ide) editor.  To run the result on a
+real Amiga or in FS-UAE, see
+[AmigaOS (cross-compile)](#amigaos-cross-compile-with-m68k-amigaos-gcc).
+
+**New to Common Lisp?**  Start with Peter Seibel's
+[Practical Common Lisp](https://gigamonkeys.com/book/) and the
+[Common Lisp Cookbook](https://lispcookbook.github.io/cl-cookbook); the
+[HyperSpec](https://www.lispworks.com/documentation/HyperSpec/Front/) is
+the language reference.  [This blog post](https://nnamgreb.de/blog/Clamiga+-+Common+Lisp+for+the+Amiga)
+introduces Clamiga itself.
 
 ## Why CL-Amiga?
 
@@ -39,27 +108,8 @@ In short: it exists to bring a modern, ANSI-aiming, library-capable Common Lisp 
 
 **CL-Amiga** is simply *Common Lisp for the Amiga*. Say it out loud and it becomes **Clamiga** — and *amiga* is Spanish/Portuguese for a (female) friend. So the name does double duty: the Lisp that runs on your Amiga, and the Lisp that's your *amiga*. 🙂
 
-### How it compares
-
-| Implementation | Approach | Amiga family (68k / PPC)? | Footprint | Notes |
-|---|---|---|---|---|
-| **CL-Amiga** | Bytecode VM in C, optional m68k/AArch64 JIT | **Yes** — its whole reason to exist (68k + native MorphOS/PPC now; OS4 next) | Tiny (core runs in a 1 MB heap) | Alpha; ANSI coverage incomplete |
-| **ECL** | Lisp → C, bytecode fallback | No | Medium | Very portable/embeddable on modern hosts |
-| **CCL** | Native compiler | No (x86-64/ARM/PPC only) | Large | Fast and mature; no 68k backend |
-| **Clasp** | LLVM-based, C++ interop | No | Very large (needs LLVM) | Best for C++/scientific interop |
-| **SBCL** | Native compiler | No | Large | Fastest mainstream CL; modern arch only |
-| **CLISP** | Bytecode interpreter in C | Historically, now unmaintained | Small | Closest in spirit; no current Amiga build |
-
-**Pros:** runs where nothing else does; tiny and dependency-free; identical behavior on host and Amiga; small, readable C you can actually hack on.
-**Cons:** alpha-quality ANSI coverage; a bytecode VM with a light JIT won't match a native compiler's raw speed; the object model is 32-bit throughout, so even on a 64-bit host the heap is capped at 4 GB (a deliberate trade for a compact, Amiga-faithful representation); the ecosystem is (so far) an ecosystem of one.
-
-## Useful information on Common Lisp
-
-[My post about Clamiga](https://nnamgreb.de/blog/Clamiga+-+Common+Lisp+for+the+Amiga)
-
-[Common Lisp Cookbook](https://lispcookbook.github.io/cl-cookbook)
-
-[Peter Seibel's Practical Common Lisp book](https://gigamonkeys.com/book/)
+A side-by-side with SBCL, ECL, CCL, Clasp and CLISP is at the end of this
+document: [How it compares](#how-it-compares).
 
 ## Status
 
@@ -95,12 +145,14 @@ The same programs on MorphOS 3.20 (MUI 4, built into the OS) — layout, slidora
 
 Ready-made AmigaOS 3 and MorphOS binaries are on Aminet as
 [dev/lang/clamiga.lha](https://aminet.net/package/dev/lang/clamiga); everything
-else is built from source.  Clone with submodules, or fetch them afterwards —
-the editor ([Clamacs](#clamacs-native-editor--ide)) and the m68k cross
-toolchain are submodules:
+else is built from source.  A plain clone is enough for the host build
+([Getting started](#getting-started) has the three commands).  Two things
+are git submodules and are fetched on demand: the editor
+([Clamacs](#clamacs-native-editor--ide)), which the binary release needs, and
+the m68k cross toolchain, which the AmigaOS build needs:
 
 ```
-git submodule update --init clamacs      # all a host or release build needs
+git submodule update --init clamacs      # the editor (binary release)
 ```
 
 ### Host (macOS / Linux)
@@ -2447,6 +2499,20 @@ tools/
 verify/
   realamiga/      FS-UAE configurations, AmigaOS system image, run/verify scripts, CPU probes
 ```
+
+## How it compares
+
+| Implementation | Approach | Amiga family (68k / PPC)? | Footprint | Notes |
+|---|---|---|---|---|
+| **CL-Amiga** | Bytecode VM in C, optional m68k/AArch64 JIT | **Yes** — its whole reason to exist (68k + native MorphOS/PPC now; OS4 next) | Tiny (core runs in a 1 MB heap) | Alpha; ANSI coverage incomplete |
+| **ECL** | Lisp → C, bytecode fallback | No | Medium | Very portable/embeddable on modern hosts |
+| **CCL** | Native compiler | No (x86-64/ARM/PPC only) | Large | Fast and mature; no 68k backend |
+| **Clasp** | LLVM-based, C++ interop | No | Very large (needs LLVM) | Best for C++/scientific interop |
+| **SBCL** | Native compiler | No | Large | Fastest mainstream CL; modern arch only |
+| **CLISP** | Bytecode interpreter in C | Historically, now unmaintained | Small | Closest in spirit; no current Amiga build |
+
+**Pros:** runs where nothing else does; tiny and dependency-free; identical behavior on host and Amiga; small, readable C you can actually hack on.
+**Cons:** alpha-quality ANSI coverage; a bytecode VM with a light JIT won't match a native compiler's raw speed; the object model is 32-bit throughout, so even on a 64-bit host the heap is capped at 4 GB (a deliberate trade for a compact, Amiga-faithful representation); the ecosystem is (so far) an ecosystem of one.
 
 ## License
 
